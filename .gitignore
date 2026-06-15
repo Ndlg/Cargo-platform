@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+dist/
+dist-server-admin/
+build/
+.npm/
+.pnpm-store/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Runtime storage
+local-dev.db
+backend/tests/*_test.db
+storage/collector-build/
+storage/collector-review/
+storage/collector-test/
+storage/server-console/
+storage/sku-import-preview/
+storage/*-review.zip
+storage/workspaces/*
+!storage/workspaces/.gitkeep
+
+# OS
+.DS_Store
+Thumbs.db

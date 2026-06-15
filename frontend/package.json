@@ -1,0 +1,31 @@
+﻿{
+  "name": "cargo-platform-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0 --port 5173",
+    "dev:tenant": "vite --host 0.0.0.0 --port 5173",
+    "dev:server-admin": "vite --config vite.server-admin.config.ts --host 127.0.0.1 --port 5174",
+    "dev:platform-admin": "vite --config vite.server-admin.config.ts --host 127.0.0.1 --port 5174",
+    "build": "npm run build:tenant",
+    "build:tenant": "vue-tsc --noEmit && vite build",
+    "build:server-admin": "vue-tsc --noEmit && vite build --config vite.server-admin.config.ts",
+    "build:platform-admin": "vue-tsc --noEmit && vite build --config vite.server-admin.config.ts",
+    "build:all": "npm run build:tenant && npm run build:server-admin",
+    "preview": "vite preview --host 0.0.0.0"
+  },
+  "dependencies": {
+    "@element-plus/icons-vue": "^2.3.1",
+    "element-plus": "^2.8.8",
+    "pinia": "^2.2.6",
+    "vue": "^3.5.12",
+    "vue-router": "^4.4.5"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.1.4",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10",
+    "vue-tsc": "^2.1.10"
+  }
+}

@@ -1,0 +1,21 @@
+﻿{
+  "base_url": "http://服务器IP:5173",
+  "token": "后台生成的采集器token",
+  "workspace_id": 1,
+  "collector_name": "Cargo Platform 采集器",
+  "interval": 3,
+  "batch_size": 50,
+  "simulate": false,
+  "adapters": [
+    {
+      "source_component": "cainiao-cnprint",
+      "display_name": "Cainiao CNPrintClient",
+      "db_path": "C:\\Program Files (x86)\\CNPrintTool\\resources\\print.db"
+    },
+    {
+      "source_component": "cloud-print-client",
+      "display_name": "CloudPrintClient",
+      "db_path": "C:\\Program Files (x86)\\CloudPrintClient\\resources\\print.db"
+    }
+  ]
+}

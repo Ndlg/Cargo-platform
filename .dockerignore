@@ -1,0 +1,15 @@
+.git
+.venv
+.pytest_cache
+backend/tests/__pycache__
+backend/**/__pycache__
+collector-client/**/__pycache__
+frontend/node_modules
+frontend/dist
+frontend/dist-server-admin
+logs
+storage
+*.pyc
+*.pyo
+*.db
+*.log

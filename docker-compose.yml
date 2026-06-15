@@ -1,0 +1,67 @@
+﻿services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: cargo-platform-backend
+    environment:
+      APP_NAME: Cargo Platform
+      APP_VERSION: 0.1.0
+      API_PREFIX: /api/v1
+      CORS_ORIGINS: http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:5174,http://localhost:5174
+      DATABASE_URL: sqlite:////data/cargo-platform.db
+      REDIS_URL: redis://redis:6379/0
+      STORAGE_ROOT: /data/workspaces
+      DEFAULT_WORKSPACE_ID: 1
+      SECRET_KEY: docker-local-dev-secret-change-before-production
+      ACCESS_TOKEN_EXPIRE_MINUTES: 480
+      AUTO_CREATE_TABLES: "true"
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - cargo-platform-data:/data
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: cargo-platform-redis
+    restart: unless-stopped
+
+  tenant-ui:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        BUILD_COMMAND: build:tenant
+        DIST_DIR: dist
+    container_name: cargo-platform-tenant-ui
+    environment:
+      API_PROXY_PASS: http://backend:8000
+      SPA_FALLBACK: /index.html
+    depends_on:
+      - backend
+    ports:
+      - "0.0.0.0:5173:80"
+    restart: unless-stopped
+
+  platform-admin-ui:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        BUILD_COMMAND: build:server-admin
+        DIST_DIR: dist-server-admin
+    container_name: cargo-platform-admin-ui
+    environment:
+      API_PROXY_PASS: http://backend:8000
+      SPA_FALLBACK: /server-admin.html
+    depends_on:
+      - backend
+    ports:
+      - "127.0.0.1:5174:80"
+    restart: unless-stopped
+
+volumes:
+  cargo-platform-data:
