@@ -450,6 +450,19 @@ gh auth token | docker login ghcr.io -u <GitHub用户名> --password-stdin
 powershell -ExecutionPolicy Bypass -File scripts\release_images.ps1 -Version 0.1.0 -Push
 ```
 
+也可以直接使用仓库里的 GitHub Actions：
+
+```text
+GitHub 仓库 -> Actions -> Release Images -> Run workflow -> 输入版本号
+```
+
+或者推送版本标签后自动构建：
+
+```powershell
+git tag v0.1.0
+git push origin v0.1.0
+```
+
 默认镜像：
 
 ```text
