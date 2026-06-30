@@ -4,7 +4,8 @@ import re
 import unicodedata
 from typing import Any
 
-from app.services.woda_fields import WODA_CUSTOM_FIELD_ITEM_KEYS, woda_mapping_source_field
+from app.services.waybill_text_blocks import format_field_output, split_candidate_segments
+from app.services.woda_fields import WODA_CUSTOM_FIELD_ITEM_KEYS, woda_mapping_source_field, woda_mapping_source_fields
 
 
 _SIZE_TEXT = r"(?:[2-4]\d(?:\.5)?|50)"
@@ -22,8 +23,8 @@ _STRUCTURE_LABELS = {
     "single_line_standard": "单行标准",
     "reverse_field_order": "属性在前",
     "multi_item": "多商品",
-    "remark_product": "备注商品",
-    "unknown": "未识别结构",
+    "remark_product": "备注补充",
+    "unknown": "需复核结构",
 }
 
 
@@ -35,6 +36,10 @@ def _text(value: Any) -> str:
         for ch in str(value)
         if (ch >= " " or ch in "\n\t") and unicodedata.category(ch) != "Cf"
     ).strip()
+
+
+def _format_configured_field_output(target_field: str, value: Any) -> str:
+    return format_field_output(target_field, value)
 
 
 def _lines(text: str) -> list[str]:
@@ -120,6 +125,19 @@ def _extract_configured_line_value(line: str, extractor: str) -> str:
     if extractor == "remark_text":
         return cleaned
     return cleaned
+
+
+def _candidate_segments(text: str) -> list[str]:
+    return split_candidate_segments("\n".join(_lines(text)) or _text(text))
+
+
+def _candidate_segment_value(lines: list[str], source_field: str) -> str:
+    match = re.fullmatch(r"(?:token|candidate)_(\d+)", source_field)
+    if not match:
+        return ""
+    index = int(match.group(1)) - 1
+    segments = _candidate_segments("\n".join(lines))
+    return segments[index] if 0 <= index < len(segments) else ""
 
 
 def _named_value(text: str, names: list[str]) -> str:
@@ -327,6 +345,29 @@ def _item_with_sales_attrs(item: dict[str, str]) -> dict[str, str]:
     }
 
 
+def _auto_item_from_lines(lines: list[str]) -> dict[str, str] | None:
+    raw_text = "\n".join(lines)
+    if not lines:
+        return None
+
+    quantity_count = _count_quantities(raw_text)
+    quantity_line_count = len([line for line in lines if _has_quantity(line)])
+    remark_line_count = len([line for line in lines if _is_remark_line(line)])
+    if remark_line_count >= 1 and _has_remark_product_shape(lines):
+        items = _items_from_multi(lines)
+        return items[0] if len(items) == 1 else None
+    if quantity_count > 1 or quantity_line_count > 1 or (quantity_count >= 1 and remark_line_count > 1):
+        items = _items_from_multi(lines)
+        return items[0] if len(items) == 1 else None
+    if (remark_item := _item_from_remark(lines)) and remark_line_count >= 1:
+        return remark_item
+    if reverse_item := _item_from_reverse_lines(lines):
+        return reverse_item
+    if len(lines) == 1:
+        return _item_from_single_standard_line(lines[0])
+    return None
+
+
 def _apply_config_field_mappings(item: dict[str, str], config: dict[str, Any] | None) -> dict[str, str]:
     if not config or not isinstance(config.get("field_mappings"), dict):
         return item
@@ -339,7 +380,7 @@ def _apply_config_field_mappings(item: dict[str, str], config: dict[str, Any] | 
         source_item_key = WODA_CUSTOM_FIELD_ITEM_KEYS.get(source_field)
         if not source_item_key:
             continue
-        mapped_item[target_item_key] = _text(source_item.get(source_item_key))
+        mapped_item[target_item_key] = _format_configured_field_output(target_field, source_item.get(source_item_key))
 
     mapped_item["spec_text"] = mapped_item.get("sales_attr1_text", "")
     mapped_item["size_text"] = mapped_item.get("sales_attr2_text", "")
@@ -362,17 +403,31 @@ def _configured_line_item(lines: list[str], config: dict[str, Any] | None) -> di
 
     item: dict[str, str] = {}
     used_indexes: list[int] = []
+    auto_item = _item_with_sales_attrs(_auto_item_from_lines(lines) or {})
     for target_field, target_item_key in WODA_CUSTOM_FIELD_ITEM_KEYS.items():
         mapping = config["field_mappings"].get(target_field)
         line_index = _configured_line_index(mapping)
-        if line_index is None or line_index >= len(lines):
+        source_fields = woda_mapping_source_fields(mapping, target_field)
+        if not source_fields:
+            continue
+        if not any(source_field.startswith("token_") or source_field.startswith("candidate_") for source_field in source_fields) and (line_index is None or line_index >= len(lines)):
             continue
         extractor = _text(mapping.get("extractor")) if isinstance(mapping, dict) else ""
         segment_text = _text(mapping.get("segment_text")) if isinstance(mapping, dict) else ""
-        value = segment_text or _extract_configured_line_value(lines[line_index], extractor)
+        values: list[str] = []
+        for source_field in source_fields:
+            source_item_key = WODA_CUSTOM_FIELD_ITEM_KEYS.get(source_field)
+            if source_field.startswith("token_") or source_field.startswith("candidate_"):
+                values.append(_candidate_segment_value(lines, source_field))
+            elif source_item_key:
+                values.append(_text(auto_item.get(source_item_key)))
+        value = " ".join(part for part in values if part).strip()
+        value = value or (_extract_configured_line_value(lines[line_index], extractor) if line_index is not None and line_index < len(lines) else "")
+        value = value or segment_text
         if value:
-            item[target_item_key] = value
-            used_indexes.append(line_index)
+            item[target_item_key] = _format_configured_field_output(target_field, value)
+            if line_index is not None and line_index < len(lines):
+                used_indexes.append(line_index)
 
     if not any(_text(item.get(key)) for key in ("product_text", "sales_attr1_text", "sales_attr2_text", "quantity_text")):
         return None
@@ -383,7 +438,7 @@ def _configured_line_item(lines: list[str], config: dict[str, Any] | None) -> di
         item["size_text"] = item["sales_attr2_text"]
     item.setdefault("remark_text", "")
     item.setdefault("quantity_text", "")
-    item["raw_text"] = "\n".join(lines[index] for index in sorted(set(used_indexes)))
+    item["raw_text"] = _text(auto_item.get("raw_text")) or "\n".join(lines[index] for index in sorted(set(used_indexes)))
     return item
 
 
@@ -426,14 +481,14 @@ def parse_woda_custom_structure(text: str, config: dict[str, Any] | None = None)
         elif quantity_count > 1 or quantity_line_count > 1 or (quantity_count >= 1 and remark_line_count > 1):
             kind = "multi_item"
             items = _items_from_multi(lines)
-            reason = "出现多个数量或多条备注商品信息"
+            reason = "出现多个数量或多条备注商品文字"
         elif (remark_item := _item_from_remark(lines)) and remark_line_count >= 1:
             kind = "remark_product"
             items = [remark_item]
             reason = (
                 "商品行带备注补充，按备注商品结构识别"
                 if any(not _is_remark_line(line) for line in lines)
-                else "商品信息需要从备注/自定义字段中读取"
+                else "商品文字需要从备注/自定义字段中读取"
             )
         elif reverse_item := _item_from_reverse_lines(lines):
             kind = "reverse_field_order"

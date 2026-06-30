@@ -9,6 +9,7 @@ import {
   createRecord,
   deleteRecord,
   fetchImageAssetBlob,
+  getRecord,
   getRecords,
   updateRecord,
   uploadProductSkuImage,
@@ -55,6 +56,7 @@ const deletingProducts = ref(false)
 const deletingSkus = ref(false)
 const uploading = ref(false)
 const manualUploading = ref(false)
+const skuLoading = ref(false)
 const error = ref('')
 const zipInputRef = ref<HTMLInputElement | null>(null)
 const zipDirectoryInputRef = ref<HTMLInputElement | null>(null)
@@ -63,6 +65,15 @@ const previewLoading = ref(false)
 const previewUrl = ref('')
 const previewTitle = ref('')
 const previewSkuId = ref<number | null>(null)
+const productSearch = ref('')
+const productPage = ref(1)
+const productPageSize = ref(40)
+const productTotal = ref(0)
+const skuPage = ref(1)
+const skuPageSize = ref(80)
+const skuTotal = ref(0)
+let productLoadSeq = 0
+let skuLoadSeq = 0
 
 const productForm = reactive({
   name: '',
@@ -77,9 +88,15 @@ const manualSkuForm = reactive({
 const selectedProduct = computed(
   () => products.value.find((product) => product.id === selectedProductId.value) ?? null,
 )
-const selectedSkus = computed(() =>
-  selectedProductId.value ? skus.value.filter((sku) => sku.product_id === selectedProductId.value) : [],
-)
+const filteredProducts = computed(() => {
+  return products.value
+})
+const pagedProducts = computed(() => {
+  return filteredProducts.value
+})
+const selectedSkus = computed(() => (selectedProductId.value ? skus.value : []))
+const pagedSkus = computed(() => selectedSkus.value)
+const hasMoreSkuPages = computed(() => skuTotal.value > skuPage.value * skuPageSize.value)
 const enabledStalls = computed(() => stalls.value.filter((stall) => stall.is_enabled !== false))
 
 function routeProductId(): number | null {
@@ -90,30 +107,107 @@ function routeProductId(): number | null {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null
 }
 
-function selectProductFromRoute(): boolean {
+async function selectProductFromRoute(): Promise<boolean> {
   const productId = routeProductId()
   if (!productId) return false
-  const product = products.value.find((row) => row.id === productId)
+  let product = products.value.find((row) => row.id === productId)
+  if (!product) {
+    try {
+      product = (await getRecord(`/products/${productId}`)) as ProductRecord
+      products.value = [product, ...products.value.filter((row) => row.id !== productId)]
+      productTotal.value = Math.max(productTotal.value, products.value.length)
+    } catch {
+      return false
+    }
+  }
   if (!product) return false
   selectedProductId.value = product.id
   return true
+}
+
+async function loadProducts(page = productPage.value) {
+  const seq = ++productLoadSeq
+  const currentPage = Math.max(1, page)
+  productPage.value = currentPage
+  const productOffset = (currentPage - 1) * productPageSize.value
+  const keyword = encodeURIComponent(productSearch.value.trim())
+  const keywordQuery = keyword ? `&q=${keyword}` : ''
+  const productRecords = await getRecords(
+    `/products?limit=${productPageSize.value}&offset=${productOffset}${keywordQuery}`,
+  )
+  if (seq !== productLoadSeq) return
+  const rows = productRecords as ProductRecord[]
+  if (!rows.length && currentPage > 1) {
+    await loadProducts(currentPage - 1)
+    return
+  }
+  products.value = rows
+  const loadedEnd = productOffset + rows.length
+  productTotal.value = rows.length < productPageSize.value
+    ? loadedEnd
+    : Math.max(productTotal.value, loadedEnd + 1)
+}
+
+async function loadProductSkus(productId = selectedProductId.value, page = skuPage.value) {
+  const seq = ++skuLoadSeq
+  selectedSkuRows.value = []
+  if (!productId) {
+    skus.value = []
+    skuTotal.value = 0
+    skuLoading.value = false
+    return
+  }
+  const currentPage = Math.max(1, page)
+  skuPage.value = currentPage
+  const skuOffset = (currentPage - 1) * skuPageSize.value
+  skuLoading.value = true
+  error.value = ''
+  try {
+    const skuRecords = await getRecords(`/product-skus?limit=${skuPageSize.value}&offset=${skuOffset}&product_id=${productId}`)
+    if (seq !== skuLoadSeq) return
+    const rows = skuRecords as ProductSkuRecord[]
+    if (!rows.length && currentPage > 1) {
+      await loadProductSkus(productId, currentPage - 1)
+      return
+    }
+    skus.value = rows
+    const loadedEnd = skuOffset + rows.length
+    skuTotal.value = rows.length < skuPageSize.value
+      ? loadedEnd
+      : Math.max(skuTotal.value, loadedEnd + 1)
+  } catch (err) {
+    if (seq !== skuLoadSeq) return
+    error.value = err instanceof Error ? err.message : 'SKU 资料加载失败'
+    skus.value = []
+    skuTotal.value = 0
+  } finally {
+    if (seq === skuLoadSeq) {
+      skuLoading.value = false
+    }
+  }
 }
 
 async function load() {
   loading.value = true
   error.value = ''
   try {
-    const [productRecords, skuRecords, stallRecords] = await Promise.all([
-      getRecords('/products?limit=2000'),
-      getRecords('/product-skus?limit=2000'),
+    const [stallRecords] = await Promise.all([
       getRecords('/stalls?limit=2000'),
     ])
-    products.value = productRecords as ProductRecord[]
-    skus.value = skuRecords as ProductSkuRecord[]
     stalls.value = stallRecords as StallRecord[]
-    if (!selectProductFromRoute() && !selectedProductId.value && products.value[0]) {
+    await loadProducts(productPage.value)
+    if (
+      !(await selectProductFromRoute())
+      && (!selectedProductId.value || !products.value.some((product) => product.id === selectedProductId.value))
+      && products.value[0]
+    ) {
       selectedProductId.value = products.value[0].id
     }
+    if (!products.value.length) {
+      selectedProductId.value = null
+    }
+    showSelectedProductPage()
+    await loadProductSkus(selectedProductId.value)
   } catch (err) {
     error.value = err instanceof Error ? err.message : '商品资料加载失败'
   } finally {
@@ -189,6 +283,17 @@ function onSkuSelectionChange(rows: ProductSkuRecord[]) {
   selectedSkuRows.value = rows
 }
 
+function onSkuPageChange(page: number) {
+  void loadProductSkus(selectedProductId.value, page)
+}
+
+async function onProductPageChange(page: number) {
+  await loadProducts(page)
+  if (!products.value.some((product) => product.id === selectedProductId.value) && products.value[0]) {
+    selectedProductId.value = products.value[0].id
+  }
+}
+
 async function removeSelectedProducts() {
   if (!selectedProductRows.value.length) {
     error.value = '请先勾选要删除的商品。'
@@ -254,7 +359,7 @@ async function removeSelectedSkus() {
       clearPreviewUrl()
     }
     selectedSkuRows.value = []
-    await load()
+    await loadProductSkus(selectedProductId.value)
   } catch (err) {
     error.value = err instanceof Error ? err.message : 'SKU 删除失败'
   } finally {
@@ -264,6 +369,10 @@ async function removeSelectedSkus() {
 
 function selectProduct(row?: ProductRecord) {
   if (row?.id) selectedProductId.value = row.id
+}
+
+function showSelectedProductPage() {
+  if (!selectedProductId.value) return
 }
 
 function skuRowClassName({ row }: { row: ProductSkuRecord }) {
@@ -367,7 +476,7 @@ async function uploadSkuZipFiles(files: File[]) {
         failures.push(`${file.name}：${err instanceof Error ? err.message : '上传失败'}`)
       }
     }
-    await load()
+    await loadProductSkus(selectedProductId.value)
     const imported = sumZipResult(results, 'imported')
     const updated = sumZipResult(results, 'updated')
     const duplicated = sumZipResult(results, 'duplicated') + repeatedFileCount
@@ -427,7 +536,7 @@ async function uploadManualSkuImage(options: UploadRequestOptions) {
     }
     manualSkuForm.name = ''
     manualSkuForm.stall_id = null
-    await load()
+    await loadProductSkus(selectedProductId.value)
     options.onSuccess({})
     if (uploadedSku?.id) {
       const row = skus.value.find((sku) => sku.id === uploadedSku.id)
@@ -451,15 +560,25 @@ watch(() => session.currentWorkspaceId, () => {
   clearPreviewUrl()
   void load()
 })
-watch(() => route.query.product_id, () => {
-  selectProductFromRoute()
+watch(() => route.query.product_id, async () => {
+  if (await selectProductFromRoute()) {
+    showSelectedProductPage()
+  }
 })
-watch(selectedProductId, () => {
+watch(productSearch, () => {
+  productPage.value = 1
+  selectedProductRows.value = []
+  void loadProducts(1)
+})
+watch(selectedProductId, (productId) => {
   selectedSkuRows.value = []
   previewSkuId.value = null
   previewTitle.value = ''
   zipUploadSummary.value = ''
   clearPreviewUrl()
+  skuPage.value = 1
+  skuTotal.value = 0
+  void loadProductSkus(productId, 1)
 })
 onMounted(load)
 onBeforeUnmount(clearPreviewUrl)
@@ -503,6 +622,12 @@ onBeforeUnmount(clearPreviewUrl)
       </el-form>
 
       <div v-if="products.length" class="table-toolbar">
+        <el-input
+          v-model="productSearch"
+          clearable
+          placeholder="搜索商品"
+          class="product-search-input"
+        />
         <el-button
           :icon="Delete"
           :disabled="!selectedProductRows.length"
@@ -513,11 +638,13 @@ onBeforeUnmount(clearPreviewUrl)
         >
           删除已选
         </el-button>
-        <span class="muted-text">已选 {{ selectedProductRows.length }} 个商品</span>
+        <span class="muted-text">
+          已选 {{ selectedProductRows.length }} 个，当前页 {{ products.length }} 个商品
+        </span>
       </div>
       <el-table
         v-if="products.length"
-        :data="products"
+        :data="pagedProducts"
         height="340"
         row-key="id"
         stripe
@@ -550,7 +677,17 @@ onBeforeUnmount(clearPreviewUrl)
           <template #default="{ row }">{{ row.remark || '-' }}</template>
         </el-table-column>
       </el-table>
-      <el-empty v-else description="还没有商品。请先新增一个商品名称。" />
+      <el-pagination
+        v-if="productTotal > productPageSize"
+        v-model:current-page="productPage"
+        :page-size="productPageSize"
+        :total="productTotal"
+        layout="total, prev, pager, next"
+        small
+        class="product-pagination"
+        @current-change="onProductPageChange"
+      />
+      <el-empty v-if="!products.length" description="还没有商品。请先新增一个商品名称。" />
     </div>
 
     <div class="work-surface">
@@ -652,7 +789,7 @@ onBeforeUnmount(clearPreviewUrl)
         </div>
       </div>
 
-      <div v-if="selectedSkus.length" class="sku-browser">
+      <div v-if="selectedProductId" v-loading="skuLoading" class="sku-browser">
         <div>
           <div class="table-toolbar">
             <el-button
@@ -665,10 +802,13 @@ onBeforeUnmount(clearPreviewUrl)
             >
               删除已选
             </el-button>
-            <span class="muted-text">已选 {{ selectedSkuRows.length }} 个 SKU</span>
+            <span class="muted-text">
+              已选 {{ selectedSkuRows.length }} 个 SKU，本页 {{ selectedSkus.length }} 个
+              <template v-if="hasMoreSkuPages">，还有下一页</template>
+            </span>
           </div>
           <el-table
-            :data="selectedSkus"
+            :data="pagedSkus"
             height="360"
             row-key="id"
             stripe
@@ -709,6 +849,16 @@ onBeforeUnmount(clearPreviewUrl)
               </template>
             </el-table-column>
           </el-table>
+          <el-pagination
+            v-if="skuTotal > skuPageSize"
+            v-model:current-page="skuPage"
+            :page-size="skuPageSize"
+            :total="skuTotal"
+            layout="total, prev, pager, next"
+            small
+            class="sku-pagination"
+            @current-change="onSkuPageChange"
+          />
         </div>
 
         <div v-loading="previewLoading" class="sku-inline-preview">
@@ -719,7 +869,7 @@ onBeforeUnmount(clearPreviewUrl)
           <el-empty v-else description="未选择 SKU" />
         </div>
       </div>
-      <el-empty v-else description="选中商品后上传 ZIP，会在这里生成 SKU 列表。" />
+      <el-empty v-else description="先选择左侧商品，再上传或维护这个商品的 SKU。" />
     </div>
   </section>
 </template>
@@ -769,5 +919,15 @@ onBeforeUnmount(clearPreviewUrl)
 
 .zip-upload-input {
   display: none;
+}
+
+.product-search-input {
+  max-width: 280px;
+}
+
+.product-pagination,
+.sku-pagination {
+  margin-top: 10px;
+  justify-content: flex-end;
 }
 </style>

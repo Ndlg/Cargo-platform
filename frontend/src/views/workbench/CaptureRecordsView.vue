@@ -16,11 +16,6 @@ import {
 } from '../../services/api'
 import { useSessionStore } from '../../stores/session'
 
-type StandardDetailRecord = ApiRecord & {
-  id: number
-  field_values?: Record<string, unknown>
-}
-
 type RawRecordGroup = {
   task: CaptureTaskRecord
   records: ApiRecord[]
@@ -32,16 +27,19 @@ const collectors = ref<CollectorRecord[]>([])
 const activeTask = ref<CaptureTaskRecord | null>(null)
 const captureTasks = ref<CaptureTaskRecord[]>([])
 const rawRecords = ref<ApiRecord[]>([])
-const standardDetails = ref<StandardDetailRecord[]>([])
 const loading = ref(false)
 const actionLoading = ref(false)
 const downloadingKey = ref('')
 const error = ref('')
 
 const captureStatus = computed(() => (activeTask.value ? '采集中' : '待开始'))
+const enrichedActiveTask = computed(() => {
+  if (!activeTask.value) return null
+  return captureTasks.value.find((task) => task.id === activeTask.value?.id) ?? activeTask.value
+})
 const activeTaskWaybillCount = computed(() => {
-  if (!activeTask.value) return 0
-  return waybillCountForTask(activeTask.value.id)
+  if (!enrichedActiveTask.value) return 0
+  return waybillCountForTask(enrichedActiveTask.value)
 })
 const onlineCount = computed(() => collectors.value.filter((collector) => collector.online_status === 'online').length)
 const listeningCount = computed(
@@ -77,26 +75,40 @@ function formatDateTime(value: unknown, fallback = '-'): string {
   })
 }
 
-function detailsForTask(taskId: number): StandardDetailRecord[] {
-  return standardDetails.value.filter((detail) => Number(detail.field_values?.capture_task_id) === taskId)
-}
-
 function rawRecordsForTask(taskId: number): ApiRecord[] {
   return rawRecords.value
     .filter((record) => Number(record.task_id) === taskId)
     .sort((a, b) => Number(a.id ?? 0) - Number(b.id ?? 0))
 }
 
-function detailWaybillKey(detail: StandardDetailRecord): string {
-  const values = detail.field_values ?? {}
-  const candidates = [values.raw_document_id, values.logistics_no, values.order_no]
-  const key = candidates.find((value) => value !== null && value !== undefined && value !== '')
-  return key ? String(key) : `detail-${detail.id}`
+function parsedRawPayload(record: ApiRecord): Record<string, unknown> | null {
+  const raw = record.raw_payload
+  if (typeof raw !== 'string') return raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : null
+  try {
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null
+  } catch {
+    return null
+  }
 }
 
-function waybillCountForTask(taskId: number): number {
-  const keys = new Set(detailsForTask(taskId).map(detailWaybillKey))
-  return keys.size
+function waybillCountForRawRecord(record: ApiRecord): number {
+  const payload = parsedRawPayload(record)
+  const task = payload?.task
+  const documents = task && typeof task === 'object' ? (task as Record<string, unknown>).documents : null
+  if (Array.isArray(documents) && documents.length > 0) return documents.length
+  return record.raw_payload || record.source_columns ? 1 : 0
+}
+
+function numericCount(value: unknown): number | null {
+  const count = Number(value)
+  return Number.isFinite(count) && count >= 0 ? count : null
+}
+
+function waybillCountForTask(task: CaptureTaskRecord): number {
+  const backendCount = numericCount(task.waybill_count ?? task.parent_waybill_count)
+  if (backendCount !== null) return backendCount
+  return rawRecordsForTask(task.id).reduce((total, record) => total + waybillCountForRawRecord(record), 0)
 }
 
 function statusType(status: string) {
@@ -121,6 +133,16 @@ function formatRawPayload(record: ApiRecord): string {
     return JSON.stringify(JSON.parse(raw), null, 2)
   } catch {
     return raw
+  }
+}
+
+function formatJsonValue(value: unknown): string {
+  if (value === null || value === undefined || value === '') return '-'
+  if (typeof value === 'string') return value
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return String(value)
   }
 }
 
@@ -175,17 +197,22 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    const [status, tasks, records, details] = await Promise.all([
+    const [status, tasks] = await Promise.all([
       getCollectorControlStatus(),
       getRecords('/capture-tasks?limit=2000'),
-      getRecords('/raw-capture-records?limit=2000'),
-      getRecords('/standard-details?limit=2000'),
     ])
     collectors.value = status.collectors
     activeTask.value = status.active_task
     captureTasks.value = tasks as CaptureTaskRecord[]
-    rawRecords.value = records
-    standardDetails.value = details as StandardDetailRecord[]
+    const taskIds = [...captureTasks.value]
+      .sort((a, b) => b.id - a.id)
+      .slice(0, 6)
+      .map((task) => Number(task.id))
+      .filter((taskId) => Number.isFinite(taskId) && taskId > 0)
+    const recordGroups = await Promise.all(
+      taskIds.map((taskId) => getRecords(`/raw-capture-records?task_id=${taskId}&limit=500`)),
+    )
+    rawRecords.value = recordGroups.flat()
   } catch (err) {
     error.value = err instanceof Error ? err.message : '采集信息加载失败'
   } finally {
@@ -219,7 +246,7 @@ async function stopCurrentCapture() {
   }
 }
 
-async function downloadTaskDocument(task: CaptureTaskRecord, kind: 'raw' | 'standard') {
+async function downloadTaskDocument(task: CaptureTaskRecord, kind: 'raw') {
   downloadingKey.value = `${task.id}-${kind}`
   error.value = ''
   try {
@@ -240,10 +267,10 @@ onMounted(load)
   <section class="page-header">
     <div>
       <h1>采集记录</h1>
-      <p>业务页面统一控制当前工作空间下的采集器，本轮打印结束后原始内容进入系统处理。</p>
+      <p>业务页面统一控制当前工作空间下的采集器，本轮面单采集结束后进入解析和整理。</p>
     </div>
     <el-button :icon="Right" type="primary" @click="router.push('/waybill-batches')">
-      进入面单批次
+      进入面单解析
     </el-button>
   </section>
 
@@ -253,7 +280,7 @@ onMounted(load)
     <div class="stat-tile">
       <span>本轮状态</span>
       <strong>{{ captureStatus }}</strong>
-      <small>{{ activeTask ? `任务 ${activeTask.id}` : '当前没有进行中的采集任务' }}</small>
+      <small>{{ activeTask ? '当前正在接收面单' : '当前没有进行中的采集任务' }}</small>
     </div>
     <div class="stat-tile">
       <span>在线采集器</span>
@@ -263,12 +290,12 @@ onMounted(load)
     <div class="stat-tile">
       <span>监听中采集器</span>
       <strong>{{ listeningCount }}</strong>
-      <small>启动监听后才会采集打印任务</small>
+      <small>启动监听后才会采集面单任务</small>
     </div>
     <div class="stat-tile">
-      <span>本轮面单</span>
+      <span>本轮面单数量</span>
       <strong>{{ activeTaskWaybillCount }}</strong>
-      <small>已整理成可处理面单的数量</small>
+      <small>已读取到的面单张数</small>
     </div>
     <div class="stat-tile">
       <span>累计监听批次</span>
@@ -313,7 +340,7 @@ onMounted(load)
     <div v-if="activeTask" class="capture-summary">
       <span>任务名：{{ activeTask.name }}</span>
       <span>开始：{{ formatDateTime(activeTask.started_at) }}</span>
-      <span>面单：{{ activeTaskWaybillCount }} 单</span>
+      <span>面单数量：{{ activeTaskWaybillCount }} 张</span>
     </div>
   </section>
 
@@ -348,19 +375,18 @@ onMounted(load)
     <div class="work-surface">
       <h2>最近采集任务</h2>
       <el-table :data="latestTasks" height="260" stripe>
-        <el-table-column label="ID" prop="id" width="80" />
-        <el-table-column label="任务名" prop="name" />
+        <el-table-column label="采集批次" prop="name" />
         <el-table-column label="状态" prop="status" width="120">
           <template #default="{ row }">
             <el-tag :type="statusType(row.status)">{{ row.status }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="面单" width="90">
+        <el-table-column label="面单数量" width="100">
           <template #default="{ row }">
-            {{ waybillCountForTask(row.id) }}
+            {{ waybillCountForTask(row) }}
           </template>
         </el-table-column>
-        <el-table-column label="文档" width="210">
+        <el-table-column label="文档" width="120">
           <template #default="{ row }">
             <el-button
               :icon="Download"
@@ -371,15 +397,6 @@ onMounted(load)
             >
               原文
             </el-button>
-            <el-button
-              :icon="Download"
-              :loading="downloadingKey === `${row.id}-standard`"
-              link
-              type="primary"
-              @click="downloadTaskDocument(row, 'standard')"
-            >
-              整理
-            </el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -387,28 +404,51 @@ onMounted(load)
   </section>
 
   <section class="work-surface">
-    <h2><el-icon><Document /></el-icon> 原始采集内容</h2>
+    <h2><el-icon><Document /></el-icon> 最近采集原文</h2>
+    <p class="section-hint">这里只看最近采集批次的面单原文，用于排查采集器是否正常；平时主要看面单数量。</p>
     <el-table v-if="latestRawRecordGroups.length" :data="latestRawRecordGroups" height="430" stripe>
       <el-table-column type="expand">
         <template #default="{ row: group }">
           <div class="raw-detail">
             <div v-for="record in group.records" :key="record.id" class="raw-record-block">
               <div class="detail-line">
-                <span>原始记录 {{ record.id }}</span>
+                <span>采集来源</span>
                 <strong>{{ sourceLabel(record) }}</strong>
               </div>
+              <div class="audit-grid">
+                <div class="detail-line">
+                  <span>文档ID</span>
+                  <strong>{{ textValue(record.document_id) }}</strong>
+                </div>
+                <div class="detail-line">
+                  <span>定位状态</span>
+                  <strong>{{ record.source_index ? '已记录' : '无' }}</strong>
+                </div>
+                <div class="detail-line">
+                  <span>采集时间</span>
+                  <strong>{{ formatDateTime(record.captured_at) }}</strong>
+                </div>
+                <div class="detail-line">
+                  <span>格式</span>
+                  <strong>{{ textValue(record.payload_format) }}</strong>
+                </div>
+                <div class="detail-line audit-wide">
+                  <span>去重键</span>
+                  <strong>{{ textValue(record.dedupe_key) }}</strong>
+                </div>
+              </div>
+              <span class="muted-line">采集器附带信息</span>
+              <pre class="raw-payload compact">{{ formatJsonValue(record.source_columns) }}</pre>
+              <span class="muted-line">采集原文</span>
               <pre class="raw-payload">{{ formatRawPayload(record) }}</pre>
             </div>
           </div>
         </template>
       </el-table-column>
-      <el-table-column label="批次ID" width="90">
-        <template #default="{ row: group }">{{ group.task.id }}</template>
-      </el-table-column>
-      <el-table-column label="采集任务" min-width="220">
+      <el-table-column label="采集批次" min-width="220">
         <template #default="{ row: group }">
           <strong>{{ group.task.name }}</strong>
-          <small class="muted-line">原始打印任务 {{ group.records.length }} 条</small>
+          <small class="muted-line">面单 {{ waybillCountForTask(group.task) }} 张</small>
         </template>
       </el-table-column>
       <el-table-column label="来源组件" min-width="160">
@@ -417,8 +457,8 @@ onMounted(load)
       <el-table-column label="采集器" min-width="180">
         <template #default="{ row: group }">{{ groupCollectors(group) }}</template>
       </el-table-column>
-      <el-table-column label="面单" width="90">
-        <template #default="{ row: group }">{{ waybillCountForTask(group.task.id) }}</template>
+      <el-table-column label="面单数量" width="100">
+        <template #default="{ row: group }">{{ waybillCountForTask(group.task) }}</template>
       </el-table-column>
       <el-table-column label="格式" width="90">
         <template #default="{ row: group }">{{ groupFormats(group) }}</template>
@@ -427,6 +467,6 @@ onMounted(load)
         <template #default="{ row: group }">{{ groupParseStatus(group) }}</template>
       </el-table-column>
     </el-table>
-    <el-empty v-else description="采集器保存原始记录后会在这里显示" />
+    <el-empty v-else description="采集器保存面单原文后会在这里显示" />
   </section>
 </template>

@@ -72,8 +72,16 @@ class Repository:
             if key in columns and key not in locked_fields
         }
 
-    def _workspace_statement(self, workspace_id: int | None, allowed_workspace_ids: set[int]) -> Select[tuple[ModelT]]:
+    def _workspace_statement(
+        self,
+        workspace_id: int | None,
+        allowed_workspace_ids: set[int],
+        *,
+        include_archived: bool = False,
+    ) -> Select[tuple[ModelT]]:
         statement = select(self.model).where(self.model.is_deleted.is_(False))
+        if not include_archived and hasattr(self.model, "archived_at"):
+            statement = statement.where(self.model.archived_at.is_(None))
         if self.is_workspace_scoped:
             if workspace_id is None:
                 statement = statement.where(self.model.workspace_id.in_(allowed_workspace_ids))
@@ -90,8 +98,17 @@ class Repository:
         allowed_workspace_ids: set[int],
         offset: int = 0,
         limit: int = 100,
+        include_archived: bool = False,
+        order_by_id_desc: bool = False,
     ) -> list[dict[str, Any]]:
-        statement = self._workspace_statement(workspace_id, allowed_workspace_ids).offset(offset).limit(limit)
+        statement = self._workspace_statement(
+            workspace_id,
+            allowed_workspace_ids,
+            include_archived=include_archived,
+        )
+        if order_by_id_desc and hasattr(self.model, "id"):
+            statement = statement.order_by(self.model.id.desc())
+        statement = statement.offset(offset).limit(limit)
         return [model_to_dict(item) for item in self.db.scalars(statement).all()]
 
     def get(self, record_id: int, *, allowed_workspace_ids: set[int]) -> dict[str, Any] | None:

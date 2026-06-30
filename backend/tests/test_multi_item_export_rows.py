@@ -48,3 +48,33 @@ def test_standard_detail_export_rows_expands_custom_items() -> None:
     assert export_field_value("quantity", rows[0]) == "1"
     assert export_field_value("custom_spec_text", {"custom_sales_attr1_text": "默认"}) == "默认"
     assert export_field_value("custom_size_text", {"custom_sales_attr2_text": "42"}) == "42"
+
+
+def test_standard_detail_export_rows_does_not_copy_total_quantity_to_items() -> None:
+    detail = SimpleNamespace(
+        field_values={
+            "raw_record_id": 119,
+            "raw_document_id": "douyin-119",
+            "quantity": 3,
+            "custom_items": [
+                {
+                    "product_text": "鞋A",
+                    "sales_attr1_text": "黑灰",
+                    "sales_attr2_text": "42",
+                    "quantity_text": "",
+                },
+                {
+                    "product_text": "鞋B",
+                    "sales_attr1_text": "黑紫",
+                    "sales_attr2_text": "43",
+                    "quantity_text": "",
+                },
+            ],
+        }
+    )
+
+    rows = standard_detail_export_rows(detail)
+
+    assert len(rows) == 2
+    assert [row["quantity"] for row in rows] == ["", ""]
+    assert [row["custom_quantity_text"] for row in rows] == ["", ""]

@@ -51,6 +51,46 @@ def test_template_segment_mapping_uses_user_selected_raw_text() -> None:
     assert result["custom_quantity_text"] == "1"
 
 
+def test_template_segment_mapping_does_not_reuse_sample_text_for_new_waybill() -> None:
+    text = "5.0范52，,5.0灰绿，42*1"
+    config = {
+        "field_mappings": {
+            "custom_product_text": _segment_mapping(0, "product_text", "4.0 秒9"),
+            "custom_sales_attr1_text": _segment_mapping(0, "sales_attr1_text", "4.0二代黑灰"),
+            "custom_sales_attr2_text": _segment_mapping(0, "sales_attr2_text", "41"),
+            "custom_quantity_text": _segment_mapping(0, "quantity_text", "1"),
+        }
+    }
+
+    result = parse_woda_custom_structure(text, config)
+
+    assert result["woda_structure_kind"] == "template_mapped"
+    assert result["custom_product_text"] == "5.0范52"
+    assert result["custom_sales_attr1_text"] == "5.0灰绿"
+    assert result["custom_sales_attr2_text"] == "42"
+    assert result["custom_quantity_text"] == "1"
+
+
+def test_template_segment_mapping_does_not_freeze_sample_values() -> None:
+    text = "5.0 秒39 2，,5.0二代米色，38*1"
+    config = {
+        "field_mappings": {
+            "custom_product_text": _segment_mapping(0, "product_text", "4.0 秒9"),
+            "custom_sales_attr1_text": _segment_mapping(0, "sales_attr1_text", "4.0二代黑灰"),
+            "custom_sales_attr2_text": _segment_mapping(0, "sales_attr2_text", "41"),
+            "custom_quantity_text": _segment_mapping(0, "quantity_text", "1"),
+        }
+    }
+
+    result = parse_woda_custom_structure(text, config)
+
+    assert result["woda_structure_kind"] == "template_mapped"
+    assert result["custom_product_text"] == "5.0 秒39 2"
+    assert result["custom_sales_attr1_text"] == "5.0二代米色"
+    assert result["custom_sales_attr2_text"] == "38"
+    assert result["custom_quantity_text"] == "1"
+
+
 def test_template_line_mapping_overrides_reverse_auto_structure() -> None:
     text = "低帮黑色，42\n2026登山鞋越野低帮LOW复古户外休闲鞋机能男鞋女鞋防水耐磨ACG*1"
     config = {

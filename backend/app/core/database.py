@@ -54,20 +54,13 @@ def _run_sqlite_compat_migrations() -> None:
         "raw_capture_records",
         "standard_detail_batches",
         "standard_details",
-        "field_definitions",
-        "field_role_configs",
-        "key_field_sets",
-        "match_rules",
-        "print_template_configs",
+        "export_header_definitions",
+        "product_matching_rules",
+        "recognition_rule_packs",
         "products",
         "product_skus",
         "stalls",
         "image_assets",
-        "report_batches",
-        "report_lines",
-        "exception_records",
-        "export_records",
-        "operation_logs",
     ]
 
     with engine.begin() as connection:
@@ -105,6 +98,10 @@ def _run_sqlite_compat_migrations() -> None:
                 connection.exec_driver_sql("ALTER TABLE capture_tasks ADD COLUMN started_at VARCHAR(64)")
             if "ended_at" not in table_columns["capture_tasks"]:
                 connection.exec_driver_sql("ALTER TABLE capture_tasks ADD COLUMN ended_at VARCHAR(64)")
+            if "archived_at" not in table_columns["capture_tasks"]:
+                connection.exec_driver_sql("ALTER TABLE capture_tasks ADD COLUMN archived_at VARCHAR(64)")
+            if "archived_by" not in table_columns["capture_tasks"]:
+                connection.exec_driver_sql("ALTER TABLE capture_tasks ADD COLUMN archived_by INTEGER")
 
         if "products" in table_columns and "stall_id" not in table_columns["products"]:
             connection.exec_driver_sql("ALTER TABLE products ADD COLUMN stall_id INTEGER")
@@ -126,6 +123,16 @@ def _run_sqlite_compat_migrations() -> None:
                 )
             if "captured_at" not in table_columns["raw_capture_records"]:
                 connection.exec_driver_sql("ALTER TABLE raw_capture_records ADD COLUMN captured_at VARCHAR(64)")
+            if "archived_at" not in table_columns["raw_capture_records"]:
+                connection.exec_driver_sql("ALTER TABLE raw_capture_records ADD COLUMN archived_at VARCHAR(64)")
+            if "archived_by" not in table_columns["raw_capture_records"]:
+                connection.exec_driver_sql("ALTER TABLE raw_capture_records ADD COLUMN archived_by INTEGER")
+
+        if "standard_details" in table_columns:
+            if "archived_at" not in table_columns["standard_details"]:
+                connection.exec_driver_sql("ALTER TABLE standard_details ADD COLUMN archived_at VARCHAR(64)")
+            if "archived_by" not in table_columns["standard_details"]:
+                connection.exec_driver_sql("ALTER TABLE standard_details ADD COLUMN archived_by INTEGER")
 
         for table_name in workspace_scoped_tables:
             if table_name not in table_names:

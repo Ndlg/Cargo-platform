@@ -8,6 +8,7 @@ import {
   downloadCollectorClientZip,
   getCollectorControlStatus,
   registerCollector,
+  type CollectorClientPackageStatus,
   type CollectorRecord,
 } from '../../services/api'
 import { useSessionStore } from '../../stores/session'
@@ -18,7 +19,7 @@ type AdapterRow = {
   status: string
   dbPath: string
   taskCount: string
-  maxRowid: string
+  localProgress: string
   error: string
 }
 
@@ -32,6 +33,7 @@ const tokenDialogVisible = ref(false)
 const generatedToken = ref('')
 const generatedCollector = ref<CollectorRecord | null>(null)
 const error = ref('')
+const collectorClient = ref<CollectorClientPackageStatus | null>(null)
 
 const onlineCount = computed(() => collectors.value.filter((item) => item.online_status === 'online').length)
 const listeningCount = computed(
@@ -49,8 +51,9 @@ const collectorLaunchBaseUrl = computed(() => {
 })
 const collectorLaunchCommand = computed(() => {
   if (!generatedToken.value) return ''
-  return `Cargo Platform 采集器.exe --base-url "${collectorLaunchBaseUrl.value}" --token "${generatedToken.value}" --loop`
+  return `"Cargo Platform 采集器.exe" --base-url "${collectorLaunchBaseUrl.value}" --token "${generatedToken.value}" --collector-name "%COMPUTERNAME%" --loop`
 })
+const collectorClientReady = computed(() => collectorClient.value?.release_available === true)
 
 function textValue(value: unknown, fallback = '-'): string {
   if (value === null || value === undefined || value === '') return fallback
@@ -81,7 +84,7 @@ function adapterRows(collector: CollectorRecord): AdapterRow[] {
     status: textValue(value.status, 'unknown'),
     dbPath: textValue(value.db_path),
     taskCount: textValue(value.task_count),
-    maxRowid: textValue(value.max_rowid),
+    localProgress: value.max_rowid ? '已记录' : '无',
     error: textValue(value.error, ''),
   }))
 }
@@ -116,6 +119,7 @@ async function load() {
   try {
     const status = await getCollectorControlStatus()
     collectors.value = status.collectors
+    collectorClient.value = status.collector_client ?? null
   } catch (err) {
     error.value = err instanceof Error ? err.message : '采集器连接加载失败'
   } finally {
@@ -148,6 +152,10 @@ async function removeCollector(row: CollectorRecord) {
 }
 
 async function downloadCollectorClient() {
+  if (!collectorClientReady.value) {
+    error.value = collectorClient.value?.message || '采集器发布包尚未就绪'
+    return
+  }
   downloadingClient.value = true
   error.value = ''
   try {
@@ -165,7 +173,7 @@ async function generateCollectorToken() {
   error.value = ''
   try {
     const result = await registerCollector({
-      collector_name: 'Cargo Platform 采集器',
+      collector_name: '',
       client_version: 'single-exe-token-collector-20260614',
     })
     generatedToken.value = result.collector_token
@@ -200,7 +208,13 @@ onMounted(load)
       <el-button :icon="Key" :loading="registeringCollector" type="primary" @click="generateCollectorToken">
         生成 token
       </el-button>
-      <el-button :icon="Download" :loading="downloadingClient" type="success" @click="downloadCollectorClient">
+      <el-button
+        :disabled="!collectorClientReady"
+        :icon="Download"
+        :loading="downloadingClient"
+        type="success"
+        @click="downloadCollectorClient"
+      >
         下载采集器
       </el-button>
       <el-button :icon="Refresh" :loading="loading" type="primary" plain @click="load">
@@ -233,11 +247,18 @@ onMounted(load)
       <small>状态为 ready 的本机组件</small>
     </div>
     <div class="stat-tile">
-      <span>绑定方式</span>
-      <strong>Token</strong>
-      <small>后台生成后分配给业务机</small>
+      <span>采集器发布包</span>
+      <strong>{{ collectorClientReady ? '就绪' : '缺失' }}</strong>
+      <small>{{ collectorClient?.package_version || '等待状态加载' }}</small>
     </div>
   </section>
+
+  <el-alert
+    v-if="collectorClient && !collectorClientReady"
+    :closable="false"
+    :title="collectorClient.message"
+    type="warning"
+  />
 
   <section class="workflow-grid">
     <div class="work-surface">
@@ -272,8 +293,8 @@ onMounted(load)
                   </div>
                   <div class="adapter-metrics">
                     <el-tag :type="tagType(adapter.status)">{{ adapter.status }}</el-tag>
-                    <span>task {{ adapter.taskCount }}</span>
-                    <span>rowid {{ adapter.maxRowid }}</span>
+                    <span>组件任务 {{ adapter.taskCount }}</span>
+                    <span>本地进度 {{ adapter.localProgress }}</span>
                   </div>
                 </div>
                 <el-empty v-if="!adapterRows(row).length" description="采集器尚未上报本机打印组件状态" />
@@ -327,6 +348,9 @@ onMounted(load)
         <el-tag type="info">单 exe</el-tag>
         <el-tag type="info">token 参数</el-tag>
         <el-tag type="info">无黑框后台运行</el-tag>
+        <el-tag :type="collectorClientReady ? 'success' : 'warning'">
+          {{ collectorClientReady ? '发布包就绪' : '发布包缺失' }}
+        </el-tag>
       </div>
       <p class="muted-text">
         先生成 token，再下载采集器；下载包只包含 Cargo Platform 采集器.exe 和 参数说明.txt。
@@ -344,11 +368,11 @@ onMounted(load)
     <div class="token-dialog-body">
       <div class="detail-line">
         <span>后台名称</span>
-        <strong>{{ generatedCollector?.collector_name || 'Cargo Platform 采集器' }}</strong>
+        <strong>{{ generatedCollector?.collector_name || '启动后自动使用机器名' }}</strong>
       </div>
       <div class="detail-line">
         <span>设备标识</span>
-        <strong>启动后自动使用业务机机器名</strong>
+        <strong>命令会把 %COMPUTERNAME% 作为业务机名称上传</strong>
       </div>
       <el-input :model-value="generatedToken" readonly type="textarea" :rows="3" />
       <el-input :model-value="collectorLaunchCommand" readonly type="textarea" :rows="3" />

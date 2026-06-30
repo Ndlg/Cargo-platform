@@ -4,7 +4,7 @@ import AppShell from './AppShell.vue'
 const clientNavItems = [
   { label: '业务首页', path: '/' },
   { label: '采集记录', path: '/capture-records' },
-  { label: '面单批次', path: '/waybill-batches' },
+  { label: '面单解析', path: '/waybill-batches' },
   { label: '异常处理', path: '/exceptions' },
   { label: '导出中心', path: '/exports' },
 ]

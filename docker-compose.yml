@@ -1,4 +1,4 @@
-﻿services:
+services:
   backend:
     build:
       context: .
@@ -16,12 +16,23 @@
       SECRET_KEY: docker-local-dev-secret-change-before-production
       ACCESS_TOKEN_EXPIRE_MINUTES: 480
       AUTO_CREATE_TABLES: "true"
+      WAYBILL_PARSER_URL: http://waybill-parser:8010
     ports:
       - "127.0.0.1:8000:8000"
     volumes:
       - cargo-platform-data:/data
     depends_on:
       - redis
+      - waybill-parser
+    restart: unless-stopped
+
+  waybill-parser:
+    build:
+      context: .
+      dockerfile: services/waybill-parser/Dockerfile
+    container_name: cargo-platform-waybill-parser
+    ports:
+      - "127.0.0.1:8010:8010"
     restart: unless-stopped
 
   redis:

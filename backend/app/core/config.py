@@ -26,6 +26,7 @@ class Settings(BaseModel):
     secret_key: str = "change-me-in-production"
     access_token_expire_minutes: int = 480
     auto_create_tables: bool = False
+    waybill_parser_url: str = ""
 
 
 def _split_csv(value: str) -> list[str]:
@@ -47,4 +48,5 @@ def get_settings() -> Settings:
         secret_key=os.getenv("SECRET_KEY", Settings.model_fields["secret_key"].default),
         access_token_expire_minutes=int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "480")),
         auto_create_tables=os.getenv("AUTO_CREATE_TABLES", "false").lower() in {"1", "true", "yes"},
+        waybill_parser_url=os.getenv("WAYBILL_PARSER_URL", "").strip().rstrip("/"),
     )

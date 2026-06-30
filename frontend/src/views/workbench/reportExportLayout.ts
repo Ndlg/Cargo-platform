@@ -1,6 +1,14 @@
 ﻿import type { RecognitionPreviewRow } from '../../services/api'
 
-export type ReportFieldKey = 'product_name' | 'stall_name' | 'sales_attr1' | 'sku_image' | 'sales_attr2' | 'quantity'
+export type ReportFieldKey =
+  | 'product_name'
+  | 'stall_name'
+  | 'sales_attr1'
+  | 'sku_image'
+  | 'sales_attr2'
+  | 'quantity'
+  | 'remark'
+  | 'image_match_text'
 export type ReportOutputMode = 'merged_sheet' | 'stall_sheet' | 'stall_workbooks'
 
 export type ReportLayoutColumn = {
@@ -17,6 +25,8 @@ export type ReportLayout = {
   rowHeight: number
   imageWidth: number
   imageHeight: number
+  imageOffsetX: number
+  imageOffsetY: number
   stackSalesAttr1: boolean
   stackSalesAttr2: boolean
   outputMode: ReportOutputMode
@@ -30,6 +40,8 @@ export type ReportPreviewRow = {
   sales_attr2_text: string
   image_label: string
   quantity: number
+  remark_text: string
+  image_match_text: string
   sku_id?: number | null
   sku_image_asset_id?: number | null
 }
@@ -51,6 +63,7 @@ export type SavedReportLayout = {
 
 const STORAGE_KEY_PREFIX = 'cargo-platform-report-layout-v1'
 const STYLE_STORAGE_KEY_PREFIX = 'cargo-platform-report-layout-styles-v1'
+export const REPORT_COLUMN_WIDTH_PIXEL_RATIO = 9
 
 export const REPORT_FIELD_DEFINITIONS: Array<{
   key: ReportFieldKey
@@ -58,16 +71,40 @@ export const REPORT_FIELD_DEFINITIONS: Array<{
   description: string
   defaultWidth: number
 }> = [
-  { key: 'product_name', label: '商品名称', description: '识别出的商品大类/主类', defaultWidth: 16 },
+  { key: 'product_name', label: '商品', description: '商品匹配输出的商品', defaultWidth: 16 },
   { key: 'stall_name', label: '档口', description: 'SKU 档口优先，未设置时使用商品默认档口', defaultWidth: 14 },
   { key: 'sales_attr1', label: '销售属性1', description: '规格、颜色、款式等第一销售属性', defaultWidth: 24 },
-  { key: 'sku_image', label: 'SKU图片', description: 'SKU 绑定的报货图', defaultWidth: 18 },
-  { key: 'sales_attr2', label: '销售属性2', description: '尺码、第二规格等第二销售属性', defaultWidth: 18 },
+  { key: 'sku_image', label: '图片', description: 'SKU 绑定的报货图', defaultWidth: 18 },
+  { key: 'sales_attr2', label: '销售属性2', description: '第二销售属性或补充 SKU 字段', defaultWidth: 18 },
   { key: 'quantity', label: '数量', description: '同 SKU 汇总后的数量', defaultWidth: 12 },
+  { key: 'remark', label: '备注', description: '五字段结果中的备注文本', defaultWidth: 18 },
+  { key: 'image_match_text', label: '图片匹配文本', description: '商品匹配输出的图片追溯文本', defaultWidth: 42 },
 ]
 
-const availableColumns: ReportFieldKey[] = ['product_name', 'stall_name', 'sales_attr1', 'sku_image', 'sales_attr2', 'quantity']
-const standardColumns: ReportFieldKey[] = ['product_name', 'stall_name', 'sales_attr1', 'sku_image', 'sales_attr2', 'quantity']
+const availableColumns: ReportFieldKey[] = [
+  'product_name',
+  'stall_name',
+  'sales_attr1',
+  'sku_image',
+  'sales_attr2',
+  'quantity',
+  'remark',
+  'image_match_text',
+]
+const standardColumns: ReportFieldKey[] = [
+  'product_name',
+  'sales_attr1',
+  'sku_image',
+  'sales_attr2',
+  'quantity',
+  'remark',
+  'image_match_text',
+]
+
+const LEGACY_DEFAULT_LABELS: Partial<Record<ReportFieldKey, string[]>> = {
+  product_name: ['商品名称'],
+  sku_image: ['SKU图片'],
+}
 
 export const REPORT_OUTPUT_MODE_OPTIONS: Array<{
   value: ReportOutputMode
@@ -104,6 +141,8 @@ export function defaultReportLayout(): ReportLayout {
     rowHeight: 86,
     imageWidth: 88,
     imageHeight: 88,
+    imageOffsetX: 0,
+    imageOffsetY: 0,
     stackSalesAttr1: false,
     stackSalesAttr2: false,
     outputMode: 'stall_sheet',
@@ -114,17 +153,25 @@ export const REPORT_LAYOUT_PRESETS: ReportLayoutPreset[] = [
   {
     id: 'standard',
     name: '标准报货',
-    description: '商品、规格、图片、尺码、数量都输出。',
+    description: '商品、规格、图片、销售属性2、数量、备注和图片匹配文本都输出。',
     layout: defaultReportLayout(),
   },
   {
     id: 'image_first',
     name: '图片靠前',
-    description: '先看商品和图片，再看规格尺码。',
+    description: '先看商品和图片，再看规格属性。',
     layout: {
       ...defaultReportLayout(),
       presetId: 'image_first',
-      columns: makeColumns(['product_name', 'stall_name', 'sku_image', 'sales_attr1', 'sales_attr2', 'quantity']),
+      columns: makeColumns([
+        'product_name',
+        'sku_image',
+        'sales_attr1',
+        'sales_attr2',
+        'quantity',
+        'remark',
+        'image_match_text',
+      ]),
     },
   },
   {
@@ -144,6 +191,10 @@ function clampNumber(value: unknown, fallback: number, min: number, max: number)
   const parsed = Number(value)
   if (!Number.isFinite(parsed)) return fallback
   return Math.min(Math.max(Math.round(parsed), min), max)
+}
+
+export function reportColumnWidthFromPixels(value: number): number {
+  return clampNumber(value / REPORT_COLUMN_WIDTH_PIXEL_RATIO, 12, 8, 60)
 }
 
 function storageKey(workspaceId?: number | string | null): string {
@@ -177,9 +228,10 @@ export function normalizeReportLayout(raw: Partial<ReportLayout> | null | undefi
     if (!availableColumns.includes(key) || usedKeys.has(key)) return
     const field = fieldDefinition(key)
     usedKeys.add(key)
+    const rawLabel = String(column.label || field.label).trim() || field.label
     columns.push({
       key,
-      label: String(column.label || field.label).trim() || field.label,
+      label: LEGACY_DEFAULT_LABELS[key]?.includes(rawLabel) ? field.label : rawLabel,
       visible: column.visible !== false,
       width: clampNumber(column.width, field.defaultWidth, 8, 60),
     })
@@ -209,6 +261,8 @@ export function normalizeReportLayout(raw: Partial<ReportLayout> | null | undefi
     rowHeight: clampNumber(raw?.rowHeight, base.rowHeight, 24, 180),
     imageWidth: clampNumber(raw?.imageWidth, base.imageWidth, 32, 220),
     imageHeight: clampNumber(raw?.imageHeight, base.imageHeight, 32, 220),
+    imageOffsetX: clampNumber(raw?.imageOffsetX, base.imageOffsetX, 0, 220),
+    imageOffsetY: clampNumber(raw?.imageOffsetY, base.imageOffsetY, 0, 220),
     stackSalesAttr1: raw?.stackSalesAttr1 === true,
     stackSalesAttr2: raw?.stackSalesAttr2 === true,
     outputMode,
@@ -295,6 +349,8 @@ export function reportLayoutDownloadPayload(layout: ReportLayout) {
     row_height: normalized.rowHeight,
     image_width: normalized.imageWidth,
     image_height: normalized.imageHeight,
+    image_offset_x: normalized.imageOffsetX,
+    image_offset_y: normalized.imageOffsetY,
     stack_sales_attr1: normalized.stackSalesAttr1,
     stack_sales_attr2: normalized.stackSalesAttr2,
     output_mode: normalized.outputMode,
@@ -325,11 +381,10 @@ function reportSpecText(row: RecognitionPreviewRow): string {
   return '-'
 }
 
-function reportSizeTokens(value: unknown): string[] {
+function reportSalesAttr2Values(value: unknown): string[] {
   const text = valueText(value)
   if (!text) return ['-']
-  const parts = text.split(/[\s,，、]+/).filter(Boolean)
-  return parts.length ? parts : [text]
+  return [text]
 }
 
 function naturalSortValue(value: unknown): [number, number | string, string] {
@@ -360,8 +415,20 @@ function sortedValues(values: string[]): string[] {
   return values.filter(Boolean).sort(compareNatural)
 }
 
+function uniqueJoinedValues(values: unknown[], separator = '\n'): string {
+  const seen = new Set<string>()
+  const unique: string[] = []
+  values.forEach((value) => {
+    const text = valueText(value)
+    if (!text || seen.has(text)) return
+    seen.add(text)
+    unique.push(text)
+  })
+  return unique.join(separator)
+}
+
 function expandedSalesAttr2Values(row: RecognitionPreviewRow): string[] {
-  const tokens = reportSizeTokens(row.sales_attr2_text)
+  const tokens = reportSalesAttr2Values(row.sales_attr2_text)
   const quantity = reportQuantity(row.quantity_text)
   if (tokens.length > 1) return tokens
   return Array.from({ length: quantity }, () => tokens[0] || '-')
@@ -383,6 +450,8 @@ export function buildReportRows(
     ReportPreviewRow & {
       salesAttr1Values: string[]
       salesAttr2Values: string[]
+      remarkValues: string[]
+      imageMatchTextValues: string[]
     }
   >()
   rows.forEach((row) => {
@@ -409,10 +478,14 @@ export function buildReportRows(
         sales_attr2_text: '-',
         image_label: '',
         quantity: 0,
+        remark_text: '',
+        image_match_text: '',
         sku_id: row.sku_id,
         sku_image_asset_id: row.sku_image_asset_id,
         salesAttr1Values: [],
         salesAttr2Values: [],
+        remarkValues: [],
+        imageMatchTextValues: [],
       })
     }
 
@@ -420,11 +493,13 @@ export function buildReportRows(
     if (!line) return
     line.salesAttr1Values.push(salesAttr1Text)
     line.salesAttr2Values.push(...expandedSalesAttr2Values(row))
+    line.remarkValues.push(row.remark_text)
+    line.imageMatchTextValues.push(row.image_match_text)
     line.quantity += reportQuantity(row.quantity_text)
   })
 
   return [...grouped.values()].map((line) => {
-    const { salesAttr1Values, salesAttr2Values, ...row } = line
+    const { salesAttr1Values, salesAttr2Values, remarkValues, imageMatchTextValues, ...row } = line
     return {
       ...row,
       sales_attr1_text: normalizedLayout.stackSalesAttr1
@@ -433,6 +508,8 @@ export function buildReportRows(
       sales_attr2_text: normalizedLayout.stackSalesAttr2
         ? sortedUniqueValues(salesAttr2Values).join(' ') || '-'
         : sortedValues(salesAttr2Values).join(' ') || '-',
+      remark_text: uniqueJoinedValues(remarkValues),
+      image_match_text: uniqueJoinedValues(imageMatchTextValues),
     }
   }).sort((left, right) =>
     compareNatural(left.stall_name, right.stall_name)
@@ -448,9 +525,11 @@ export function reportCellText(row: ReportPreviewRow, key: ReportFieldKey): stri
   if (key === 'sales_attr1') return row.sales_attr1_text || '-'
   if (key === 'sales_attr2') return row.sales_attr2_text || '-'
   if (key === 'quantity') return row.quantity
+  if (key === 'remark') return row.remark_text || ''
+  if (key === 'image_match_text') return row.image_match_text || ''
   return ''
 }
 
 export function reportColumnPixelWidth(column: ReportLayoutColumn): number {
-  return Math.max(82, column.width * 9)
+  return Math.max(82, column.width * REPORT_COLUMN_WIDTH_PIXEL_RATIO)
 }

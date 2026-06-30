@@ -9,7 +9,6 @@ import {
   getCaptureTaskRecognitionPreview,
   getRecords,
   saveBlob,
-  type ApiRecord,
   type CaptureTaskRecord,
   type RecognitionPreviewResponse,
   type RecognitionPreviewRow,
@@ -27,14 +26,8 @@ import {
   visibleReportColumns,
 } from './reportExportLayout'
 
-type StandardDetailRecord = ApiRecord & {
-  id: number
-  field_values?: Record<string, unknown> | null
-}
-
 const session = useSessionStore()
 const captureTasks = ref<CaptureTaskRecord[]>([])
-const standardDetails = ref<StandardDetailRecord[]>([])
 const selectedTaskId = ref<number | null>(null)
 const recognitionPreview = ref<RecognitionPreviewResponse | null>(null)
 const reportLayout = ref<ReportLayout>(loadReportLayout(session.currentWorkspaceId))
@@ -51,24 +44,24 @@ const selectedTask = computed(
 )
 const recognitionRows = computed<RecognitionPreviewRow[]>(() => recognitionPreview.value?.rows ?? [])
 const recognitionSummary = computed(() => recognitionPreview.value?.summary ?? {})
+const recognitionWaybillCount = computed(
+  () => recognitionPreview.value?.waybill_count ?? recognitionPreview.value?.detail_count ?? 0,
+)
 const reportRows = computed<ReportPreviewRow[]>(() => buildReportRows(recognitionRows.value, reportLayout.value))
 const visibleColumns = computed(() => visibleReportColumns(reportLayout.value))
 const exceptionCount = computed(
-  () => summaryValue('product_unmatched') + summaryValue('sku_unmatched') + summaryValue('conflict'),
+  () =>
+    summaryValue('product_unmatched')
+    + summaryValue('sku_unmatched')
+    + summaryValue('image_unmatched')
+    + summaryValue('conflict')
+    + summaryValue('pending')
+    + summaryValue('unmatched'),
 )
+const specialCount = computed(() => summaryValue('special'))
 const boundImageCount = computed(
   () => reportRows.value.filter((row) => row.sku_image_asset_id).length,
 )
-
-const detailCounts = computed(() => {
-  const counts = new Map<number, number>()
-  standardDetails.value.forEach((detail) => {
-    const taskId = Number(detail.field_values?.capture_task_id)
-    if (!Number.isInteger(taskId) || taskId <= 0) return
-    counts.set(taskId, (counts.get(taskId) ?? 0) + 1)
-  })
-  return counts
-})
 
 function formatTaskTime(value?: string | null): string {
   if (!value) return '-'
@@ -91,20 +84,13 @@ function taskStatusLabel(status?: string | null): string {
 
 function taskLabel(task: CaptureTaskRecord, index = 0): string {
   const round = index <= 0 ? '最近一轮' : `上一轮 ${index}`
-  const count = detailCounts.value.get(task.id) ?? 0
-  return `${round}：${formatTaskTime(task.started_at)} ${taskStatusLabel(task.status)} / ${count} 张`
+  return `${round}：${formatTaskTime(task.started_at)} ${taskStatusLabel(task.status)} / #${task.id}`
 }
 
 function ensureSelectedTask() {
   const taskIds = new Set(sortedTasks.value.map((task) => task.id))
   if (selectedTaskId.value && taskIds.has(selectedTaskId.value)) return
-  const taskIdsWithDetails = new Set<number>()
-  detailCounts.value.forEach((count, taskId) => {
-    if (count > 0) taskIdsWithDetails.add(taskId)
-  })
-  selectedTaskId.value = sortedTasks.value.find((task) => taskIdsWithDetails.has(task.id))?.id
-    ?? sortedTasks.value[0]?.id
-    ?? null
+  selectedTaskId.value = sortedTasks.value[0]?.id ?? null
 }
 
 function summaryValue(key: string): number {
@@ -191,12 +177,8 @@ async function load() {
   error.value = ''
   reportLayout.value = loadReportLayout(session.currentWorkspaceId)
   try {
-    const [tasks, details] = await Promise.all([
-      getRecords('/capture-tasks?limit=2000'),
-      getRecords('/standard-details?limit=2000'),
-    ])
+    const tasks = await getRecords('/capture-tasks?limit=2000')
     captureTasks.value = tasks as CaptureTaskRecord[]
-    standardDetails.value = details as StandardDetailRecord[]
     ensureSelectedTask()
     await loadRecognitionPreview()
   } catch (err) {
@@ -228,16 +210,19 @@ async function downloadReport() {
 }
 
 function imageCellStyle() {
+  const imageColumn = visibleColumns.value.find((column) => column.key === 'sku_image')
   return {
-    width: `${reportLayout.value.imageWidth}px`,
-    height: `${reportLayout.value.imageHeight}px`,
+    width: `${Math.max(32, imageColumn ? reportColumnPixelWidth(imageColumn) - 24 : reportLayout.value.imageWidth)}px`,
+    height: `${Math.max(32, reportLayout.value.rowHeight - 14)}px`,
   }
 }
 
 function imageElementStyle() {
   return {
-    maxWidth: `${Math.max(reportLayout.value.imageWidth - 8, 24)}px`,
-    maxHeight: `${Math.max(reportLayout.value.imageHeight - 8, 24)}px`,
+    left: `${reportLayout.value.imageOffsetX}px`,
+    top: `${reportLayout.value.imageOffsetY}px`,
+    width: `${reportLayout.value.imageWidth}px`,
+    height: `${reportLayout.value.imageHeight}px`,
   }
 }
 
@@ -272,7 +257,7 @@ onBeforeUnmount(() => revokeSkuImageUrls())
   <section class="page-header">
     <div>
       <h1>导出中心</h1>
-      <p>按监听批次生成报货 Excel，表头、列宽、图片尺寸读取“导出表头”里的版式设置。</p>
+      <p>按监听批次消费商品匹配结果生成报货 Excel，表头、列宽、图片尺寸读取“导出表头”里的版式设置。</p>
     </div>
     <div class="header-actions">
       <el-button :icon="Refresh" :loading="loading" plain @click="load">刷新</el-button>
@@ -321,7 +306,7 @@ onBeforeUnmount(() => revokeSkuImageUrls())
   <section class="stat-grid">
     <div class="stat-tile">
       <span>面单</span>
-      <strong>{{ recognitionPreview?.detail_count ?? 0 }}</strong>
+      <strong>{{ recognitionWaybillCount }}</strong>
       <small>{{ selectedTask ? taskLabel(selectedTask, sortedTasks.indexOf(selectedTask)) : '未选择批次' }}</small>
     </div>
     <div class="stat-tile">
@@ -332,12 +317,17 @@ onBeforeUnmount(() => revokeSkuImageUrls())
     <div class="stat-tile">
       <span>报货行</span>
       <strong>{{ reportRows.length }}</strong>
-      <small>SKU图片 {{ boundImageCount }} 张 / {{ reportLayout.outputMode === 'merged_sheet' ? '合并Sheet' : '按档口输出' }}</small>
+      <small>图片 {{ boundImageCount }} 张 / {{ reportLayout.outputMode === 'merged_sheet' ? '合并Sheet' : '按档口输出' }}</small>
     </div>
     <div class="stat-tile">
       <span>异常</span>
       <strong>{{ exceptionCount }}</strong>
-      <small>商品 / SKU 未命中或冲突</small>
+      <small>待匹配、未命中、图片缺失或冲突</small>
+    </div>
+    <div class="stat-tile">
+      <span>特殊单</span>
+      <strong>{{ specialCount }}</strong>
+      <small>正常跳过商品/SKU/图片匹配</small>
     </div>
   </section>
 
@@ -350,8 +340,14 @@ onBeforeUnmount(() => revokeSkuImageUrls())
     <el-alert
       v-if="exceptionCount"
       :closable="false"
-      :title="`还有 ${exceptionCount} 条商品识别异常，下载的 Excel 会放到“异常明细”表。`"
+      :title="`还有 ${exceptionCount} 条商品匹配待处理或异常，下载的 Excel 会放到“异常面单”表。`"
       type="warning"
+    />
+    <el-alert
+      v-if="specialCount"
+      :closable="false"
+      :title="`另有 ${specialCount} 条特殊单，系统会保留原始文本，不要求补商品或 SKU。`"
+      type="info"
     />
 
     <el-table
@@ -375,12 +371,12 @@ onBeforeUnmount(() => revokeSkuImageUrls())
             <img
               v-if="skuImageUrl(row)"
               :src="skuImageUrl(row)"
-              :alt="row.sales_attr1_text || 'SKU图片'"
+              :alt="row.sales_attr1_text || '图片'"
               :style="imageElementStyle()"
             />
             <el-tag v-else-if="skuImageLoading(row)" type="info">加载中</el-tag>
           </div>
-          <span v-else>{{ previewCellText(row, column.key) }}</span>
+          <span v-else class="report-text-cell">{{ previewCellText(row, column.key) }}</span>
         </template>
       </el-table-column>
     </el-table>
@@ -388,7 +384,13 @@ onBeforeUnmount(() => revokeSkuImageUrls())
     <el-empty
       v-else
       v-loading="previewLoading"
-      description="当前批次还没有已匹配的报货行。"
+      description="当前批次还没有可导出的报货行，请先完成面单解析，并让管理员补齐商品/SKU/图片规则。"
     />
   </section>
 </template>
+
+<style scoped>
+.report-text-cell {
+  white-space: pre-line;
+}
+</style>

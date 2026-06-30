@@ -82,7 +82,7 @@ function logout() {
           <el-radio-button
             v-for="portal in portalOptions"
             :key="portal.value"
-            :label="portal.value"
+            :value="portal.value"
           >
             {{ portal.label }}
           </el-radio-button>

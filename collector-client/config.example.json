@@ -2,7 +2,7 @@
   "base_url": "http://服务器IP:5173",
   "token": "后台生成的采集器token",
   "workspace_id": 1,
-  "collector_name": "Cargo Platform 采集器",
+  "collector_name": "",
   "interval": 3,
   "batch_size": 50,
   "simulate": false,

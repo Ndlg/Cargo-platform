@@ -6,9 +6,10 @@ const clientAdminNavItems = [
   { label: '采集连接', path: '/admin/collector-connections' },
   { label: '档口库', path: '/admin/stalls' },
   { label: '商品/SKU', path: '/admin/products' },
-  { label: '打印模板规则', path: '/admin/print-template-rules' },
-  { label: '商品识别', path: '/admin/matching' },
+  { label: '商品匹配', path: '/admin/product-matching' },
+  { label: '识别规则包', path: '/admin/recognition-rule-packs' },
   { label: '导出表头', path: '/admin/export-headers' },
+  { label: '系统设置', path: '/admin/system-settings' },
 ]
 </script>
 
@@ -16,6 +17,6 @@ const clientAdminNavItems = [
   <AppShell
     :nav-items="clientAdminNavItems"
     section-title="管理页面"
-    section-description="公司管理员维护本工作空间的采集连接、档口库、商品资料、打印模板规则、商品识别规则和导出表头"
+    section-description="公司管理员维护本工作空间的采集连接、档口库、商品资料、导出表头和系统设置"
   />
 </template>

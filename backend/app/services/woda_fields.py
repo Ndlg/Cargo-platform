@@ -21,24 +21,6 @@ WODA_EXTRACTOR_FIELD_CODES = {
     "remark_text": "custom_item_remark_text",
 }
 
-WODA_SKU_SOURCE_FIELD_SCORES = {
-    "custom_sales_attr1_text": 300,
-    "custom_spec_text": 300,
-    "spec_text": 260,
-    "custom_sales_attr2_text": 200,
-    "custom_size_text": 200,
-    "product_short_text": 240,
-    "product_full_text": 220,
-    "custom_item_remark_text": 100,
-    "buyer_remark": 120,
-    "seller_remark": 110,
-}
-
-WODA_SKU_FALLBACK_FIELD_CODES = {"custom_item_remark_text", "buyer_remark", "seller_remark"}
-WODA_PRODUCT_TEXT_FIELD_CODES = {"custom_product_text", "product_short_text", "product_full_text"}
-DEFAULT_WODA_SKU_AUTO_FIELDS = ("custom_sales_attr1_text", "custom_sales_attr2_text")
-
-
 def _text(value: Any) -> str:
     if value is None:
         return ""
@@ -49,7 +31,27 @@ def woda_mapping_source_field(mapping: Any, fallback: str) -> str:
     if not isinstance(mapping, dict):
         return fallback
     source_field = _text(mapping.get("source_field_key"))
+    if source_field.startswith("token_") or source_field.startswith("candidate_"):
+        return source_field
     if source_field in WODA_CUSTOM_FIELD_ITEM_KEYS:
         return source_field
     extractor = _text(mapping.get("extractor"))
     return WODA_EXTRACTOR_FIELD_CODES.get(extractor, fallback)
+
+
+def woda_mapping_source_fields(mapping: Any, fallback: str) -> list[str]:
+    if not isinstance(mapping, dict):
+        return [fallback]
+    selectors = mapping.get("token_selectors")
+    source_fields: list[str] = []
+    if isinstance(selectors, list):
+        for selector in selectors:
+            if not isinstance(selector, dict):
+                continue
+            source_field = _text(selector.get("source_field_key"))
+            if source_field.startswith("token_") or source_field.startswith("candidate_") or source_field in WODA_CUSTOM_FIELD_ITEM_KEYS:
+                source_fields.append(source_field)
+    fallback_source = woda_mapping_source_field(mapping, fallback)
+    if fallback_source and fallback_source not in source_fields:
+        source_fields.insert(0, fallback_source)
+    return source_fields

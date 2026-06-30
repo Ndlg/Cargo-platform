@@ -1,35 +1,31 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
-import { Download, Refresh, Right } from '@element-plus/icons-vue'
+import { useRoute, useRouter } from 'vue-router'
+import { Download, Refresh, Right, Warning } from '@element-plus/icons-vue'
 
 import {
   downloadCaptureTaskDocument,
+  getOrderRowDrafts,
   getRecords,
   saveBlob,
-  type ApiRecord,
   type CaptureTaskRecord,
-  type CollectorRecord,
+  type OrderRowDraftRecord,
+  type OrderRowDraftsResponse,
 } from '../../services/api'
 import { useSessionStore } from '../../stores/session'
 
-type StandardDetailRecord = ApiRecord & {
-  id: number
-  waybill_mode?: string | null
-  field_values?: Record<string, unknown>
-  image_match_status?: string
-  stall_match_status?: string
-}
+type RowStatusFilter = 'all' | 'draft' | 'special' | 'needs_review'
 
 const router = useRouter()
+const route = useRoute()
 const session = useSessionStore()
-const details = ref<StandardDetailRecord[]>([])
+
 const captureTasks = ref<CaptureTaskRecord[]>([])
-const collectors = ref<CollectorRecord[]>([])
-const rawRecords = ref<ApiRecord[]>([])
 const selectedTaskId = ref<number | null>(null)
+const drafts = ref<OrderRowDraftsResponse | null>(null)
 const keyword = ref('')
 const sourceFilter = ref('')
+const statusFilter = ref<RowStatusFilter>('all')
 const currentPage = ref(1)
 const pageSize = ref(50)
 const loading = ref(false)
@@ -37,49 +33,18 @@ const downloadingKey = ref('')
 const error = ref('')
 
 const sortedTasks = computed(() => [...captureTasks.value].sort((a, b) => b.id - a.id))
-const selectedTask = computed(
-  () => sortedTasks.value.find((task) => task.id === selectedTaskId.value) ?? null,
+const selectedTask = computed(() => sortedTasks.value.find((task) => task.id === selectedTaskId.value) ?? null)
+const allRows = computed(() => drafts.value?.rows ?? [])
+const reviewRows = computed(() => allRows.value.filter((row) => row.status === 'needs_review'))
+const rulePackMissing = computed(() => drafts.value?.status === 'rule_pack_missing' || drafts.value?.rule_pack_required === true)
+const activeRulePackName = computed(() => drafts.value?.recognition_rule_pack?.name ?? '')
+const parentCount = computed(() => drafts.value?.summary.parent_waybill_count ?? waybillCountForTask(selectedTask.value))
+const childCount = computed(() => drafts.value?.summary.child_waybill_count ?? 0)
+const draftCount = computed(() => drafts.value?.summary.draft_count ?? 0)
+const reviewCount = computed(() => drafts.value?.summary.needs_review_count ?? reviewRows.value.length)
+const specialCount = computed(
+  () => drafts.value?.summary.special_count ?? allRows.value.filter((row) => row.status === 'special').length,
 )
-const taskDetails = computed(() => {
-  if (!selectedTaskId.value) return []
-  return details.value.filter((detail) => Number(detail.field_values?.capture_task_id) === selectedTaskId.value)
-})
-const goodsDetails = computed(() => taskDetails.value)
-const sourceOptions = computed(() => {
-  const values = new Set(goodsDetails.value.map((detail) => sourceLabel(detail)).filter(Boolean))
-  return [...values]
-})
-const filteredGoodsDetails = computed(() => {
-  const query = keyword.value.trim().toLowerCase()
-  return goodsDetails.value.filter((detail) => {
-    const matchesSource = !sourceFilter.value || sourceLabel(detail) === sourceFilter.value
-    if (!matchesSource) return false
-    if (!query) return true
-    const haystack = [
-      goodsText(detail),
-      sourceLabel(detail),
-      field(detail, 'raw_document_id'),
-      field(detail, 'logistics_no'),
-      field(detail, 'order_no'),
-      field(detail, 'shop_name'),
-    ]
-      .join('\n')
-      .toLowerCase()
-    return haystack.includes(query)
-  })
-})
-const pagedGoodsDetails = computed(() => {
-  const start = (currentPage.value - 1) * pageSize.value
-  return filteredGoodsDetails.value.slice(start, start + pageSize.value)
-})
-const limitedRawRecords = computed(() => {
-  if (!selectedTaskId.value) return []
-  return rawRecords.value.filter((record) => {
-    const status = String(record.status ?? '')
-    return Number(record.task_id) === selectedTaskId.value && status === 'unsupported'
-  })
-})
-const limitedCount = computed(() => limitedRawRecords.value.length)
 const selectedTaskIndex = computed(() =>
   sortedTasks.value.findIndex((task) => task.id === selectedTaskId.value),
 )
@@ -87,112 +52,51 @@ const selectedTaskTitle = computed(() => {
   if (!selectedTask.value) return '暂无采集'
   return taskLabel(selectedTask.value, selectedTaskIndex.value)
 })
-const douyinCount = computed(
-  () => goodsDetails.value.filter((detail) => detail.waybill_mode === 'douyin_cloud_print').length,
-)
-const cainiaoDirectCount = computed(
-  () => goodsDetails.value.filter((detail) => detail.waybill_mode === 'cainiao_direct_shop').length,
-)
-const wodaCount = computed(
-  () => goodsDetails.value.filter((detail) => detail.waybill_mode === 'cainiao_woda_printxml').length,
-)
-
-const fieldLabels: Record<string, string> = {
-  source_platform: '来源平台',
-  logistics_no: '物流单号',
-  order_no: '平台订单号',
-  shop_name: '店铺名',
-  product_short_text: '商品简称',
-  product_full_text: '商品信息',
-  spec_text: '规格文本',
-  quantity: '数量',
-  buyer_remark: '买家备注',
-  seller_remark: '卖家备注',
-  buyer_nick: '买家昵称',
-  print_time: '打印时间',
-  pay_order_time: '付款时间',
-  create_order_time: '下单时间',
-  item_total_price: '商品金额',
-  item_total_count: '原始数量/金额字段',
-  encrypted_waybill: '标准面单已加密',
-  custom_area_kind: '自定义区类型',
-  custom_area_raw_text: '客户自定义区原文',
-  custom_area_lines: '自定义区行文字',
-  print_template_key: '打印模板识别码',
-  print_template_source: '模板识别来源',
-  sender_masked: '发件方脱敏信息',
-  recipient_masked: '收件方脱敏信息',
-  template_urls: '模板地址',
-}
-
-function field(row: StandardDetailRecord, key: string, fallback = '-'): string {
-  const value = row.field_values?.[key]
-  if (value === null || value === undefined || value === '') return fallback
-  if (typeof value === 'object') return JSON.stringify(value)
-  return String(value)
-}
-
-function rawRecordForDetail(row: StandardDetailRecord): ApiRecord | null {
-  const rawRecordId = Number(row.field_values?.raw_record_id)
-  if (!rawRecordId) return null
-  return rawRecords.value.find((record) => Number(record.id) === rawRecordId) ?? null
-}
-
-function collectorNameForRecord(record: ApiRecord | null): string {
-  const collectorId = Number(record?.collector_id)
-  if (!collectorId) return ''
-  return collectors.value.find((collector) => collector.id === collectorId)?.collector_name ?? ''
-}
-
-function sourceOwnerLabel(record: ApiRecord | null): string {
-  if (!record) return ''
-  return collectorNameForRecord(record) || String(record.source_machine ?? '')
-}
-
-function platformLabel(row: StandardDetailRecord): string {
-  const platform = field(row, 'source_platform')
-  if (platform === 'douyin') return '抖店'
-  if (platform === 'woda') return '菜鸟 / 我打'
-  if (platform === 'cainiao_direct_shop') return '菜鸟直打'
-  return platform
-}
-
-function sourceLabel(row: StandardDetailRecord): string {
-  const record = rawRecordForDetail(row)
-  const owner = sourceOwnerLabel(record)
-  return owner ? `${owner} / ${platformLabel(row)}` : platformLabel(row)
-}
-
-function goodsText(row: StandardDetailRecord): string {
-  if (field(row, 'source_platform') === 'woda') {
-    return field(
-      row,
-      'custom_product_text',
-      field(row, 'product_short_text', field(row, 'product_full_text', field(row, 'custom_area_raw_text'))),
-    )
+const sourceOptions = computed(() => {
+  const values = new Set(allRows.value.map((row) => sourceLabel(row)).filter(Boolean))
+  return [...values]
+})
+const sourceCounts = computed(() => {
+  const rows = allRows.value
+  return {
+    total: sourceOptions.value.length,
+    douyin: rows.filter((row) => row.source_component === 'cloud-print-client').length,
+    cainiao: rows.filter((row) => row.source_component === 'cainiao-cnprint').length,
+    other: rows.filter((row) => !['cloud-print-client', 'cainiao-cnprint'].includes(row.source_component)).length,
   }
-  return field(row, 'product_short_text', field(row, 'product_full_text', field(row, 'custom_area_raw_text')))
-}
+})
+const filteredRows = computed(() => {
+  const query = keyword.value.trim().toLowerCase()
+  return allRows.value.filter((row) => {
+    if (statusFilter.value !== 'all' && row.status !== statusFilter.value) return false
+    if (sourceFilter.value && sourceLabel(row) !== sourceFilter.value) return false
+    if (!query) return true
+    return [
+      row.child_label,
+      row.parent_label,
+      row.product,
+      row.sales_attr1,
+      row.sales_attr2,
+      row.quantity,
+      row.remark,
+      row.original_text,
+      row.image_match_text,
+      row.review_reason,
+      sourceLabel(row),
+    ]
+      .join('\n')
+      .toLowerCase()
+      .includes(query)
+  })
+})
+const pagedRows = computed(() => {
+  const start = (currentPage.value - 1) * pageSize.value
+  return filteredRows.value.slice(start, start + pageSize.value)
+})
 
-function valueText(value: unknown): string {
-  if (value === null || value === undefined || value === '') return '-'
-  if (typeof value === 'object') return JSON.stringify(value, null, 2)
-  return String(value)
-}
-
-function numberField(row: StandardDetailRecord, key: string): number | null {
-  const value = Number(row.field_values?.[key])
-  return Number.isInteger(value) && value > 0 ? value : null
-}
-
-function goodsRowLabel(row: StandardDetailRecord, pageIndex: number): string {
-  const sequence = numberField(row, 'document_sequence')
-  const itemIndex = numberField(row, 'custom_item_index')
-  const itemCount = numberField(row, 'custom_item_count') ?? 1
-  if (sequence) {
-    return itemIndex && itemCount > 1 ? `面单 ${sequence}-${itemIndex}` : `面单 ${sequence}`
-  }
-  return `第 ${(currentPage.value - 1) * pageSize.value + pageIndex + 1} 行`
+function taskLabel(task: CaptureTaskRecord, index = 0): string {
+  const round = index <= 0 ? '最近一轮' : `上一轮 ${index}`
+  return `${round}：${formatTime(task.started_at)} ${statusLabel(task.status)}`
 }
 
 function statusLabel(status?: string | null): string {
@@ -214,121 +118,104 @@ function formatTime(value?: string | null): string {
   })
 }
 
-function detailFields(row: StandardDetailRecord) {
-  const values = row.field_values ?? {}
-  return [
-    {
-      key: 'internal_standard_detail_id',
-      label: '内部记录 ID',
-      value: row.id,
-    },
-    ...Object.entries(values)
-      .filter(
-        ([key]) =>
-          ![
-            'raw_record_id',
-            'capture_task_id',
-            'parser_template_code',
-            'raw_document_id',
-            'document_sequence',
-            'source_index',
-            'source_component',
-            'source_platform',
-            'daily_unique_order',
-          ].includes(key),
-      )
-      .map(([key, value]) => ({
-        key,
-        label: fieldLabels[key] ?? key,
-        value,
-      })),
-  ]
+function numericCount(value: unknown): number | null {
+  const count = Number(value)
+  return Number.isFinite(count) && count >= 0 ? count : null
 }
 
-function taskLabel(task: CaptureTaskRecord, index = 0): string {
-  const round = index <= 0 ? '最近一轮' : `上一轮 ${index}`
-  return `${round}：${formatTime(task.started_at)} ${statusLabel(task.status)}`
+function waybillCountForTask(task?: CaptureTaskRecord | null): number {
+  if (!task) return 0
+  return numericCount(task.waybill_count ?? task.parent_waybill_count) ?? 0
 }
 
-function rawRecordReason(record: ApiRecord): string {
-  const parsedPayload = record.parsed_payload
-  if (!parsedPayload || typeof parsedPayload !== 'object') {
-    return record.status === 'unsupported' ? '当前平台解析模板暂不支持该原始内容。' : '-'
-  }
-  const documents = (parsedPayload as Record<string, unknown>).documents
-  if (Array.isArray(documents)) {
-    const reason = documents
-      .map((item) => (item && typeof item === 'object' ? (item as Record<string, unknown>).limited_reason : null))
-      .find((item) => typeof item === 'string' && item)
-    if (typeof reason === 'string') return reason
-  }
-  return record.status === 'unsupported' ? '当前平台解析模板暂不支持该原始内容。' : '-'
+function queryPositiveInt(value: unknown): number | null {
+  const rawValue = Array.isArray(value) ? value[0] : value
+  if (rawValue === undefined || rawValue === null || rawValue === '') return null
+  const parsed = Number(rawValue)
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null
 }
 
-function rawRecordSourceLabel(record: ApiRecord): string {
-  const component = String(record.source_component ?? '')
-  const owner = sourceOwnerLabel(record)
-  const prefix = owner ? `${owner} / ` : ''
-  const parsedPayload = record.parsed_payload
-  if (parsedPayload && typeof parsedPayload === 'object') {
-    const documents = (parsedPayload as Record<string, unknown>).documents
-    if (Array.isArray(documents)) {
-      const platform = documents
-        .map((item) => {
-          if (!item || typeof item !== 'object') return ''
-          const values = (item as Record<string, unknown>).field_values
-          if (!values || typeof values !== 'object') return ''
-          return String((values as Record<string, unknown>).source_platform ?? '')
-        })
-        .find(Boolean)
-      if (platform === 'woda') return `${prefix}菜鸟 / 我打中转`
-      if (platform) return `${prefix}${platform}`
-    }
-  }
-  if (component === 'cainiao-cnprint') return `${prefix}菜鸟组件`
-  if (component === 'cloud-print-client') return `${prefix}抖店 / CloudPrint`
-  return owner || component || '-'
+function sourceLabel(row: OrderRowDraftRecord): string {
+  if (row.source_component === 'cloud-print-client') return '抖店 / CloudPrint'
+  if (row.source_component === 'cainiao-cnprint') return '菜鸟组件'
+  return row.source_component || '未知来源'
 }
 
-function rawRecordVisibleText(record: ApiRecord): string {
-  const parsedPayload = record.parsed_payload
-  if (parsedPayload && typeof parsedPayload === 'object') {
-    const documents = (parsedPayload as Record<string, unknown>).documents
-    if (Array.isArray(documents)) {
-      const texts = documents
-        .map((item) => {
-          if (!item || typeof item !== 'object') return ''
-          const values = (item as Record<string, unknown>).field_values
-          if (!values || typeof values !== 'object') return ''
-          return String((values as Record<string, unknown>).custom_area_raw_text ?? '').trim()
-        })
-        .filter(Boolean)
-      if (texts.length) return texts.join('\n---\n')
-    }
+function rowKey(row: OrderRowDraftRecord): string {
+  return `${row.raw_record_id}-${row.child_label}-${row.child_index}`
+}
+
+function rowStatusLabel(row: OrderRowDraftRecord): string {
+  if (row.status === 'draft') return '已生成订单行'
+  if (row.status === 'special') return '特殊单'
+  if (row.review_reason === 'no_readable_waybill_text') return '没有读到面单文字'
+  if (row.review_reason === 'no_product_text') return '未读到商品'
+  if (row.review_reason.includes('quantity')) return '缺数量'
+  if (row.review_reason.includes('product')) return '缺商品'
+  return '需要复核'
+}
+
+function rowReviewText(row: OrderRowDraftRecord): string {
+  if (row.status === 'draft') return '-'
+  if (row.status === 'special') return '特殊单，不进入商品/SKU/图片匹配。'
+  if (row.review_reason === 'no_readable_waybill_text') return '没有读到可用面单文字，请展开查看来源。'
+  if (row.review_reason === 'no_product_text') return '有面单文字，但没有拆出商品；请展开查看原文。'
+  if (row.review_reason.includes('quantity')) return '没有拆出数量；默认规则无法安全确认。'
+  if (row.review_reason.includes('product')) return '没有拆出商品；需要补解析规则或人工复核。'
+  return row.review_reason || '需要复核。'
+}
+
+function productDisplayText(row: OrderRowDraftRecord): string {
+  return row.product || row.original_text || row.image_match_text || '未读到商品'
+}
+
+function diagnosticsSourceText(row: OrderRowDraftRecord): string {
+  return row.source_index ? '可追溯到原始面单' : '缺少原始面单追溯'
+}
+
+function rowStatusType(row: OrderRowDraftRecord): 'success' | 'warning' | 'danger' | 'info' {
+  if (row.status === 'draft') return 'success'
+  if (row.status === 'special') return 'info'
+  if (row.review_reason === 'no_product_text' || row.review_reason === 'no_readable_waybill_text') return 'danger'
+  return 'warning'
+}
+
+function emptyText(value: string | number | null | undefined): string {
+  if (value === null || value === undefined || value === '') return '空'
+  return String(value)
+}
+
+async function loadTasks() {
+  const records = await getRecords('/capture-tasks?limit=2000')
+  captureTasks.value = records as CaptureTaskRecord[]
+  const taskIds = new Set(captureTasks.value.map((task) => task.id))
+  const routeTaskId = queryPositiveInt(route.query.task_id)
+  if (!selectedTaskId.value && routeTaskId && taskIds.has(routeTaskId)) {
+    selectedTaskId.value = routeTaskId
+    return
   }
-  return '-'
+  if (!selectedTaskId.value || !taskIds.has(selectedTaskId.value)) {
+    selectedTaskId.value = sortedTasks.value[0]?.id ?? null
+  }
+}
+
+async function loadDrafts() {
+  if (!selectedTaskId.value) {
+    drafts.value = null
+    return
+  }
+  drafts.value = await getOrderRowDrafts(selectedTaskId.value, { limit: 5000 })
 }
 
 async function load() {
   loading.value = true
   error.value = ''
   try {
-    const [tasks, collectorRecords, standardDetails, records] = await Promise.all([
-      getRecords('/capture-tasks?limit=2000'),
-      getRecords('/collectors?limit=2000'),
-      getRecords('/standard-details?limit=2000'),
-      getRecords('/raw-capture-records?limit=2000'),
-    ])
-    captureTasks.value = tasks as CaptureTaskRecord[]
-    collectors.value = collectorRecords as CollectorRecord[]
-    details.value = standardDetails as StandardDetailRecord[]
-    rawRecords.value = records
-    const taskIds = new Set(captureTasks.value.map((task) => task.id))
-    if (!selectedTaskId.value || !taskIds.has(selectedTaskId.value)) {
-      selectedTaskId.value = sortedTasks.value[0]?.id ?? null
-    }
+    await loadTasks()
+    await loadDrafts()
   } catch (err) {
-    error.value = err instanceof Error ? err.message : '面单整理结果加载失败'
+    drafts.value = null
+    error.value = err instanceof Error ? err.message : '面单解析结果加载失败'
   } finally {
     loading.value = false
   }
@@ -358,17 +245,24 @@ watch(
     void load()
   },
 )
-watch([selectedTaskId, keyword, sourceFilter, pageSize], () => {
+
+watch(selectedTaskId, () => {
+  currentPage.value = 1
+  void loadDrafts()
+})
+
+watch([keyword, sourceFilter, statusFilter, pageSize], () => {
   currentPage.value = 1
 })
+
 onMounted(load)
 </script>
 
 <template>
   <section class="page-header">
     <div>
-      <h1>面单批次</h1>
-      <p>按采集任务查看本轮读取到的商品信息，后续基于这些文字匹配图片和档口。</p>
+      <h1>面单解析</h1>
+      <p>按采集任务查看面单原文和解析出的订单行；多商品面单应拆成多行，异常进入复核。</p>
     </div>
     <div class="action-row">
       <el-select
@@ -412,6 +306,24 @@ onMounted(load)
   </section>
 
   <el-alert v-if="error" :closable="false" :title="error" type="error" />
+  <el-alert
+    v-else-if="rulePackMissing"
+    :closable="false"
+    title="当前工作空间没有启用识别规则包"
+    type="warning"
+    show-icon
+  >
+    <template #default>
+      系统不会使用内置默认规则识别面单。请先导入并启用当前商品场景的规则包，再刷新面单解析。
+    </template>
+  </el-alert>
+  <el-alert
+    v-else-if="activeRulePackName"
+    :closable="false"
+    :title="`当前识别规则包：${activeRulePackName}`"
+    type="success"
+    show-icon
+  />
 
   <section class="stat-grid">
     <div class="stat-tile">
@@ -420,102 +332,249 @@ onMounted(load)
       <small>{{ selectedTaskTitle }}</small>
     </div>
     <div class="stat-tile">
-      <span>商品信息</span>
-      <strong>{{ filteredGoodsDetails.length }}</strong>
-      <small>本轮 {{ goodsDetails.length }} 条</small>
+      <span>面单数量</span>
+      <strong>{{ parentCount }}</strong>
+      <small>采集到并展开后的业务面单数量</small>
     </div>
     <div class="stat-tile">
-      <span>读取来源</span>
-      <strong>{{ douyinCount + cainiaoDirectCount + wodaCount }}</strong>
-      <small>抖店 {{ douyinCount }} / 菜鸟直打 {{ cainiaoDirectCount }} / 我打 {{ wodaCount }}</small>
+      <span>订单行</span>
+      <strong>{{ childCount }}</strong>
+      <small>可用 {{ draftCount }} / 特殊 {{ specialCount }}</small>
     </div>
     <div class="stat-tile">
-      <span>未识别</span>
-      <strong>{{ limitedCount }}</strong>
-      <small>没有读到可用商品文字</small>
+      <span>面单来源</span>
+      <strong>{{ sourceCounts.total }}</strong>
+      <small>抖店 {{ sourceCounts.douyin }} / 菜鸟 {{ sourceCounts.cainiao }} / 其他 {{ sourceCounts.other }}</small>
+    </div>
+    <div class="stat-tile">
+      <span>需复核</span>
+      <strong>{{ reviewCount }}</strong>
+      <small>缺商品、缺数量或无法读取</small>
     </div>
   </section>
 
   <section class="work-surface">
-    <h2>本轮商品信息</h2>
-    <div class="table-toolbar">
-      <el-input
-        v-model="keyword"
-        clearable
-        placeholder="搜索商品文字、单号、店铺"
-        style="max-width: 360px"
-      />
-      <el-select v-model="sourceFilter" clearable placeholder="全部来源" style="width: 180px">
-        <el-option v-for="source in sourceOptions" :key="source" :label="source" :value="source" />
-      </el-select>
+    <div class="table-heading">
+      <div>
+        <h2>本轮订单行</h2>
+        <p class="muted-line">这里显示的是订单行解析结果，后续商品匹配和导出也会消费这一份数据。</p>
+      </div>
+      <div class="table-toolbar">
+        <el-segmented
+          v-model="statusFilter"
+          :options="[
+            { label: '全部', value: 'all' },
+            { label: '可用', value: 'draft' },
+            { label: '特殊单', value: 'special' },
+            { label: '需复核', value: 'needs_review' },
+          ]"
+        />
+        <el-input
+          v-model="keyword"
+          clearable
+          placeholder="搜索商品、属性、原文"
+          style="width: 280px"
+        />
+        <el-select v-model="sourceFilter" clearable placeholder="全部来源" style="width: 180px">
+          <el-option v-for="source in sourceOptions" :key="source" :label="source" :value="source" />
+        </el-select>
+      </div>
     </div>
-    <el-table v-if="filteredGoodsDetails.length" :data="pagedGoodsDetails" height="520" stripe>
+
+    <el-table
+      v-loading="loading"
+      :data="pagedRows"
+      :row-key="rowKey"
+      height="560"
+      stripe
+    >
       <el-table-column type="expand">
         <template #default="{ row }">
-          <div class="raw-detail">
-            <div v-for="item in detailFields(row)" :key="item.key" class="detail-line">
-              <span>{{ item.label }}</span>
-              <strong>
-                <pre v-if="typeof item.value === 'object'" class="raw-payload">{{ valueText(item.value) }}</pre>
-                <template v-else>{{ valueText(item.value) }}</template>
-              </strong>
+          <div class="order-row-detail">
+            <div>
+              <span>面单原文</span>
+              <pre>{{ row.original_text || '无' }}</pre>
+            </div>
+            <div>
+              <span>图片匹配文本</span>
+              <pre>{{ row.image_match_text || '无' }}</pre>
+            </div>
+            <div>
+              <span>采集来源</span>
+              <strong>{{ sourceLabel(row) }} / {{ diagnosticsSourceText(row) }}</strong>
             </div>
           </div>
         </template>
       </el-table-column>
-      <el-table-column label="面单" width="120">
-        <template #default="{ row, $index }">{{ goodsRowLabel(row, $index) }}</template>
-      </el-table-column>
-      <el-table-column label="商品信息" min-width="560">
+      <el-table-column label="订单行" min-width="170" fixed>
         <template #default="{ row }">
-          <pre class="goods-text">{{ goodsText(row) }}</pre>
+          <strong>{{ row.child_label }}</strong>
+          <div v-if="row.child_count > 1" class="muted-line">多商品 {{ row.child_index }}/{{ row.child_count }}</div>
         </template>
       </el-table-column>
-      <el-table-column label="来源" min-width="130">
-        <template #default="{ row }">{{ sourceLabel(row) }}</template>
+      <el-table-column label="商品" min-width="320" show-overflow-tooltip>
+        <template #default="{ row }">
+          <span :class="{ 'muted-value': !row.product }">{{ productDisplayText(row) }}</span>
+          <div v-if="!row.product && (row.original_text || row.image_match_text)" class="muted-line">未拆出商品</div>
+        </template>
+      </el-table-column>
+      <el-table-column label="销售属性1" min-width="170" show-overflow-tooltip>
+        <template #default="{ row }">{{ emptyText(row.sales_attr1) }}</template>
+      </el-table-column>
+      <el-table-column label="销售属性2" min-width="150" show-overflow-tooltip>
+        <template #default="{ row }">{{ emptyText(row.sales_attr2) }}</template>
       </el-table-column>
       <el-table-column label="数量" width="90">
-        <template #default="{ row }">{{ field(row, 'quantity') }}</template>
+        <template #default="{ row }">{{ emptyText(row.quantity) }}</template>
       </el-table-column>
-      <el-table-column label="物流/订单号" min-width="180">
-        <template #default="{ row }">{{ field(row, 'logistics_no', field(row, 'order_no')) }}</template>
+      <el-table-column label="备注" min-width="160" show-overflow-tooltip>
+        <template #default="{ row }">{{ emptyText(row.remark) }}</template>
       </el-table-column>
-      <el-table-column label="图片" prop="image_match_status" width="100" />
-      <el-table-column label="档口" prop="stall_match_status" width="100" />
+      <el-table-column label="来源" min-width="140">
+        <template #default="{ row }">{{ sourceLabel(row) }}</template>
+      </el-table-column>
+      <el-table-column label="异常原因" min-width="240" show-overflow-tooltip>
+        <template #default="{ row }">{{ rowReviewText(row) }}</template>
+      </el-table-column>
+      <el-table-column label="检查" width="150" fixed="right">
+        <template #default="{ row }">
+          <el-tag :type="rowStatusType(row)" size="small">
+            {{ rowStatusLabel(row) }}
+          </el-tag>
+        </template>
+      </el-table-column>
+      <template #empty>
+        <el-empty description="当前采集任务还没有可展示的订单行" />
+      </template>
     </el-table>
-    <div v-if="filteredGoodsDetails.length" class="pagination-row">
+
+    <div class="pagination-row">
       <el-pagination
         v-model:current-page="currentPage"
         v-model:page-size="pageSize"
         :page-sizes="[20, 50, 100, 200]"
-        :total="filteredGoodsDetails.length"
+        :total="filteredRows.length"
         layout="total, sizes, prev, pager, next"
       />
     </div>
-    <el-empty v-else description="当前筛选下没有商品信息。" />
   </section>
 
-  <section v-if="limitedCount" class="work-surface">
-    <h2>未识别内容</h2>
+  <section v-if="reviewRows.length" class="work-surface">
+    <h2>需复核原文</h2>
     <el-alert
       :closable="false"
-      title="以下内容已经保存为原始采集记录，但当前没有读取到可用于匹配的商品文字。"
-      type="info"
+      title="这些行已经保存为原始采集记录，但还不能安全进入商品匹配。"
+      type="warning"
       show-icon
     />
-    <el-table v-if="limitedRawRecords.length" :data="limitedRawRecords" height="260" stripe>
-      <el-table-column label="序号" type="index" width="90" />
-      <el-table-column label="来源" min-width="150">
-        <template #default="{ row }">{{ rawRecordSourceLabel(row) }}</template>
+    <el-table :data="reviewRows" height="280" stripe>
+      <el-table-column label="订单行" prop="child_label" width="170" />
+      <el-table-column label="原因" width="180">
+        <template #default="{ row }">{{ rowStatusLabel(row) }}</template>
       </el-table-column>
-      <el-table-column label="原因" min-width="360">
-        <template #default="{ row }">{{ rawRecordReason(row) }}</template>
-      </el-table-column>
-      <el-table-column label="可见原文" min-width="260">
+      <el-table-column label="面单原文" min-width="420">
         <template #default="{ row }">
-          <pre class="raw-payload compact">{{ rawRecordVisibleText(row) }}</pre>
+          <pre class="raw-payload compact">{{ row.original_text || '无' }}</pre>
+        </template>
+      </el-table-column>
+      <el-table-column label="处理建议" min-width="220">
+        <template #default="{ row }">
+          {{ rowReviewText(row) }}
         </template>
       </el-table-column>
     </el-table>
+    <el-alert
+      :closable="false"
+      class="surface-alert"
+      type="warning"
+      show-icon
+    >
+      <template #title>
+        <el-icon><Warning /></el-icon>
+        需复核行不会静默进入商品匹配或导出。
+      </template>
+    </el-alert>
   </section>
 </template>
+
+<style scoped>
+.table-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.table-heading p {
+  margin: 0;
+}
+
+.table-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.order-row-detail {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(220px, 0.6fr);
+  gap: 12px;
+  padding: 10px 18px;
+}
+
+.order-row-detail span {
+  display: block;
+  margin-bottom: 6px;
+  color: #667085;
+  font-size: 12px;
+}
+
+.order-row-detail pre,
+.raw-payload {
+  min-height: 48px;
+  max-height: 160px;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border-radius: 6px;
+  background: #f6f8fb;
+  padding: 10px;
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.raw-payload.compact {
+  min-height: 36px;
+  max-height: 120px;
+}
+
+.pagination-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+.surface-alert {
+  margin-top: 14px;
+}
+
+@media (max-width: 1200px) {
+  .table-heading,
+  .action-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .table-toolbar {
+    justify-content: flex-start;
+  }
+
+  .order-row-detail {
+    grid-template-columns: 1fr;
+  }
+}
+</style>

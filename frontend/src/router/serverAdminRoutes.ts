@@ -37,7 +37,4 @@ export const serverAdminLegacyRedirects: RouteRecordRaw[] = [
   { path: '/workspaces', redirect: '/admin/accounts' },
   { path: '/tenants', redirect: '/admin/accounts' },
   { path: '/users', redirect: '/admin/accounts' },
-  { path: '/waybill-modes', redirect: '/admin' },
-  { path: '/waybill-templates', redirect: '/admin' },
-  { path: '/waybill-template-fields', redirect: '/admin' },
 ]

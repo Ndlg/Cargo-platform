@@ -37,6 +37,8 @@ backend/tests/*_test.db
 storage/collector-build/
 storage/collector-review/
 storage/collector-test/
+storage/db_backups/
+storage/pytest/
 storage/server-console/
 storage/sku-import-preview/
 storage/*-review.zip

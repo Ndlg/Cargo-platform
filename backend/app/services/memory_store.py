@@ -9,9 +9,6 @@ from app.core.config import get_settings
 GLOBAL_RESOURCES = {
     "tenants",
     "users",
-    "waybill_modes",
-    "waybill_templates",
-    "waybill_template_fields",
     "workspaces",
 }
 
@@ -53,16 +50,6 @@ class MemoryStore:
                 "remark": "Can administer all workspaces.",
             },
         )
-        self.create_record(
-            "waybill_modes",
-            {
-                "name": "Manual upload",
-                "code": "manual_upload",
-                "input_format": "excel_row",
-                "is_enabled": True,
-            },
-        )
-
     def _next_id(self, resource: str) -> int:
         value = self._next_ids.get(resource, 1)
         self._next_ids[resource] = value + 1

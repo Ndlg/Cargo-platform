@@ -1,21 +1,23 @@
-﻿from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 import json
 from pathlib import Path
 import re
-from types import SimpleNamespace
 from urllib.parse import quote
 from typing import Annotated, Any
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from openpyxl import Workbook
 from openpyxl.drawing.image import Image as WorksheetImage
+from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, OneCellAnchor
+from openpyxl.drawing.xdr import XDRPositiveSize2D
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.utils.units import pixels_to_EMU
 from PIL import Image as PillowImage, UnidentifiedImageError
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -27,20 +29,32 @@ from app.core.security import create_collector_token, hash_collector_token
 from app.models import (
     CaptureTask,
     Collector,
-    FieldDefinition,
+    ExportHeaderDefinition,
     ImageAsset,
-    MatchRule,
     Product,
     ProductSku,
-    PrintTemplateConfig,
     RawCaptureRecord,
-    Stall,
     StandardDetail,
+    StandardDetailBatch,
     Workspace,
 )
 from app.repositories.base import model_to_dict
-from app.services.product_recognition import int_value, recognize_detail_items, recognition_summary, text_value
-from app.services.waybill_parser import parse_raw_capture_record, parse_raw_capture_records
+from app.api.routes.product_sku_linking import (
+    ProductMatchingScope,
+    ProductSkuLinkingPreviewRequest,
+    preview_with_rules as preview_product_sku_with_rules,
+    rows_for_preview as product_sku_rows_for_preview,
+    saved_rule_payloads as saved_product_sku_rule_payloads,
+)
+from app.services.collection_contract import (
+    build_raw_capture_record,
+)
+from app.services.product_sku_linking import exportable_product_sku_linking_result
+from app.services.recognition_rule_packs import (
+    RULE_PACK_MISSING_STATUS,
+    active_recognition_rule_pack,
+)
+from app.services.waybill_reading import read_waybill_samples
 
 
 router = APIRouter()
@@ -51,10 +65,50 @@ COLLECTOR_CLEANUP_TIMEOUT = timedelta(hours=24)
 COLLECTOR_CLIENT_ARCHIVE_ROOT = "Cargo Platform 采集器"
 COLLECTOR_CLIENT_RELEASE_EXE = Path("dist") / "Cargo Platform 采集器.exe"
 COLLECTOR_CLIENT_PACKAGE_VERSION = "single-exe-token-collector-20260614"
+RAW_CAPTURE_BATCH_MAX_RECORDS = 100
+RAW_CAPTURE_PAYLOAD_MAX_CHARS = 2_000_000
+RAW_CAPTURE_SOURCE_COLUMNS_MAX_CHARS = 20_000
+BUSINESS_DOWNLOAD_TIMEZONE = timezone(timedelta(hours=8))
+BUSINESS_REPORT_DOWNLOAD_PREFIX = "订单整理文档"
+COLLECTOR_PENDING_MACHINE_NAME = "等待业务机上报机器名"
+DEFAULT_COLLECTOR_DISPLAY_NAMES = {
+    "",
+    "Cargo Platform 采集器",
+    "业务机采集器",
+    "本机采集器",
+    "采集器",
+    COLLECTOR_PENDING_MACHINE_NAME,
+}
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def clean_optional_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def is_default_collector_display_name(value: Any) -> bool:
+    return clean_optional_text(value) in DEFAULT_COLLECTOR_DISPLAY_NAMES
+
+
+def collector_display_name(
+    value: Any,
+    *,
+    source_machine: Any = None,
+    collector_id: Any = None,
+) -> str:
+    name = clean_optional_text(value)
+    if not is_default_collector_display_name(name):
+        return name
+    machine = clean_optional_text(source_machine)
+    if machine:
+        return machine
+    identity = clean_optional_text(collector_id)
+    if identity and not identity.startswith("collector-"):
+        return identity
+    return COLLECTOR_PENDING_MACHINE_NAME
 
 
 def parse_utc_datetime(value: str | None) -> datetime | None:
@@ -167,31 +221,31 @@ def collector_client_parameter_guide() -> str:
         "常用启动方式：\n"
         "\n"
         "1. 正式后台监听（最常用）\n"
-        "Cargo Platform 采集器.exe --base-url \"<服务器地址>\" --token \"<TOKEN>\" --loop\n"
+        "\"Cargo Platform 采集器.exe\" --base-url \"<服务器地址>\" --token \"<TOKEN>\" --collector-name \"%COMPUTERNAME%\" --loop\n"
         "\n"
-        "2. 指定后台显示名称（设备标识仍自动使用业务机机器名）\n"
-        "Cargo Platform 采集器.exe --base-url \"<服务器地址>\" --token \"<TOKEN>\" --collector-name \"Cargo Platform 采集器\" --loop\n"
+        "2. 指定后台显示名称（正常 CMD 中建议直接使用本机机器名）\n"
+        "\"Cargo Platform 采集器.exe\" --base-url \"<服务器地址>\" --token \"<TOKEN>\" --collector-name \"%COMPUTERNAME%\" --loop\n"
         "\n"
         "3. 先保存配置，再后台启动（后续启动命令最短）\n"
-        "Cargo Platform 采集器.exe --base-url \"<服务器地址>\" --token \"<TOKEN>\" --collector-name \"Cargo Platform 采集器\" --save-config\n"
-        "Cargo Platform 采集器.exe --loop\n"
+        "\"Cargo Platform 采集器.exe\" --base-url \"<服务器地址>\" --token \"<TOKEN>\" --collector-name \"%COMPUTERNAME%\" --save-config\n"
+        "\"Cargo Platform 采集器.exe\" --loop\n"
         "\n"
         "4. 指定日志文件位置\n"
-        "Cargo Platform 采集器.exe --base-url \"<服务器地址>\" --token \"<TOKEN>\" --loop --log-file \"%LOCALAPPDATA%\\CargoPlatformCollector\\collector.log\"\n"
+        "\"Cargo Platform 采集器.exe\" --base-url \"<服务器地址>\" --token \"<TOKEN>\" --collector-name \"%COMPUTERNAME%\" --loop --log-file \"%LOCALAPPDATA%\\CargoPlatformCollector\\collector.log\"\n"
         "\n"
         "5. 只检查连接和本机打印组件，不持续监听\n"
-        "Cargo Platform 采集器.exe --base-url \"<服务器地址>\" --token \"<TOKEN>\" --check --log-file \"%LOCALAPPDATA%\\CargoPlatformCollector\\collector-check.log\"\n"
+        "\"Cargo Platform 采集器.exe\" --base-url \"<服务器地址>\" --token \"<TOKEN>\" --collector-name \"%COMPUTERNAME%\" --check --log-file \"%LOCALAPPDATA%\\CargoPlatformCollector\\collector-check.log\"\n"
         "\n"
         "常用参数：\n"
         "--base-url        系统访问地址；不要填写 8000 端口。例如 http://服务器IP:5173。\n"
         "--token           后台生成的采集器 token，必填。业务机不再输入系统账号密码。\n"
         "--loop            持续后台监听；服务器断开或重启时不会退出，会继续等待恢复。\n"
-        "--collector-name  后台显示名称，默认是 Cargo Platform 采集器。\n"
+        "--collector-name  后台显示名称；留空或使用旧默认名时，系统会自动改成本机 Windows 机器名。\n"
         "--interval        心跳和采集轮询间隔，默认 3 秒。\n"
         "--config          可选配置文件路径，默认保存在当前 Windows 用户的 LocalAppData。\n"
         "--state           可选状态文件路径，默认和配置文件同目录。\n"
         "--log-file        可选日志文件路径，默认和配置文件同目录 collector.log。\n"
-        "--save-config     保存当前 base-url/token/名称等配置后退出；以后可直接用 Cargo Platform 采集器.exe --loop。\n"
+        "--save-config     保存当前 base-url/token/名称等配置后退出；以后可直接用 \"Cargo Platform 采集器.exe\" --loop。\n"
         "--check           检查本机打印组件和服务器心跳后退出；不进入持续监听。\n"
         "\n"
         "设备标识说明：\n"
@@ -236,9 +290,27 @@ def build_collector_client_archive(mode: str = "cli") -> BytesIO:
     return archive
 
 
+def collector_client_release_status() -> dict[str, Any]:
+    source_dir = collector_client_source_dir()
+    exe_path = source_dir / COLLECTOR_CLIENT_RELEASE_EXE
+    release_available = exe_path.is_file()
+    return {
+        "package_version": COLLECTOR_CLIENT_PACKAGE_VERSION,
+        "release_available": release_available,
+        "status": "ready" if release_available else "missing",
+        "archive_name": "订单整理系统采集器.zip",
+        "release_exe": str(COLLECTOR_CLIENT_RELEASE_EXE).replace("\\", "/"),
+        "message": (
+            "采集器发布包已就绪。"
+            if release_available
+            else "采集器 exe 发布包缺失，需要先构建 collector-client/dist/Cargo Platform 采集器.exe。"
+        ),
+    }
+
+
 class CollectorRegisterRequest(BaseModel):
     collector_id: str | None = Field(default=None, max_length=128)
-    collector_name: str = Field(default="Cargo Platform 采集器", max_length=128)
+    collector_name: str = Field(default="", max_length=128)
     source_machine: str | None = Field(default=None, max_length=128)
     client_version: str | None = Field(default=None, max_length=64)
     remark: str | None = None
@@ -255,6 +327,7 @@ class CaptureStopRequest(BaseModel):
 
 class CollectorHeartbeatRequest(BaseModel):
     collector_id: str | None = Field(default=None, max_length=128)
+    collector_name: str | None = Field(default=None, max_length=128)
     source_machine: str | None = Field(default=None, max_length=128)
     client_version: str | None = Field(default=None, max_length=64)
     runtime_status: str | None = Field(default=None, max_length=32)
@@ -264,6 +337,8 @@ class CollectorHeartbeatRequest(BaseModel):
 
 
 class RawCaptureRecordPayload(BaseModel):
+    """Collector upload payload whose public persisted output is raw_capture_record."""
+
     document_id: str | None = Field(default=None, max_length=128)
     source_machine: str | None = Field(default=None, max_length=128)
     source_component: str | None = Field(default=None, max_length=128)
@@ -271,20 +346,47 @@ class RawCaptureRecordPayload(BaseModel):
     dedupe_key: str | None = Field(default=None, max_length=255)
     waybill_mode: str | None = Field(default=None, max_length=128)
     payload_format: str = Field(default="unknown", max_length=32)
-    raw_payload: str
+    raw_payload: str = Field(min_length=1, max_length=RAW_CAPTURE_PAYLOAD_MAX_CHARS)
     source_columns: dict[str, Any] | None = None
     parsed_payload: dict[str, Any] | None = None
     captured_at: str | None = Field(default=None, max_length=64)
 
+    @field_validator("source_columns")
+    @classmethod
+    def source_columns_must_be_audit_sized(
+        cls,
+        value: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        serialized = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        if len(serialized) > RAW_CAPTURE_SOURCE_COLUMNS_MAX_CHARS:
+            raise ValueError(
+                f"source_columns must be at most {RAW_CAPTURE_SOURCE_COLUMNS_MAX_CHARS} JSON characters."
+            )
+        return value
+
 
 class RawCaptureBatchRequest(BaseModel):
     task_id: int
-    records: list[RawCaptureRecordPayload]
+    records: list[RawCaptureRecordPayload] = Field(
+        min_length=1,
+        max_length=RAW_CAPTURE_BATCH_MAX_RECORDS,
+    )
 
 
 class ParseRecordsRequest(BaseModel):
     task_id: int | None = None
     force: bool = False
+
+
+class ArchiveCaptureDataRequest(BaseModel):
+    days_before: int | None = Field(default=None, ge=0, le=3650)
+
+
+class DeleteArchivedCaptureDataRequest(BaseModel):
+    confirm_text: str
+    days_before: int | None = Field(default=None, ge=0, le=3650)
 
 
 def public_collector(collector: Collector) -> dict[str, Any]:
@@ -327,6 +429,30 @@ def text_value(value: Any) -> str:
     if value is None:
         return ""
     return str(value).strip()
+
+
+def int_value(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def recognition_summary(rows: list[dict[str, Any]]) -> dict[str, int]:
+    summary = {
+        "total": 0,
+        "matched": 0,
+        "product_unmatched": 0,
+        "sku_unmatched": 0,
+        "conflict": 0,
+    }
+    for row in rows:
+        summary["total"] += 1
+        status_text = text_value(row.get("status"))
+        if status_text in summary:
+            summary[status_text] += 1
+    return summary
 
 
 def source_component_label(component: Any) -> str:
@@ -390,6 +516,8 @@ def custom_item_export_values(
     )
     if quantity_text:
         values["quantity"] = quantity_text
+    elif item_count > 1:
+        values["quantity"] = ""
     return values
 
 
@@ -445,15 +573,17 @@ def export_field_value(field_code: str, values: dict[str, Any]) -> Any:
     return value
 
 
-RECOGNITION_REPORT_HEADERS = ["商品名称", "销售属性1", "SKU图片", "销售属性2", "数量"]
+RECOGNITION_REPORT_HEADERS = ["商品", "销售属性1", "图片", "销售属性2", "数量", "备注", "图片匹配文本"]
 
 RECOGNITION_REPORT_FIELD_DEFINITIONS: dict[str, dict[str, Any]] = {
-    "product_name": {"label": "商品名称", "width": 16},
+    "product_name": {"label": "商品", "width": 16},
     "stall_name": {"label": "档口", "width": 14},
     "sales_attr1": {"label": "销售属性1", "width": 24},
-    "sku_image": {"label": "SKU图片", "width": 18},
+    "sku_image": {"label": "图片", "width": 18},
     "sales_attr2": {"label": "销售属性2", "width": 18},
     "quantity": {"label": "数量", "width": 12},
+    "remark": {"label": "备注", "width": 18},
+    "image_match_text": {"label": "图片匹配文本", "width": 42},
 }
 
 RECOGNITION_REPORT_DEFAULT_FIELD_ORDER = [
@@ -462,25 +592,32 @@ RECOGNITION_REPORT_DEFAULT_FIELD_ORDER = [
     "sku_image",
     "sales_attr2",
     "quantity",
+    "remark",
+    "image_match_text",
 ]
 
 RECOGNITION_REPORT_OUTPUT_MODES = {"merged_sheet", "stall_sheet", "stall_workbooks"}
 DEFAULT_RECOGNITION_REPORT_OUTPUT_MODE = "stall_sheet"
 
-RECOGNITION_EXCEPTION_HEADERS = [
-    "面单",
-    "商品文字",
-    "销售属性1",
-    "销售属性2",
-    "数量",
-    "匹配状态",
-    "异常原因",
-    "备注字段",
-]
+RECOGNITION_EXCEPTION_HEADERS = ["图片匹配文本"]
+RECOGNITION_EXCEPTION_SHEET_TITLE = "异常面单"
+EXPORT_PRODUCT_SKU_LINKING_CONTRACT = "product-sku-linking-results-v1"
+EXPORT_PRODUCT_SKU_LINKING_RESULTS_KEY = "product_sku_linking_results"
+EXPORT_PRODUCT_SKU_LINKING_RESULT_KEY = "product_sku_linking_result"
+EXPORT_PRODUCT_SKU_LINKING_PENDING_STATUS = "pending"
+
+RECOGNITION_REPORT_LEGACY_LABELS = {
+    "product_name": {"商品名称"},
+    "sku_image": {"SKU图片"},
+}
 
 REPORT_IMAGE_SIZE = 88
 REPORT_ROW_HEIGHT = 86
 REPORT_HEADER_ROW_HEIGHT = 26
+REPORT_COLUMN_WIDTH_PIXEL_RATIO = 9
+EXCEL_COLUMN_PIXEL_PADDING = 5
+EXCEL_COLUMN_UNIT_PIXELS = 7
+EXCEL_POINTS_PER_PIXEL = 0.75
 
 
 def bounded_int(value: Any, default: int, min_value: int, max_value: int) -> int:
@@ -489,6 +626,17 @@ def bounded_int(value: Any, default: int, min_value: int, max_value: int) -> int
     except (TypeError, ValueError):
         return default
     return min(max(parsed, min_value), max_value)
+
+
+def report_layout_width_to_excel_width(value: Any) -> float:
+    layout_width = bounded_int(value, 12, 8, 60)
+    preview_pixels = layout_width * REPORT_COLUMN_WIDTH_PIXEL_RATIO
+    return round(max(8, (preview_pixels - EXCEL_COLUMN_PIXEL_PADDING) / EXCEL_COLUMN_UNIT_PIXELS), 2)
+
+
+def report_layout_height_to_excel_points(value: Any) -> float:
+    height_pixels = bounded_int(value, REPORT_ROW_HEIGHT, 18, 220)
+    return round(height_pixels * EXCEL_POINTS_PER_PIXEL, 2)
 
 
 def default_recognition_report_layout() -> dict[str, Any]:
@@ -506,6 +654,8 @@ def default_recognition_report_layout() -> dict[str, Any]:
         "row_height": REPORT_ROW_HEIGHT,
         "image_width": REPORT_IMAGE_SIZE,
         "image_height": REPORT_IMAGE_SIZE,
+        "image_offset_x": 0,
+        "image_offset_y": 0,
         "stack_sales_attr1": False,
         "stack_sales_attr2": False,
         "output_mode": DEFAULT_RECOGNITION_REPORT_OUTPUT_MODE,
@@ -530,6 +680,8 @@ def normalize_recognition_report_layout(raw_layout: Any | None = None) -> dict[s
             continue
         used_keys.add(key)
         label = str(source_column.get("label") or definition["label"]).strip() or definition["label"]
+        if label in RECOGNITION_REPORT_LEGACY_LABELS.get(key, set()):
+            label = definition["label"]
         columns.append(
             {
                 "key": key,
@@ -586,6 +738,18 @@ def normalize_recognition_report_layout(raw_layout: Any | None = None) -> dict[s
             32,
             220,
         ),
+        "image_offset_x": bounded_int(
+            payload.get("image_offset_x", payload.get("imageOffsetX")),
+            int(default_layout["image_offset_x"]),
+            0,
+            220,
+        ),
+        "image_offset_y": bounded_int(
+            payload.get("image_offset_y", payload.get("imageOffsetY")),
+            int(default_layout["image_offset_y"]),
+            0,
+            220,
+        ),
         "stack_sales_attr1": bool(payload.get("stack_sales_attr1", payload.get("stackSalesAttr1", False))),
         "stack_sales_attr2": bool(payload.get("stack_sales_attr2", payload.get("stackSalesAttr2", False))),
         "output_mode": output_mode,
@@ -616,47 +780,40 @@ def recognition_status_label(status_text: str) -> str:
 
 
 def recognition_image_label(row: dict[str, Any]) -> str:
-    return ""
+    return text_value(row.get("image_label"))
 
 
 def recognition_stall_name(row: dict[str, Any]) -> str:
     return text_value(row.get("stall_name")) or "未设置档口"
 
 
-def report_quantity_value(value: Any) -> int:
+def report_quantity_value(value: Any, *, default: int = 1) -> int:
     text = text_value(value)
     if not text:
-        return 1
-    match = re.search(r"\d+", text)
+        return default
+    compact = re.sub(r"\s+", "", text)
+    match = re.fullmatch(r"[*xX×]?(\d+)(?:件|个|個|双|雙|条|條|套|只|瓶|包|箱)?", compact)
     if not match:
-        return 1
-    parsed = int(match.group(0))
-    return parsed if parsed > 0 else 1
+        return default
+    parsed = int(match.group(1))
+    return parsed if parsed > 0 else default
 
 
-def strip_product_prefix(text: Any, product_name: Any) -> str:
-    value = text_value(text)
-    prefix = text_value(product_name)
-    if prefix and value.startswith(prefix):
-        return value[len(prefix):].lstrip(" -_/，,：:|")
-    return value
+def report_quantity_default(row: dict[str, Any]) -> int:
+    if (int_value(row.get("item_count")) or 0) > 1 and not text_value(row.get("quantity_text")):
+        return 0
+    return 1
 
 
 def report_spec_text(row: dict[str, Any]) -> str:
-    product_name = row.get("product_name") or ""
-    for value in (row.get("sku_name"), row.get("sales_attr1_text"), row.get("product_text")):
-        text = strip_product_prefix(value, product_name)
-        if text:
-            return text
-    return "-"
+    return text_value(row.get("sales_attr1_text")) or "-"
 
 
-def report_size_tokens(value: Any) -> list[str]:
+def report_sales_attr2_values(value: Any) -> list[str]:
     text = text_value(value)
     if not text:
         return ["-"]
-    parts = [part for part in re.split(r"[\s,，/、]+", text) if part]
-    return parts or [text]
+    return [text]
 
 
 def natural_report_sort_key(value: Any) -> tuple[int, float | str, str]:
@@ -671,12 +828,56 @@ def sorted_report_values(values: list[str]) -> list[str]:
     return sorted([value for value in values if value], key=natural_report_sort_key)
 
 
+def unique_joined_report_values(values: list[Any], separator: str = "\n") -> str:
+    unique: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = text_value(value)
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        unique.append(text)
+    return separator.join(unique)
+
+
 def expanded_sales_attr2_values(row: dict[str, Any]) -> list[str]:
-    tokens = report_size_tokens(row.get("sales_attr2_text"))
-    quantity = report_quantity_value(row.get("quantity_text"))
+    tokens = report_sales_attr2_values(row.get("sales_attr2_text"))
+    quantity = report_quantity_value(row.get("quantity_text"), default=report_quantity_default(row))
     if len(tokens) > 1:
         return tokens
     return [tokens[0] or "-"] * quantity
+
+
+def recognition_report_required_value(value: Any) -> str:
+    text = text_value(value)
+    return "" if text in {"", "-"} else text
+
+
+def recognition_report_row_is_exportable(row: dict[str, Any]) -> bool:
+    if row.get("status") != "matched":
+        return False
+    return bool(
+        recognition_report_required_value(row.get("sales_attr1_text"))
+        and recognition_report_required_value(row.get("sales_attr2_text"))
+    )
+
+
+def recognition_report_base_line_item(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "product_category": text_value(row.get("product_name")) or "-",
+        "product_id": int_value(row.get("product_id")),
+        "candidate_key": text_value(row.get("candidate_key")),
+        "stall_id": int_value(row.get("stall_id")),
+        "stall_name": recognition_stall_name(row),
+        "spec": report_spec_text(row),
+        "image_label": recognition_image_label(row),
+        "sku_id": int_value(row.get("sku_id")),
+        "sku_image_asset_id": int_value(row.get("sku_image_asset_id")),
+        "size_text": text_value(row.get("sales_attr2_text")) or "-",
+        "quantity": report_quantity_value(row.get("quantity_text"), default=report_quantity_default(row)),
+        "remark_text": text_value(row.get("remark_text")),
+        "image_match_text": text_value(row.get("image_match_text")),
+    }
 
 
 def recognition_report_line_items(
@@ -684,60 +885,69 @@ def recognition_report_line_items(
     layout: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     normalized_layout = normalize_recognition_report_layout(layout)
-    grouped: dict[tuple[Any, ...], dict[str, Any]] = {}
-    ordered_keys: list[tuple[Any, ...]] = []
-
-    for row in rows:
-        if row.get("status") != "matched":
-            continue
-        product_category = text_value(row.get("product_name") or row.get("product_text")) or "-"
-        stall_name = recognition_stall_name(row)
-        spec = report_spec_text(row)
-        key = (
-            int_value(row.get("stall_id")) or stall_name,
-            int_value(row.get("product_id")) or product_category,
-            int_value(row.get("sku_id")) or spec,
-            int_value(row.get("sku_image_asset_id")) or 0,
-            "grouped"
-            if normalized_layout["stack_sales_attr1"]
-            else row.get("candidate_key")
-            or f"{row.get('detail_id')}:{row.get('item_index') or 0}:{spec}:{row.get('sales_attr2_text')}",
-        )
-        if key not in grouped:
-            grouped[key] = {
-                "product_category": product_category,
-                "stall_id": int_value(row.get("stall_id")),
-                "stall_name": stall_name,
-                "spec": spec,
-                "image_label": recognition_image_label(row),
-                "sku_id": int_value(row.get("sku_id")),
-                "sku_image_asset_id": int_value(row.get("sku_image_asset_id")),
-                "sales_attr1_values": [],
-                "sales_attr2_values": [],
-                "quantity": 0,
-            }
-            ordered_keys.append(key)
-
-        line = grouped[key]
-        line["sales_attr1_values"].append(spec)
-        line["sales_attr2_values"].extend(expanded_sales_attr2_values(row))
-        line["quantity"] += report_quantity_value(row.get("quantity_text"))
-
     report_rows: list[dict[str, Any]] = []
-    for key in ordered_keys:
-        row = dict(grouped[key])
-        sales_attr1_values = row.pop("sales_attr1_values")
-        sales_attr2_values = row.pop("sales_attr2_values")
-        if normalized_layout["stack_sales_attr1"]:
-            row["spec"] = " ".join(dict.fromkeys(sorted_report_values(sales_attr1_values))) or "-"
-        if normalized_layout["stack_sales_attr2"]:
-            row["size_text"] = " ".join(dict.fromkeys(sorted_report_values(sales_attr2_values))) or "-"
-        else:
-            row["size_text"] = " ".join(sorted_report_values(sales_attr2_values)) or "-"
-        report_rows.append(row)
+    for row in rows:
+        if not recognition_report_row_is_exportable(row):
+            continue
+        report_rows.append(recognition_report_base_line_item(row))
+
+    if not normalized_layout["stack_sales_attr1"]:
+        return report_rows
+
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in report_rows:
+        key = ":".join(
+            [
+                text_value(row.get("stall_id")) or text_value(row.get("stall_name")),
+                text_value(row.get("product_id")) or text_value(row.get("product_category")),
+                text_value(row.get("sku_id")) or text_value(row.get("spec")),
+                text_value(row.get("sku_image_asset_id")) or "0",
+                "grouped",
+            ]
+        )
+        group = grouped.setdefault(
+            key,
+            {
+                **row,
+                "spec_values": [],
+                "size_values": [],
+                "remark_values": [],
+                "image_match_text_values": [],
+                "quantity": 0,
+            },
+        )
+        group["spec_values"].append(text_value(row.get("spec")))
+        group["size_values"].extend(
+            expanded_sales_attr2_values(
+                {
+                    "sales_attr2_text": row.get("size_text"),
+                    "quantity_text": row.get("quantity"),
+                    "item_count": 1,
+                }
+            )
+        )
+        group["remark_values"].append(row.get("remark_text"))
+        group["image_match_text_values"].append(row.get("image_match_text"))
+        group["quantity"] += int_value(row.get("quantity")) or 0
+
+    merged_rows: list[dict[str, Any]] = []
+    for group in grouped.values():
+        spec_values = list(group.pop("spec_values", []))
+        size_values = list(group.pop("size_values", []))
+        remark_values = list(group.pop("remark_values", []))
+        image_match_text_values = list(group.pop("image_match_text_values", []))
+        group["spec"] = " ".join(sorted_report_values(list(dict.fromkeys(spec_values)))) or "-"
+        group["size_text"] = (
+            " ".join(sorted_report_values(list(dict.fromkeys(size_values))))
+            if normalized_layout["stack_sales_attr2"]
+            else " ".join(sorted_report_values(size_values))
+        ) or "-"
+        group["remark_text"] = unique_joined_report_values(remark_values)
+        group["image_match_text"] = unique_joined_report_values(image_match_text_values)
+        merged_rows.append(group)
 
     return sorted(
-        report_rows,
+        merged_rows,
         key=lambda row: (
             natural_report_sort_key(row.get("stall_name")),
             natural_report_sort_key(row.get("product_category")),
@@ -755,11 +965,15 @@ def recognition_report_cell_value(row: dict[str, Any], field_key: str) -> Any:
     if field_key == "sales_attr1":
         return row["spec"]
     if field_key == "sku_image":
-        return row["image_label"]
+        return ""
     if field_key == "sales_attr2":
         return row["size_text"]
     if field_key == "quantity":
         return row["quantity"]
+    if field_key == "remark":
+        return row.get("remark_text", "")
+    if field_key == "image_match_text":
+        return row.get("image_match_text", "")
     return ""
 
 
@@ -806,18 +1020,9 @@ def recognition_report_rows_by_stall(report_rows: list[dict[str, Any]]) -> dict[
 
 def recognition_exception_export_rows(rows: list[dict[str, Any]]) -> list[list[Any]]:
     return [
-        [
-            row.get("source_label") or "",
-            row.get("product_text") or "",
-            row.get("sales_attr1_text") or "",
-            row.get("sales_attr2_text") or "",
-            row.get("quantity_text") or "",
-            recognition_status_label(str(row.get("status") or "")),
-            row.get("reason") or "",
-            row.get("remark_text") or "",
-        ]
+        [text_value(row.get("image_match_text")) or text_value(row.get("reason"))]
         for row in rows
-        if row.get("status") != "matched"
+        if not recognition_report_row_is_exportable(row)
     ]
 
 
@@ -867,9 +1072,10 @@ def attach_recognition_report_images(
     )
     if image_column_index is None:
         return
-    image_column_letter = get_column_letter(image_column_index)
     image_width = int(normalized_layout["image_width"])
     image_height = int(normalized_layout["image_height"])
+    image_offset_x = int(normalized_layout["image_offset_x"])
+    image_offset_y = int(normalized_layout["image_offset_y"])
     for row_number, row in enumerate(rows, start=2):
         image_asset_id = int_value(row.get("sku_image_asset_id"))
         if image_asset_id is None:
@@ -891,7 +1097,19 @@ def attach_recognition_report_images(
         worksheet_image = WorksheetImage(buffer)
         worksheet_image.width = image_width
         worksheet_image.height = image_height
-        sheet.add_image(worksheet_image, f"{image_column_letter}{row_number}")
+        worksheet_image.anchor = OneCellAnchor(
+            _from=AnchorMarker(
+                col=image_column_index - 1,
+                colOff=pixels_to_EMU(image_offset_x),
+                row=row_number - 1,
+                rowOff=pixels_to_EMU(image_offset_y),
+            ),
+            ext=XDRPositiveSize2D(
+                cx=pixels_to_EMU(image_width),
+                cy=pixels_to_EMU(image_height),
+            ),
+        )
+        sheet.add_image(worksheet_image)
 
 
 def recognition_report_image_assets(
@@ -921,116 +1139,338 @@ def recognition_report_image_assets(
     }
 
 
-def print_template_source_key(config: PrintTemplateConfig) -> str:
-    payload = config.config if isinstance(config.config, dict) else {}
-    match = payload.get("template_match")
-    match_payload = match if isinstance(match, dict) else {}
-    return (
-        text_value(match_payload.get("source_template_key"))
-        or text_value(payload.get("source_template_key"))
-        or text_value(config.template_key)
+def product_sku_linking_result_payloads(detail: StandardDetail) -> list[dict[str, Any]]:
+    values = detail.field_values or {}
+    results = values.get(EXPORT_PRODUCT_SKU_LINKING_RESULTS_KEY)
+    if isinstance(results, list):
+        return [item for item in results if isinstance(item, dict)]
+
+    result = values.get(EXPORT_PRODUCT_SKU_LINKING_RESULT_KEY)
+    if isinstance(result, dict):
+        return [result]
+
+    return []
+
+
+def export_standard_fields_from_result(result: dict[str, Any]) -> dict[str, Any]:
+    standard_fields = result.get("standard_fields")
+    if isinstance(standard_fields, dict):
+        return standard_fields
+    return {}
+
+
+def export_result_value(
+    result: dict[str, Any],
+    standard_fields: dict[str, Any],
+    key: str,
+    *fallback_keys: str,
+) -> Any:
+    for source_key in (key, *fallback_keys):
+        value = result.get(source_key)
+        if value not in (None, ""):
+            return value
+    return standard_fields.get(key, "")
+
+
+def product_sku_linking_export_row(
+    payload: dict[str, Any],
+    *,
+    source_identifiers: dict[str, Any],
+    candidate_key_fallback: str,
+    detail_number: int,
+    item_index: int,
+    item_count: int,
+) -> dict[str, Any]:
+    standard_fields = export_standard_fields_from_result(payload)
+    status_text = text_value(payload.get("match_status")) or text_value(payload.get("status")) or "pending"
+    image_value = payload.get("image")
+    image_asset_id = int_value(payload.get("image_asset_id")) or int_value(payload.get("sku_image_asset_id"))
+    image_label = text_value(payload.get("image_label"))
+    if isinstance(image_value, dict):
+        image_asset_id = image_asset_id or int_value(image_value.get("id"))
+        image_label = image_label or text_value(image_value.get("name"))
+    else:
+        image_label = image_label or text_value(image_value)
+    product_name = text_value(payload.get("product")) or text_value(payload.get("product_name"))
+    sku_name = text_value(payload.get("sku")) or text_value(payload.get("sku_name"))
+    sales_attr1 = text_value(export_result_value(payload, standard_fields, "sales_attr1", "sales_attr1_text"))
+    sales_attr2 = text_value(export_result_value(payload, standard_fields, "sales_attr2", "sales_attr2_text"))
+    quantity = text_value(export_result_value(payload, standard_fields, "quantity", "quantity_text"))
+    remark = text_value(export_result_value(payload, standard_fields, "remark", "remark_text"))
+    image_match_text = (
+        text_value(payload.get("image_match_text"))
+        or text_value(payload.get("match_text"))
+    )
+    stall_payload = payload.get("stall") if isinstance(payload.get("stall"), dict) else {}
+    stall_id = int_value(payload.get("stall_id")) or int_value(stall_payload.get("id"))
+    stall_name = text_value(payload.get("stall_name")) or text_value(stall_payload.get("name"))
+
+    return {
+        "contract": EXPORT_PRODUCT_SKU_LINKING_CONTRACT,
+        **source_identifiers,
+        "candidate_key": text_value(payload.get("candidate_key")) or candidate_key_fallback,
+        "source_label": (
+            f"面单 {detail_number}-{item_index}"
+            if item_count > 1
+            else f"面单 {detail_number}"
+        ),
+        "item_index": item_index,
+        "item_count": item_count,
+        "product_text": text_value(standard_fields.get("product")),
+        "sales_attr1_text": sales_attr1,
+        "sales_attr2_text": sales_attr2,
+        "quantity_text": quantity,
+        "remark_text": remark,
+        "image_match_text": image_match_text,
+        "product_name": product_name,
+        "product_id": int_value(payload.get("product_id")),
+        "stall_id": stall_id,
+        "stall_name": stall_name,
+        "sku_id": int_value(payload.get("sku_id")),
+        "sku_name": sku_name,
+        "sku_image_asset_id": image_asset_id,
+        "image_label": image_label,
+        "status": status_text,
+        "reason": text_value(payload.get("exception_reason")) or text_value(payload.get("reason")),
+        "match_type": "product_sku_linking_result",
+        "match_field": "",
+        "match_keyword": "",
+    }
+
+
+def product_sku_linking_result_row(
+    detail: StandardDetail,
+    result: dict[str, Any],
+    *,
+    detail_number: int,
+    item_index: int,
+    item_count: int,
+) -> dict[str, Any]:
+    return product_sku_linking_export_row(
+        result,
+        source_identifiers={"detail_id": detail.id},
+        candidate_key_fallback=f"{detail.id}:{item_index}",
+        detail_number=detail_number,
+        item_index=item_index,
+        item_count=item_count,
     )
 
 
-def enriched_recognition_rules(
-    rules: list[MatchRule],
-    configs: list[PrintTemplateConfig],
-) -> list[Any]:
-    configs_by_id = {config.id: config for config in configs}
-    configs_by_key = {text_value(config.template_key): config for config in configs if text_value(config.template_key)}
-    enriched_rules: list[Any] = []
+def pending_product_sku_linking_row(detail: StandardDetail, *, detail_number: int) -> dict[str, Any]:
+    message = "等待 Product/SKU Linking 模块输出后才能生成报货表。"
+    return {
+        "contract": EXPORT_PRODUCT_SKU_LINKING_CONTRACT,
+        "detail_id": detail.id,
+        "candidate_key": f"{detail.id}:pending-product-sku-linking",
+        "source_label": f"面单 {detail_number}",
+        "item_index": 1,
+        "item_count": 1,
+        "product_text": "",
+        "sales_attr1_text": "",
+        "sales_attr2_text": "",
+        "quantity_text": "",
+        "remark_text": "",
+        "image_match_text": f"面单 {detail_number}：{message}",
+        "product_name": "",
+        "product_id": None,
+        "sku_id": None,
+        "sku_name": "",
+        "sku_image_asset_id": None,
+        "image_label": "",
+        "status": EXPORT_PRODUCT_SKU_LINKING_PENDING_STATUS,
+        "reason": message,
+        "match_type": "product_sku_linking_result",
+        "match_field": "",
+        "match_keyword": "",
+    }
 
-    for rule in rules:
-        match_values = dict(rule.match_values) if isinstance(rule.match_values, dict) else {}
-        config = configs_by_id.get(int_value(match_values.get("print_template_config_id")) or 0)
-        if config is None:
-            config = configs_by_key.get(text_value(match_values.get("print_template_key")))
 
-        if config is not None:
-            source_key = print_template_source_key(config)
-            if source_key and not text_value(match_values.get("print_template_source_key")):
-                match_values["print_template_source_key"] = source_key
-            if config.template_label and not text_value(match_values.get("print_template_label")):
-                match_values["print_template_label"] = config.template_label
-
-        enriched_rules.append(
-            SimpleNamespace(
-                id=rule.id,
-                priority=rule.priority,
-                is_enabled=rule.is_enabled,
-                is_deleted=rule.is_deleted,
-                target_type=rule.target_type,
-                target_id=rule.target_id,
-                target_name=rule.target_name,
-                match_values=match_values,
+def recognition_rows_from_product_sku_linking_results(details: list[StandardDetail]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for detail_number, detail in enumerate(details, start=1):
+        payloads = product_sku_linking_result_payloads(detail)
+        if not payloads:
+            rows.append(pending_product_sku_linking_row(detail, detail_number=detail_number))
+            continue
+        item_count = len(payloads)
+        for item_index, result in enumerate(payloads, start=1):
+            rows.append(
+                product_sku_linking_result_row(
+                    detail,
+                    result,
+                    detail_number=detail_number,
+                    item_index=item_index,
+                    item_count=item_count,
+                )
             )
-        )
-
-    return enriched_rules
-
-
-def recognition_rows_for_task(db: Session, *, workspace_id: int, task_id: int) -> list[dict[str, Any]]:
-    details = standard_details_for_task(db, workspace_id=workspace_id, task_id=task_id)
-    rules = db.scalars(
-        select(MatchRule)
-        .where(
-            MatchRule.workspace_id == workspace_id,
-            MatchRule.is_enabled.is_(True),
-            MatchRule.is_deleted.is_(False),
-        )
-        .order_by(MatchRule.priority.asc(), MatchRule.id.asc())
-    ).all()
-    print_template_configs = db.scalars(
-        select(PrintTemplateConfig).where(
-            PrintTemplateConfig.workspace_id == workspace_id,
-        )
-    ).all()
-    products = db.scalars(
-        select(Product).where(
-            Product.workspace_id == workspace_id,
-            Product.is_enabled.is_(True),
-            Product.is_deleted.is_(False),
-        )
-    ).all()
-    skus = db.scalars(
-        select(ProductSku).where(
-            ProductSku.workspace_id == workspace_id,
-            ProductSku.is_enabled.is_(True),
-            ProductSku.is_deleted.is_(False),
-        )
-    ).all()
-    stalls = db.scalars(
-        select(Stall).where(
-            Stall.workspace_id == workspace_id,
-            Stall.is_enabled.is_(True),
-            Stall.is_deleted.is_(False),
-        )
-    ).all()
-    stalls_by_id = {int(stall.id): stall.name for stall in stalls}
-    rows = recognize_detail_items(details, enriched_recognition_rules(rules, print_template_configs), products, skus)
-    for row in rows:
-        stall_id = int_value(row.get("stall_id"))
-        if stall_id is not None:
-            row["stall_name"] = text_value(stalls_by_id.get(stall_id))
-        elif row.get("status") == "matched":
-            row["stall_name"] = "未设置档口"
-    relabel_recognition_rows_for_task(rows, details)
     return rows
 
 
-def relabel_recognition_rows_for_task(rows: list[dict[str, Any]], details: list[StandardDetail]) -> None:
-    detail_numbers = {detail.id: index for index, detail in enumerate(details, start=1)}
-    for row in rows:
-        detail_number = detail_numbers.get(int_value(row.get("detail_id")) or 0)
-        if detail_number is None:
-            continue
-        item_index = int_value(row.get("item_index"))
-        item_count = int_value(row.get("item_count")) or 1
-        row["source_label"] = (
-            f"面单 {detail_number}-{item_index}"
-            if item_index and item_count > 1
-            else f"面单 {detail_number}"
+def pending_unmapped_waybill_product_sku_linking_row(
+    sample: dict[str, Any],
+    *,
+    detail_number: int,
+) -> dict[str, Any]:
+    sample_text = text_value(sample.get("sample_text"))
+    message = "这张面单还没有生成五字段结果，无法进入商品匹配。"
+    source_label = f"面单 {detail_number}"
+    return {
+        "contract": EXPORT_PRODUCT_SKU_LINKING_CONTRACT,
+        "detail_id": None,
+        "raw_record_id": int_value(sample.get("raw_record_id")),
+        "sample_id": text_value(sample.get("sample_id")),
+        "candidate_key": f"{text_value(sample.get('sample_id')) or detail_number}:pending-order-row",
+        "source_label": source_label,
+        "item_index": 1,
+        "item_count": 1,
+        "product_text": "",
+        "sales_attr1_text": "",
+        "sales_attr2_text": "",
+        "quantity_text": "",
+        "remark_text": "",
+        "image_match_text": f"{source_label}：{message}{(' ' + sample_text) if sample_text else ''}",
+        "product_name": "",
+        "product_id": None,
+        "sku_id": None,
+        "sku_name": "",
+        "sku_image_asset_id": None,
+        "image_label": "",
+        "status": EXPORT_PRODUCT_SKU_LINKING_PENDING_STATUS,
+        "reason": message,
+        "match_type": "product_sku_linking_result",
+        "match_field": "",
+        "match_keyword": "",
+    }
+
+
+def unmapped_waybill_samples_for_task(
+    db: Session,
+    *,
+    workspace_id: int,
+    task_id: int,
+    mapped_raw_record_ids: set[int],
+    mapped_sample_ids: set[str],
+) -> list[dict[str, Any]]:
+    raw_records = db.scalars(
+        select(RawCaptureRecord)
+        .where(
+            RawCaptureRecord.workspace_id == workspace_id,
+            RawCaptureRecord.task_id == task_id,
+            RawCaptureRecord.is_deleted.is_(False),
+            RawCaptureRecord.archived_at.is_(None),
         )
+        .order_by(RawCaptureRecord.id.asc())
+    ).all()
+
+    unmapped_samples: list[dict[str, Any]] = []
+    for raw_record in raw_records:
+        samples = read_waybill_samples(raw_record)
+        if len(samples) == 1 and int(raw_record.id) in mapped_raw_record_ids:
+            continue
+        for sample in samples:
+            sample_id = text_value(sample.get("sample_id"))
+            raw_record_id = int_value(sample.get("raw_record_id"))
+            if sample_id and sample_id in mapped_sample_ids:
+                continue
+            if raw_record_id in mapped_raw_record_ids:
+                continue
+            unmapped_samples.append(sample)
+    return unmapped_samples
+
+
+def export_recognition_summary(rows: list[dict[str, Any]]) -> dict[str, int]:
+    summary = recognition_summary(rows)
+    for row in rows:
+        status_text = text_value(row.get("status"))
+        if status_text and status_text not in summary:
+            summary[status_text] = 0
+        if status_text and status_text not in {
+            "total",
+            "matched",
+            "product_unmatched",
+            "sku_unmatched",
+            "conflict",
+        }:
+            summary[status_text] += 1
+    return summary
+
+
+CHILD_SOURCE_LABEL_SUFFIX_PATTERN = re.compile(r"-子\d+$")
+
+
+def recognition_waybill_count(rows: list[dict[str, Any]]) -> int:
+    parent_labels: set[str] = set()
+    for row in rows:
+        source_label = text_value(row.get("source_label"))
+        if not source_label:
+            continue
+        parent_label = CHILD_SOURCE_LABEL_SUFFIX_PATTERN.sub("", source_label)
+        if parent_label:
+            parent_labels.add(parent_label)
+    return len(parent_labels) or len(rows)
+
+
+def recognition_row_from_product_matching_preview(
+    row: dict[str, Any],
+    source: dict[str, Any],
+    *,
+    fallback_number: int,
+) -> dict[str, Any]:
+    payload = exportable_product_sku_linking_result(row)
+    item_index = int_value(source.get("item_index")) or int_value(source.get("child_index")) or 1
+    item_count = int_value(source.get("item_count")) or int_value(source.get("child_count")) or 1
+    child_label = text_value(source.get("child_label"))
+    raw_record_id = int_value(source.get("raw_record_id"))
+    standard_detail = source.get("standard_detail")
+    detail_id = standard_detail.id if isinstance(standard_detail, StandardDetail) else None
+    result = product_sku_linking_export_row(
+        payload,
+        source_identifiers={
+            "detail_id": detail_id,
+            "raw_record_id": raw_record_id,
+            "sample_id": child_label,
+        },
+        candidate_key_fallback=child_label or f"order-row:{fallback_number}",
+        detail_number=fallback_number,
+        item_index=item_index,
+        item_count=item_count,
+    )
+    if child_label:
+        result["source_label"] = child_label
+    source_row = source.get("row")
+    source_status = text_value(getattr(source_row, "status", ""))
+    if source_status == "special":
+        result["status"] = "special"
+        result["reason"] = text_value(getattr(source_row, "review_reason", "")) or "特殊面单，不进入商品/SKU/图片匹配。"
+    return result
+
+
+def recognition_rows_from_current_order_rows(
+    db: Session,
+    *,
+    workspace_id: int,
+    task_id: int,
+) -> list[dict[str, Any]]:
+    scope = ProductMatchingScope(
+        scope_type="current_batch",
+        task_id=task_id,
+        confirmed_by_user=True,
+    )
+    rows, sources = product_sku_rows_for_preview(
+        db,
+        workspace_id=workspace_id,
+        payload=ProductSkuLinkingPreviewRequest(scope=scope),
+    )
+    rules = saved_product_sku_rule_payloads(db, workspace_id=workspace_id)
+    preview = preview_product_sku_with_rules(db, workspace_id=workspace_id, rows=rows, rules=rules)
+    return [
+        recognition_row_from_product_matching_preview(row, source, fallback_number=index)
+        for index, (row, source) in enumerate(zip(preview["rows"], sources, strict=False), start=1)
+    ]
+
+
+def recognition_rows_for_task(db: Session, *, workspace_id: int, task_id: int) -> list[dict[str, Any]]:
+    return recognition_rows_from_current_order_rows(db, workspace_id=workspace_id, task_id=task_id)
 
 
 def task_or_404(db: Session, task_id: int, workspace_id: int) -> CaptureTask:
@@ -1046,6 +1486,142 @@ def task_or_404(db: Session, task_id: int, workspace_id: int) -> CaptureTask:
     return task
 
 
+def set_capture_task_archive_state(
+    db: Session,
+    *,
+    task: CaptureTask,
+    user_id: int | None,
+    archived: bool,
+) -> dict[str, int]:
+    archived_at = utc_now() if archived else None
+    archived_by = user_id if archived else None
+
+    task.archived_at = archived_at
+    task.archived_by = archived_by
+    task.updated_by = user_id
+
+    raw_records = db.scalars(
+        select(RawCaptureRecord).where(
+            RawCaptureRecord.workspace_id == task.workspace_id,
+            RawCaptureRecord.task_id == task.id,
+            RawCaptureRecord.is_deleted.is_(False),
+        )
+    ).all()
+    for record in raw_records:
+        record.archived_at = archived_at
+        record.archived_by = archived_by
+        record.updated_by = user_id
+
+    details = standard_details_for_task(
+        db,
+        workspace_id=task.workspace_id,
+        task_id=task.id,
+        include_archived=True,
+    )
+    for detail in details:
+        detail.archived_at = archived_at
+        detail.archived_by = archived_by
+        detail.updated_by = user_id
+
+    return {
+        "raw_record_count": len(raw_records),
+        "standard_detail_count": len(details),
+    }
+
+
+def maintenance_cutoff(days_before: int | None) -> datetime | None:
+    if days_before is None:
+        return None
+    return datetime.now(timezone.utc) - timedelta(days=days_before)
+
+
+def capture_task_time(task: CaptureTask) -> datetime | None:
+    parsed_time = parse_utc_datetime(task.ended_at) or parse_utc_datetime(task.started_at)
+    if parsed_time is not None:
+        return parsed_time
+    if task.created_at is None:
+        return None
+    if task.created_at.tzinfo is None:
+        return task.created_at.replace(tzinfo=timezone.utc)
+    return task.created_at.astimezone(timezone.utc)
+
+
+def capture_task_before_cutoff(task: CaptureTask, cutoff: datetime | None) -> bool:
+    if cutoff is None:
+        return True
+    task_time = capture_task_time(task)
+    if task_time is None:
+        return False
+    if task_time.tzinfo is None:
+        task_time = task_time.replace(tzinfo=timezone.utc)
+    return task_time <= cutoff
+
+
+def standard_detail_task_id(detail: StandardDetail) -> int | None:
+    values = detail.field_values if isinstance(detail.field_values, dict) else {}
+    return int_value(values.get("capture_task_id"))
+
+
+def capture_data_summary(db: Session, *, workspace_id: int) -> dict[str, Any]:
+    tasks = db.scalars(
+        select(CaptureTask).where(
+            CaptureTask.workspace_id == workspace_id,
+            CaptureTask.is_deleted.is_(False),
+        )
+    ).all()
+    raw_records = db.scalars(
+        select(RawCaptureRecord).where(
+            RawCaptureRecord.workspace_id == workspace_id,
+            RawCaptureRecord.is_deleted.is_(False),
+        )
+    ).all()
+    details = db.scalars(
+        select(StandardDetail).where(
+            StandardDetail.workspace_id == workspace_id,
+            StandardDetail.is_deleted.is_(False),
+        )
+    ).all()
+    active_tasks = [task for task in tasks if not task.archived_at]
+    archived_tasks = [task for task in tasks if task.archived_at]
+    archive_ready_tasks = [
+        task
+        for task in active_tasks
+        if task.status != "collecting"
+    ]
+    return {
+        "active": {
+            "capture_tasks": len(active_tasks),
+            "archive_ready_tasks": len(archive_ready_tasks),
+            "raw_records": len([record for record in raw_records if not record.archived_at]),
+            "standard_details": len([detail for detail in details if not detail.archived_at]),
+        },
+        "archived": {
+            "capture_tasks": len(archived_tasks),
+            "raw_records": len([record for record in raw_records if record.archived_at]),
+            "standard_details": len([detail for detail in details if detail.archived_at]),
+        },
+        "collecting_tasks": len([task for task in active_tasks if task.status == "collecting"]),
+    }
+
+
+def business_download_timestamp(now: datetime | None = None) -> str:
+    source_time = now or datetime.now(timezone.utc)
+    if source_time.tzinfo is None:
+        source_time = source_time.replace(tzinfo=timezone.utc)
+    return source_time.astimezone(BUSINESS_DOWNLOAD_TIMEZONE).strftime("%Y%m%d_%H%M%S")
+
+
+def business_download_filename(
+    prefix: str,
+    extension: str,
+    *,
+    timestamp: str | None = None,
+) -> str:
+    clean_prefix = safe_download_name_part(prefix)
+    clean_extension = extension if extension.startswith(".") else f".{extension}"
+    return f"{clean_prefix}_{timestamp or business_download_timestamp()}{clean_extension}"
+
+
 def xlsx_response(workbook: Workbook, filename: str) -> StreamingResponse:
     buffer = BytesIO()
     workbook.save(buffer)
@@ -1055,7 +1631,7 @@ def xlsx_response(workbook: Workbook, filename: str) -> StreamingResponse:
         buffer,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={
-            "Content-Disposition": f"attachment; filename={filename}; filename*=UTF-8''{quoted_filename}",
+            "Content-Disposition": f"attachment; filename=download.xlsx; filename*=UTF-8''{quoted_filename}",
         },
     )
 
@@ -1066,7 +1642,7 @@ def zip_stream_response(buffer: BytesIO, filename: str) -> StreamingResponse:
     return StreamingResponse(
         buffer,
         media_type="application/zip",
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quoted_filename}"},
+        headers={"Content-Disposition": f"attachment; filename=download.zip; filename*=UTF-8''{quoted_filename}"},
     )
 
 
@@ -1094,9 +1670,9 @@ def style_recognition_report_sheet(sheet, layout: dict[str, Any] | None = None) 
     center = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
     for column_index, column in enumerate(visible_recognition_report_columns(normalized_layout), start=1):
-        sheet.column_dimensions[get_column_letter(column_index)].width = int(column["width"])
+        sheet.column_dimensions[get_column_letter(column_index)].width = report_layout_width_to_excel_width(column["width"])
 
-    sheet.row_dimensions[1].height = int(normalized_layout["header_row_height"])
+    sheet.row_dimensions[1].height = report_layout_height_to_excel_points(normalized_layout["header_row_height"])
 
     for row in sheet.iter_rows():
         for cell in row:
@@ -1109,7 +1685,7 @@ def style_recognition_report_sheet(sheet, layout: dict[str, Any] | None = None) 
                 cell.value = None
 
     for row_number in range(2, sheet.max_row + 1):
-        sheet.row_dimensions[row_number].height = int(normalized_layout["row_height"])
+        sheet.row_dimensions[row_number].height = report_layout_height_to_excel_points(normalized_layout["row_height"])
 
 
 def safe_excel_sheet_title(value: str, used_titles: set[str]) -> str:
@@ -1171,17 +1747,28 @@ def recognition_report_workbook(
     return workbook
 
 
-def standard_details_for_task(db: Session, *, workspace_id: int, task_id: int) -> list[StandardDetail]:
+def append_recognition_exception_sheet(workbook: Workbook, exception_rows: list[list[Any]]):
+    sheet = workbook.create_sheet(RECOGNITION_EXCEPTION_SHEET_TITLE)
+    append_xlsx_rows(sheet, RECOGNITION_EXCEPTION_HEADERS, exception_rows)
+    return sheet
+
+
+def standard_details_for_task(
+    db: Session,
+    *,
+    workspace_id: int,
+    task_id: int,
+    include_archived: bool = False,
+) -> list[StandardDetail]:
+    statement = select(StandardDetail).where(
+        StandardDetail.workspace_id == workspace_id,
+        StandardDetail.is_deleted.is_(False),
+    )
+    if not include_archived:
+        statement = statement.where(StandardDetail.archived_at.is_(None))
     return [
         detail
-        for detail in db.scalars(
-            select(StandardDetail)
-            .where(
-                StandardDetail.workspace_id == workspace_id,
-                StandardDetail.is_deleted.is_(False),
-            )
-            .order_by(StandardDetail.id.asc())
-        ).all()
+        for detail in db.scalars(statement.order_by(StandardDetail.id.asc())).all()
         if int((detail.field_values or {}).get("capture_task_id") or 0) == task_id
     ]
 
@@ -1189,6 +1776,9 @@ def standard_details_for_task(db: Session, *, workspace_id: int, task_id: int) -
 def get_collector_from_token(
     db: Session,
     x_collector_token: str | None,
+    *,
+    identity_hint: str | None = None,
+    allow_identity_rebind: bool = False,
 ) -> Collector:
     if not x_collector_token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing collector token.")
@@ -1202,14 +1792,26 @@ def get_collector_from_token(
         )
     ).first()
     if collector is None:
+        identity = str(identity_hint or "").strip()
+        if allow_identity_rebind and identity:
+            identity_matches = db.scalars(
+                select(Collector).where(
+                    Collector.is_enabled.is_(True),
+                    Collector.is_deleted.is_(False),
+                    (Collector.collector_id == identity) | (Collector.source_machine == identity),
+                )
+            ).all()
+            if len(identity_matches) == 1:
+                collector = identity_matches[0]
+                collector.token_hash = token_hash
+                status_payload = collector.status_payload if isinstance(collector.status_payload, dict) else {}
+                collector.status_payload = {
+                    **status_payload,
+                    "token_rebound_at": utc_now(),
+                    "token_rebound_reason": "collector_identity_match",
+                }
+                return collector
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid collector token.")
-    if collector_should_be_cleaned(collector):
-        cleanup_collector(collector)
-        db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Collector heartbeat expired. Please register again.",
-        )
     return collector
 
 
@@ -1236,7 +1838,13 @@ def upsert_collector(
 ) -> tuple[Collector, str]:
     token = create_collector_token()
     token_hash = hash_collector_token(token)
-    collector_identity = payload.collector_id or f"collector-{token[:12]}"
+    collector_identity = clean_optional_text(payload.collector_id) or f"collector-{token[:12]}"
+    source_machine = clean_optional_text(payload.source_machine) or None
+    display_name = collector_display_name(
+        payload.collector_name,
+        source_machine=source_machine,
+        collector_id=collector_identity,
+    )
 
     collector = db.scalars(
         select(Collector).where(
@@ -1250,9 +1858,9 @@ def upsert_collector(
             tenant_id=tenant_id,
             workspace_id=workspace_id,
             collector_id=collector_identity,
-            collector_name=payload.collector_name,
+            collector_name=display_name,
             token_hash=token_hash,
-            source_machine=payload.source_machine,
+            source_machine=source_machine,
             client_version=payload.client_version,
             online_status="offline",
             remark=payload.remark,
@@ -1261,9 +1869,12 @@ def upsert_collector(
         )
         db.add(collector)
     else:
-        collector.collector_name = payload.collector_name
+        if is_default_collector_display_name(collector.collector_name) or not is_default_collector_display_name(
+            payload.collector_name
+        ):
+            collector.collector_name = display_name
         collector.token_hash = token_hash
-        collector.source_machine = payload.source_machine
+        collector.source_machine = source_machine
         collector.client_version = payload.client_version
         collector.is_enabled = True
         collector.remark = payload.remark
@@ -1296,13 +1907,17 @@ def collector_identity_is_available(
 def download_collector_client(
     mode: str = Query(default="cli", pattern="^(cli|script|exe)$"),
     _current_user: CurrentUser = Depends(get_current_user),
-) -> StreamingResponse:
+) -> Response:
     archive = build_collector_client_archive(mode)
+    content = archive.getvalue()
     filename = quote("订单整理系统采集器.zip")
-    return StreamingResponse(
-        archive,
+    return Response(
+        content=content,
         media_type="application/zip",
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{filename}",
+            "Content-Length": str(len(content)),
+        },
     )
 
 
@@ -1340,6 +1955,7 @@ def collector_status(
     return {
         "collectors": [public_collector(collector) for collector in collectors],
         "active_task": public_task(active_task) if active_task else None,
+        "collector_client": collector_client_release_status(),
     }
 
 
@@ -1410,23 +2026,170 @@ def stop_capture(
     return public_task(task)
 
 
+@router.get("/system-settings/data-maintenance")
+def data_maintenance_summary(
+    db: Session = Depends(get_db),
+    _current_user: CurrentUser = Depends(get_current_user),
+    workspace_id: int = Depends(get_workspace_id),
+) -> dict[str, Any]:
+    return capture_data_summary(db, workspace_id=workspace_id)
+
+
+@router.post("/system-settings/data-maintenance/archive-capture-data")
+def archive_capture_data(
+    payload: ArchiveCaptureDataRequest = Body(default_factory=ArchiveCaptureDataRequest),
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(require_write),
+    workspace_id: int = Depends(get_workspace_id),
+) -> dict[str, Any]:
+    cutoff = maintenance_cutoff(payload.days_before)
+    tasks = [
+        task
+        for task in db.scalars(
+            select(CaptureTask)
+            .where(
+                CaptureTask.workspace_id == workspace_id,
+                CaptureTask.is_deleted.is_(False),
+                CaptureTask.archived_at.is_(None),
+                CaptureTask.status != "collecting",
+            )
+            .order_by(CaptureTask.id.asc())
+        ).all()
+        if capture_task_before_cutoff(task, cutoff)
+    ]
+
+    archived_raw_records = 0
+    archived_standard_details = 0
+    for task in tasks:
+        counts = set_capture_task_archive_state(
+            db,
+            task=task,
+            user_id=current_user.id,
+            archived=True,
+        )
+        archived_raw_records += counts["raw_record_count"]
+        archived_standard_details += counts["standard_detail_count"]
+
+    db.commit()
+    return {
+        "archived_capture_tasks": len(tasks),
+        "archived_raw_records": archived_raw_records,
+        "archived_standard_details": archived_standard_details,
+        "summary": capture_data_summary(db, workspace_id=workspace_id),
+    }
+
+
+@router.post("/system-settings/data-maintenance/delete-archived-capture-data")
+def delete_archived_capture_data(
+    payload: DeleteArchivedCaptureDataRequest,
+    db: Session = Depends(get_db),
+    _current_user: CurrentUser = Depends(require_write),
+    workspace_id: int = Depends(get_workspace_id),
+) -> dict[str, Any]:
+    if payload.confirm_text.strip() != "删除归档数据":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="请输入确认文字：删除归档数据",
+        )
+
+    cutoff = maintenance_cutoff(payload.days_before)
+    tasks = [
+        task
+        for task in db.scalars(
+            select(CaptureTask)
+            .where(
+                CaptureTask.workspace_id == workspace_id,
+                CaptureTask.is_deleted.is_(False),
+                CaptureTask.archived_at.is_not(None),
+            )
+            .order_by(CaptureTask.id.asc())
+        ).all()
+        if capture_task_before_cutoff(task, cutoff)
+    ]
+    task_ids = {int(task.id) for task in tasks}
+    raw_records = db.scalars(
+        select(RawCaptureRecord).where(
+            RawCaptureRecord.workspace_id == workspace_id,
+            RawCaptureRecord.task_id.in_(task_ids),
+            RawCaptureRecord.archived_at.is_not(None),
+        )
+    ).all() if task_ids else []
+    details = [
+        detail
+        for detail in db.scalars(
+            select(StandardDetail).where(
+                StandardDetail.workspace_id == workspace_id,
+                StandardDetail.archived_at.is_not(None),
+            )
+        ).all()
+        if (standard_detail_task_id(detail) or 0) in task_ids
+    ] if task_ids else []
+    detail_batch_ids = {
+        int(detail.standard_detail_batch_id)
+        for detail in details
+        if detail.standard_detail_batch_id
+    }
+    detail_batches = db.scalars(
+        select(StandardDetailBatch).where(
+            StandardDetailBatch.workspace_id == workspace_id,
+            StandardDetailBatch.id.in_(detail_batch_ids),
+        )
+    ).all() if detail_batch_ids else []
+
+    deleted_counts = {
+        "deleted_capture_tasks": len(tasks),
+        "deleted_raw_records": len(raw_records),
+        "deleted_standard_details": len(details),
+        "deleted_standard_detail_batches": len(detail_batches),
+    }
+    for detail in details:
+        db.delete(detail)
+    for batch in detail_batches:
+        db.delete(batch)
+    for record in raw_records:
+        db.delete(record)
+    for task in tasks:
+        db.delete(task)
+
+    db.commit()
+    return {
+        **deleted_counts,
+        "summary": capture_data_summary(db, workspace_id=workspace_id),
+    }
+
+
 @router.post("/collector-control/parse-records")
 def parse_capture_records(
     payload: ParseRecordsRequest = Body(default_factory=ParseRecordsRequest),
     db: Session = Depends(get_db),
     _current_user: CurrentUser = Depends(require_write),
     workspace_id: int = Depends(get_workspace_id),
-) -> dict[str, int]:
+) -> dict[str, Any]:
     statement = select(RawCaptureRecord).where(
         RawCaptureRecord.workspace_id == workspace_id,
         RawCaptureRecord.is_deleted.is_(False),
+        RawCaptureRecord.archived_at.is_(None),
     )
     if payload.task_id is not None:
         statement = statement.where(RawCaptureRecord.task_id == payload.task_id)
     records = db.scalars(statement.order_by(RawCaptureRecord.id.asc())).all()
-    result = parse_raw_capture_records(db, records, force=payload.force)
-    db.commit()
-    return result
+
+    active_pack = active_recognition_rule_pack(db, workspace_id=workspace_id)
+    if active_pack is None:
+        return {
+            "status": RULE_PACK_MISSING_STATUS,
+            "rule_pack_required": True,
+            "message": "当前工作空间未启用识别规则包。请先导入并启用规则包，再进行面单识别。",
+            "parsed": 0,
+            "skipped": 0,
+            "raw_record_count": len(records),
+            "task_id": payload.task_id,
+        }
+
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="旧面单解析入口已停用。请使用独立面单解析服务生成订单行，避免旧 standard_details 与新订单行数据混用。",
+    )
 
 
 @router.get("/collector-control/tasks/{task_id}/raw-document")
@@ -1467,7 +2230,11 @@ def download_raw_capture_document(
             raw_record_collector_label(record, collectors_by_id),
             record.source_machine,
             source_component_label(record.source_component),
+            record.source_index,
+            record.dedupe_key,
             record.captured_at,
+            record.payload_format,
+            json_text(record.source_columns),
             record.status,
             record.raw_payload,
         ]
@@ -1480,13 +2247,17 @@ def download_raw_capture_document(
             "采集器",
             "电脑名",
             "来源组件",
+            "来源序号",
+            "去重键",
             "采集时间",
+            "原文格式",
+            "本地来源信息",
             "状态",
             "采集原文",
         ],
         rows,
     )
-    return xlsx_response(workbook, f"capture-task-{task.id}-raw.xlsx")
+    return xlsx_response(workbook, business_download_filename("采集原文", "xlsx"))
 
 
 @router.get("/collector-control/tasks/{task_id}/standard-document")
@@ -1503,14 +2274,14 @@ def download_standard_capture_document(
     sheet = workbook.active
     sheet.title = "整理结果"
     export_fields = db.scalars(
-        select(FieldDefinition)
+        select(ExportHeaderDefinition)
         .where(
-            FieldDefinition.workspace_id == workspace_id,
-            FieldDefinition.export_enabled.is_(True),
-            FieldDefinition.export_order > 0,
-            FieldDefinition.is_deleted.is_(False),
+            ExportHeaderDefinition.workspace_id == workspace_id,
+            ExportHeaderDefinition.export_enabled.is_(True),
+            ExportHeaderDefinition.export_order > 0,
+            ExportHeaderDefinition.is_deleted.is_(False),
         )
-        .order_by(FieldDefinition.export_order.asc(), FieldDefinition.id.asc())
+        .order_by(ExportHeaderDefinition.export_order.asc(), ExportHeaderDefinition.id.asc())
     ).all()
 
     if not export_fields:
@@ -1519,7 +2290,7 @@ def download_standard_capture_document(
             ["提示"],
             [["当前工作区还没有定义整理文档表头，暂不生成业务整理文档。"]],
         )
-        return xlsx_response(workbook, f"capture-task-{task.id}-standard.xlsx")
+        return xlsx_response(workbook, business_download_filename("整理文档", "xlsx"))
 
     rows = []
     for detail in details:
@@ -1532,9 +2303,10 @@ def download_standard_capture_document(
         [field.name for field in export_fields],
         rows,
     )
-    return xlsx_response(workbook, f"capture-task-{task.id}-standard.xlsx")
+    return xlsx_response(workbook, business_download_filename("整理文档", "xlsx"))
 
 
+@router.get("/collector-control/tasks/{task_id}/report-preview")
 @router.get("/collector-control/tasks/{task_id}/recognition-preview")
 def preview_capture_task_recognition(
     task_id: int,
@@ -1545,15 +2317,21 @@ def preview_capture_task_recognition(
     task = task_or_404(db, task_id, workspace_id)
     details = standard_details_for_task(db, workspace_id=workspace_id, task_id=task.id)
     rows = recognition_rows_for_task(db, workspace_id=workspace_id, task_id=task.id)
+    waybill_count = recognition_waybill_count(rows)
     return {
         "task_id": task.id,
         "task_name": task.name,
-        "detail_count": len(details),
+        "contract": EXPORT_PRODUCT_SKU_LINKING_CONTRACT,
+        "data_source": "order_row_drafts",
+        "detail_count": waybill_count or len(details),
+        "waybill_count": waybill_count,
+        "order_row_count": len(rows),
         "rows": rows,
-        "summary": recognition_summary(rows),
+        "summary": export_recognition_summary(rows),
     }
 
 
+@router.get("/collector-control/tasks/{task_id}/report-workbook")
 @router.get("/collector-control/tasks/{task_id}/recognition-report")
 def download_capture_task_recognition_report(
     task_id: int,
@@ -1568,6 +2346,7 @@ def download_capture_task_recognition_report(
     report_layout = recognition_report_layout_from_query(layout)
     report_rows = recognition_report_line_items(rows, report_layout)
     exception_rows = recognition_exception_export_rows(rows)
+    download_timestamp = business_download_timestamp()
 
     if report_layout["output_mode"] == "stall_workbooks":
         archive = BytesIO()
@@ -1581,16 +2360,28 @@ def download_capture_task_recognition_report(
                 )
                 workbook_buffer = BytesIO()
                 stall_workbook.save(workbook_buffer)
-                zip_file.writestr(f"{safe_download_name_part(stall_name)}.xlsx", workbook_buffer.getvalue())
-            if exception_rows:
-                exception_workbook = Workbook()
-                exception_sheet = exception_workbook.active
-                exception_sheet.title = "异常明细"
-                append_xlsx_rows(exception_sheet, RECOGNITION_EXCEPTION_HEADERS, exception_rows)
-                exception_buffer = BytesIO()
-                exception_workbook.save(exception_buffer)
-                zip_file.writestr("异常明细.xlsx", exception_buffer.getvalue())
-        return zip_stream_response(archive, f"capture-task-{task.id}-recognition-report-by-stall.zip")
+                zip_file.writestr(
+                    business_download_filename(
+                        f"{safe_download_name_part(stall_name)}_{BUSINESS_REPORT_DOWNLOAD_PREFIX}",
+                        "xlsx",
+                        timestamp=download_timestamp,
+                    ),
+                    workbook_buffer.getvalue(),
+                )
+            exception_workbook = Workbook()
+            exception_sheet = exception_workbook.active
+            exception_sheet.title = RECOGNITION_EXCEPTION_SHEET_TITLE
+            append_xlsx_rows(exception_sheet, RECOGNITION_EXCEPTION_HEADERS, exception_rows)
+            exception_buffer = BytesIO()
+            exception_workbook.save(exception_buffer)
+            zip_file.writestr(
+                business_download_filename(RECOGNITION_EXCEPTION_SHEET_TITLE, "xlsx", timestamp=download_timestamp),
+                exception_buffer.getvalue(),
+            )
+        return zip_stream_response(
+            archive,
+            business_download_filename(f"{BUSINESS_REPORT_DOWNLOAD_PREFIX}_分档口", "zip", timestamp=download_timestamp),
+        )
 
     workbook = Workbook()
     image_buffers: list[BytesIO] = []
@@ -1618,10 +2409,11 @@ def download_capture_task_recognition_report(
         style_recognition_report_sheet(sheet, report_layout)
         attach_recognition_report_images(sheet, report_rows, images_by_id, image_buffers, report_layout)
 
-    if exception_rows:
-        exception_sheet = workbook.create_sheet("异常明细")
-        append_xlsx_rows(exception_sheet, RECOGNITION_EXCEPTION_HEADERS, exception_rows)
-    return xlsx_response(workbook, f"capture-task-{task.id}-recognition-report.xlsx")
+    append_recognition_exception_sheet(workbook, exception_rows)
+    return xlsx_response(
+        workbook,
+        business_download_filename(BUSINESS_REPORT_DOWNLOAD_PREFIX, "xlsx", timestamp=download_timestamp),
+    )
 
 
 @router.post("/collector-runtime/heartbeat")
@@ -1630,7 +2422,12 @@ def collector_heartbeat(
     db: Session = Depends(get_db),
     x_collector_token: Annotated[str | None, Header(alias="X-Collector-Token")] = None,
 ) -> dict[str, Any]:
-    collector = get_collector_from_token(db, x_collector_token)
+    collector = get_collector_from_token(
+        db,
+        x_collector_token,
+        identity_hint=payload.collector_id or payload.source_machine,
+        allow_identity_rebind=True,
+    )
     collector.online_status = "online"
     collector.last_heartbeat_at = utc_now()
     collector.status_payload = {
@@ -1650,6 +2447,15 @@ def collector_heartbeat(
         current_collector_id=collector.id,
     ):
         collector.collector_id = reported_identity
+    reported_display_name = collector_display_name(
+        payload.collector_name,
+        source_machine=payload.source_machine,
+        collector_id=reported_identity or collector.collector_id,
+    )
+    if is_default_collector_display_name(collector.collector_name) or not is_default_collector_display_name(
+        payload.collector_name
+    ):
+        collector.collector_name = reported_display_name
     if payload.client_version:
         collector.client_version = payload.client_version
 
@@ -1667,12 +2473,18 @@ def upload_raw_records(
     db: Session = Depends(get_db),
     x_collector_token: Annotated[str | None, Header(alias="X-Collector-Token")] = None,
 ) -> dict[str, int]:
+    """Persist collector payloads as raw_capture_record only.
+
+    Waybill reading/parsing is owned by the downstream module and is triggered
+    explicitly through /collector-control/parse-records.
+    """
     collector = get_collector_from_token(db, x_collector_token)
     task = db.get(CaptureTask, payload.task_id)
     if (
         task is None
         or task.workspace_id != collector.workspace_id
         or task.is_deleted
+        or task.archived_at
         or task.status not in {"collecting", "completed"}
         or (task.collector_id is not None and task.collector_id != collector.id)
     ):
@@ -1687,33 +2499,21 @@ def upload_raw_records(
                     RawCaptureRecord.workspace_id == collector.workspace_id,
                     RawCaptureRecord.dedupe_key == item.dedupe_key,
                     RawCaptureRecord.is_deleted.is_(False),
+                    RawCaptureRecord.archived_at.is_(None),
                 )
             ).first()
             if existing is not None:
                 skipped += 1
                 continue
 
-        record = RawCaptureRecord(
-            tenant_id=collector.tenant_id,
-            workspace_id=collector.workspace_id,
-            task_id=task.id,
-            collector_id=collector.id,
-            document_id=item.document_id,
-            source_machine=item.source_machine or collector.source_machine,
-            source_component=item.source_component,
-            source_index=item.source_index,
-            dedupe_key=item.dedupe_key,
-            waybill_mode=item.waybill_mode,
-            payload_format=item.payload_format,
-            raw_payload=item.raw_payload,
-            source_columns=item.source_columns,
-            parsed_payload=item.parsed_payload,
-            captured_at=item.captured_at or utc_now(),
-            status="pending",
+        record = build_raw_capture_record(
+            collector=collector,
+            task=task,
+            payload=item,
+            captured_at=utc_now(),
         )
         db.add(record)
         db.flush()
-        parse_raw_capture_record(db, record)
         inserted += 1
 
     db.commit()

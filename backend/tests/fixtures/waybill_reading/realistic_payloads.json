@@ -1,0 +1,118 @@
+[
+  {
+    "case_id": "raw_fields_plus_printed_attribute_text",
+    "document_id": "DOC-REALISTIC-1",
+    "source_component": "cainiao-cnprint",
+    "source_index": "realistic-1",
+    "source_columns": {
+      "rowid": 7113,
+      "component_task_id": "BVCn4m6yAAAA",
+      "task_time": "2026-06-16 14:27:17",
+      "db_path": "C:\\Program Files\\printer\\print.db",
+      "productInfo": "秒45 2025新款网页面女鞋男鞋情侣透气跑步鞋 默认默认",
+      "seller_remark": "默认默认"
+    },
+    "raw_payload": {
+      "cmd": "print",
+      "task": {
+        "documents": [
+          {
+            "documentID": "DOC-REALISTIC-1",
+            "contents": [
+              {
+                "data": {
+                  "rowid": 7113,
+                  "component_task_id": "BVCn4m6yAAAA",
+                  "task_time": "2026-06-16 14:27:17",
+                  "db_path": "C:\\Program Files\\printer\\print.db",
+                  "productInfo": "秒45 2025新款网页面女鞋男鞋情侣透气跑步鞋 默认默认",
+                  "remark": "买家备注 加急",
+                  "quantity": "1",
+                  "shopName": "帅盒体育"
+                },
+                "printXML": "<text><![CDATA[颜色分类: 白橙/Cloudstratus3;鞋码:43, *1]]></text><text><![CDATA[2025新款网页面女鞋男鞋情侣透气跑步鞋休闲时尚运动鞋健身*1]]></text>"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "expected_present_texts": [
+      "秒45 2025新款网页面女鞋男鞋情侣透气跑步鞋 默认默认",
+      "默认默认",
+      "买家备注 加急",
+      "1",
+      "颜色分类: 白橙/Cloudstratus3;鞋码:43, *1",
+      "2025新款网页面女鞋男鞋情侣透气跑步鞋休闲时尚运动鞋健身*1",
+      "*1"
+    ],
+    "expected_hidden_texts": [
+      "7113",
+      "BVCn4m6yAAAA",
+      "2026-06-16 14:27:17",
+      "C:\\Program Files\\printer\\print.db",
+      "帅盒体育"
+    ]
+  },
+  {
+    "case_id": "multi_item_printed_line_keeps_original",
+    "document_id": "DOC-REALISTIC-2",
+    "source_component": "cloud-print-client",
+    "source_index": "realistic-2",
+    "source_columns": {},
+    "raw_payload": {
+      "cmd": "print",
+      "task": {
+        "documents": [
+          {
+            "documentID": "DOC-REALISTIC-2",
+            "contents": [
+              {
+                "printXML": "<text><![CDATA[3件]]></text><text><![CDATA[【登山鞋涉水鞋防水机能户外徒步男鞋女鞋休闲防滑潮湿越野鞋跑步鞋】低帮黑白 42 1件；【登山鞋涉水鞋防水机能户外徒步男鞋女鞋休闲防滑潮湿越野鞋跑步鞋】低帮深卡其 39 1件；【登山鞋涉水鞋防水机能户外徒步男鞋女鞋休闲防滑潮湿越野鞋跑步鞋】低帮浅绿 36 1件]]></text>"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "expected_present_texts": [
+      "3件",
+      "【登山鞋涉水鞋防水机能户外徒步男鞋女鞋休闲防滑潮湿越野鞋跑步鞋】低帮黑白 42 1件；【登山鞋涉水鞋防水机能户外徒步男鞋女鞋休闲防滑潮湿越野鞋跑步鞋】低帮深卡其 39 1件；【登山鞋涉水鞋防水机能户外徒步男鞋女鞋休闲防滑潮湿越野鞋跑步鞋】低帮浅绿 36 1件",
+      "【登山鞋涉水鞋防水机能户外徒步男鞋女鞋休闲防滑潮湿越野鞋跑步鞋】低帮黑白 42 1件",
+      "【登山鞋涉水鞋防水机能户外徒步男鞋女鞋休闲防滑潮湿越野鞋跑步鞋】低帮深卡其 39 1件",
+      "【登山鞋涉水鞋防水机能户外徒步男鞋女鞋休闲防滑潮湿越野鞋跑步鞋】低帮浅绿 36 1件"
+    ],
+    "expected_hidden_texts": []
+  },
+  {
+    "case_id": "plain_printxml_text_node_with_attributes",
+    "document_id": "DOC-REALISTIC-3",
+    "source_component": "cainiao-cnprint",
+    "source_index": "realistic-3",
+    "source_columns": {},
+    "raw_payload": {
+      "cmd": "print",
+      "task": {
+        "documents": [
+          {
+            "documentID": "DOC-REALISTIC-3",
+            "contents": [
+              {
+                "printXML": "<text x=\"120\" y=\"80\">Plain Shoe，Green，41*1</text><text x=\"120\" y=\"105\">Buyer note &amp; seller note</text>"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "expected_present_texts": [
+      "Plain Shoe，Green，41*1",
+      "Plain Shoe",
+      "Green",
+      "41",
+      "*1",
+      "Buyer note & seller note"
+    ],
+    "expected_hidden_texts": []
+  }
+]

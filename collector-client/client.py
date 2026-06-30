@@ -22,9 +22,9 @@ import urllib.request
 CLIENT_VERSION = "single-exe-token-collector-20260614"
 DEFAULT_BASE_URL = "http://127.0.0.1:5173/api/v1"
 DEFAULT_WEB_PORT = 5173
-DEFAULT_COLLECTOR_NAME = "Cargo Platform 采集器"
+DEFAULT_COLLECTOR_NAME = ""
 LOGGER = logging.getLogger("cargo_platform_collector")
-LEGACY_DEFAULT_COLLECTOR_NAMES = {"", "业务机采集器", "本机采集器"}
+LEGACY_DEFAULT_COLLECTOR_NAMES = {"", "Cargo Platform 采集器", "业务机采集器", "本机采集器", "采集器"}
 NETWORK_RETRY_EXCEPTIONS = (
     urllib.error.URLError,
     TimeoutError,
@@ -74,7 +74,7 @@ def default_collector_id() -> str:
 
 
 def default_collector_name() -> str:
-    return DEFAULT_COLLECTOR_NAME
+    return machine_name()
 
 
 def normalize_collector_name(value: Any) -> str:
@@ -471,9 +471,17 @@ def poll_collector_once(
     if not config.token:
         raise RuntimeError("collector token is required")
     if config.simulate:
-        run_simulator_once(config.base_url, config.token, sequence)
+        run_simulator_once(config.base_url, config.token, sequence, config.collector_id, config.collector_name)
     else:
-        run_sqlite_once(config.base_url, config.token, state, adapters, config.batch_size)
+        run_sqlite_once(
+            config.base_url,
+            config.token,
+            state,
+            adapters,
+            config.batch_size,
+            config.collector_id,
+            config.collector_name,
+        )
     return config
 
 
@@ -553,6 +561,8 @@ def heartbeat(
     base_url: str,
     token: str,
     adapters: list[PrintDbAdapter],
+    collector_id: str | None = None,
+    collector_name: str | None = None,
     last_error: str | None = None,
     runtime_status: str = "checking",
 ) -> dict[str, Any]:
@@ -569,7 +579,8 @@ def heartbeat(
         token,
         {
             "source_machine": machine_name(),
-            "collector_id": default_collector_id(),
+            "collector_id": collector_id or default_collector_id(),
+            "collector_name": normalize_collector_name(collector_name),
             "client_version": CLIENT_VERSION,
             "runtime_status": runtime_status,
             "adapter_status": adapter_status,
@@ -625,8 +636,17 @@ def run_sqlite_once(
     state: CollectorState,
     adapters: list[PrintDbAdapter],
     batch_size: int,
+    collector_id: str | None = None,
+    collector_name: str | None = None,
 ) -> None:
-    heartbeat_state = heartbeat(base_url, token, adapters, runtime_status="listening")
+    heartbeat_state = heartbeat(
+        base_url,
+        token,
+        adapters,
+        collector_id=collector_id,
+        collector_name=collector_name,
+        runtime_status="listening",
+    )
     active_tasks = heartbeat_state.get("tasks", [])
     active_task_ids = {int(task["id"]) for task in active_tasks}
     LOGGER.info("heartbeat ok, active tasks: %s", len(active_task_ids))
@@ -677,13 +697,21 @@ def upload_sample(base_url: str, token: str, task_id: int, sequence: int) -> dic
     )
 
 
-def run_simulator_once(base_url: str, token: str, sequence: int) -> None:
+def run_simulator_once(
+    base_url: str,
+    token: str,
+    sequence: int,
+    collector_id: str | None = None,
+    collector_name: str | None = None,
+) -> None:
     state = post_json(
         base_url,
         "/collector-runtime/heartbeat",
         token,
         {
             "source_machine": machine_name(),
+            "collector_id": collector_id or default_collector_id(),
+            "collector_name": normalize_collector_name(collector_name),
             "client_version": f"{CLIENT_VERSION}-simulator",
             "runtime_status": "listening",
             "adapter_status": {"simulator": {"status": "ready"}},

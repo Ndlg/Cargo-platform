@@ -1,0 +1,68 @@
+{
+  "contract_version": "recognition_rule_pack_v1",
+  "pack": {
+    "code": "current-user-shoes-v1",
+    "name": "当前用户鞋类面单识别规则",
+    "version": "1.0.0",
+    "description": "适用于当前用户鞋类订单报货面单。该规则包不是系统默认规则，必须导入并启用后才会参与识别。"
+  },
+  "parser_policy": {
+    "requires_active_rule_pack": true,
+    "order_row_parser": "shoe_waybill_v1",
+    "special_text_keywords": [
+      {
+        "keyword": "微信",
+        "status": "special",
+        "reason": "wechat_special_waybill",
+        "parse_fields": false,
+        "match_product": false,
+        "match_image": false,
+        "display_reason": "微信特殊单，保留原文，不参与商品和图片匹配。"
+      }
+    ],
+    "quantity": {
+      "default_if_missing": 1,
+      "patterns": ["*1", "1件", "2件", "3件"],
+      "strip_from_field_text": true
+    },
+    "label_cleanup": {
+      "strip_prefixes": ["颜色分类", "颜色", "鞋码", "尺码", "规格"],
+      "separator_chars": [":", "：", ";", "；", ",", "，", "/", "|"],
+      "keep_original_trace": true
+    },
+    "size_normalization": {
+      "enabled": true,
+      "strip_purchase_hint": true,
+      "examples": [
+        "44(偏大一码，建议拍小) -> 44",
+        "鞋码:42.5 -> 42.5"
+      ]
+    },
+    "multi_item": {
+      "split_parent_waybill": true,
+      "preserve_parent_text": true,
+      "pair_product_lines_with_labeled_attr_lines": true,
+      "output_item_rows": true
+    },
+    "manual_label_only": {
+      "allow_empty_product": true,
+      "default_quantity_if_missing": 1,
+      "reason": "用户手工单可能只写颜色分类和鞋码，商品归属交给后续商品匹配规则。"
+    },
+    "non_shoe": {
+      "allow_non_numeric_sales_attr2": true,
+      "reason": "非鞋类或特殊商品可能没有标准尺码。"
+    }
+  },
+  "product_matching_policy": {
+    "allowed_product_match_fields": ["product", "sales_attr1", "sales_attr2", "remark"],
+    "allowed_sku_match_fields": ["sales_attr1", "sales_attr2", "remark"],
+    "no_hidden_guessing": true,
+    "requires_user_confirmed_product_assets": true
+  },
+  "export_policy": {
+    "normal_columns": ["商品", "销售属性1", "图片", "销售属性2", "数量", "备注", "图片匹配文本"],
+    "exception_sheet": "异常面单",
+    "exception_columns": ["图片匹配文本"]
+  }
+}

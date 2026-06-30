@@ -1,13 +1,12 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { ArrowDown, ArrowUp, Check, Delete, Plus, Refresh, RefreshLeft } from '@element-plus/icons-vue'
+import { ArrowLeft, ArrowRight, Check, Delete, Hide, Plus, Refresh, RefreshLeft } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 import {
   fetchImageAssetBlob,
   getCaptureTaskRecognitionPreview,
   getRecords,
-  type ApiRecord,
   type CaptureTaskRecord,
   type RecognitionPreviewResponse,
   type RecognitionPreviewRow,
@@ -25,26 +24,20 @@ import {
   normalizeReportLayout,
   presetReportLayout,
   reportCellText,
+  reportColumnWidthFromPixels,
   reportColumnPixelWidth,
   saveSavedReportLayouts,
   saveReportLayout,
   type ReportFieldKey,
   type ReportLayout,
-  type ReportLayoutColumn,
   type ReportOutputMode,
   type ReportPreviewRow,
   type SavedReportLayout,
   visibleReportColumns,
 } from './reportExportLayout'
 
-type StandardDetailRecord = ApiRecord & {
-  id: number
-  field_values?: Record<string, unknown> | null
-}
-
 const session = useSessionStore()
 const captureTasks = ref<CaptureTaskRecord[]>([])
-const standardDetails = ref<StandardDetailRecord[]>([])
 const selectedTaskId = ref<number | null>(null)
 const recognitionPreview = ref<RecognitionPreviewResponse | null>(null)
 const layout = ref<ReportLayout>(loadReportLayout(session.currentWorkspaceId))
@@ -66,7 +59,8 @@ const selectedTask = computed(
 )
 const recognitionRows = computed<RecognitionPreviewRow[]>(() => recognitionPreview.value?.rows ?? [])
 const reportRows = computed<ReportPreviewRow[]>(() => buildReportRows(recognitionRows.value, layout.value))
-const visibleColumns = computed(() => visibleReportColumns(layout.value))
+const visibleColumns = computed(() => layout.value.columns.filter((column) => column.visible))
+const hiddenColumns = computed(() => layout.value.columns.filter((column) => !column.visible))
 const exceptionCount = computed(
   () =>
     Number(recognitionPreview.value?.summary.product_unmatched ?? 0)
@@ -74,15 +68,17 @@ const exceptionCount = computed(
     + Number(recognitionPreview.value?.summary.conflict ?? 0),
 )
 
-const detailCounts = computed(() => {
-  const counts = new Map<number, number>()
-  standardDetails.value.forEach((detail) => {
-    const taskId = Number(detail.field_values?.capture_task_id)
-    if (!Number.isInteger(taskId) || taskId <= 0) return
-    counts.set(taskId, (counts.get(taskId) ?? 0) + 1)
-  })
-  return counts
-})
+const imageResizeState = ref<{
+  startX: number
+  startY: number
+  startSize: number
+} | null>(null)
+const imageMoveState = ref<{
+  startX: number
+  startY: number
+  startOffsetX: number
+  startOffsetY: number
+} | null>(null)
 
 function formatTaskTime(value?: string | null): string {
   if (!value) return '-'
@@ -105,28 +101,31 @@ function taskStatusLabel(status?: string | null): string {
 
 function taskLabel(task: CaptureTaskRecord, index = 0): string {
   const round = index <= 0 ? '最近一轮' : `上一轮 ${index}`
-  const count = detailCounts.value.get(task.id) ?? 0
-  return `${round}：${formatTaskTime(task.started_at)} ${taskStatusLabel(task.status)} / ${count} 张`
+  return `${round}：${formatTaskTime(task.started_at)} ${taskStatusLabel(task.status)} / #${task.id}`
 }
 
 function ensureSelectedTask() {
   const taskIds = new Set(sortedTasks.value.map((task) => task.id))
   if (selectedTaskId.value && taskIds.has(selectedTaskId.value)) return
 
-  const taskIdsWithDetails = new Set<number>()
-  detailCounts.value.forEach((count, taskId) => {
-    if (count > 0) taskIdsWithDetails.add(taskId)
-  })
-  selectedTaskId.value = sortedTasks.value.find((task) => taskIdsWithDetails.has(task.id))?.id
-    ?? sortedTasks.value[0]?.id
-    ?? null
+  selectedTaskId.value = sortedTasks.value[0]?.id ?? null
 }
 
 function fieldDescription(key: ReportFieldKey): string {
   return REPORT_FIELD_DEFINITIONS.find((field) => field.key === key)?.description ?? ''
 }
 
-function moveColumn(index: number, direction: -1 | 1) {
+function fieldLabel(key: ReportFieldKey): string {
+  return REPORT_FIELD_DEFINITIONS.find((field) => field.key === key)?.label ?? key
+}
+
+function columnIndex(key: ReportFieldKey): number {
+  return layout.value.columns.findIndex((column) => column.key === key)
+}
+
+function moveColumnByKey(key: ReportFieldKey, direction: -1 | 1) {
+  const index = columnIndex(key)
+  if (index < 0) return
   const nextIndex = index + direction
   if (nextIndex < 0 || nextIndex >= layout.value.columns.length) return
   const nextColumns = [...layout.value.columns]
@@ -139,6 +138,60 @@ function moveColumn(index: number, direction: -1 | 1) {
   }
 }
 
+function updateColumnLabel(key: ReportFieldKey, label: string) {
+  const index = columnIndex(key)
+  if (index < 0) return
+  const nextColumns = [...layout.value.columns]
+  nextColumns[index] = {
+    ...nextColumns[index],
+    label,
+  }
+  layout.value = {
+    ...layout.value,
+    presetId: 'custom',
+    columns: nextColumns,
+  }
+}
+
+function setColumnVisible(key: ReportFieldKey, visible: boolean) {
+  const index = columnIndex(key)
+  if (index < 0) return
+  const nextColumns = [...layout.value.columns]
+  nextColumns[index] = {
+    ...nextColumns[index],
+    visible,
+  }
+  layout.value = {
+    ...layout.value,
+    presetId: 'custom',
+    columns: nextColumns,
+  }
+}
+
+function updateColumnWidth(key: ReportFieldKey, pixelWidth: number) {
+  const index = columnIndex(key)
+  if (index < 0) return
+  const nextColumns = [...layout.value.columns]
+  nextColumns[index] = {
+    ...nextColumns[index],
+    width: reportColumnWidthFromPixels(pixelWidth),
+  }
+  const nextLayout: ReportLayout = {
+    ...layout.value,
+    presetId: 'custom',
+    columns: nextColumns,
+  }
+  if (key === 'sku_image') {
+    const imageSize = clampPreviewSize(pixelWidth - 28, 32, 220)
+    nextLayout.imageWidth = imageSize
+    nextLayout.imageHeight = imageSize
+    nextLayout.rowHeight = Math.max(32, imageSize + 16)
+    nextLayout.imageOffsetX = clampPreviewSize(nextLayout.imageOffsetX, 0, Math.max(0, pixelWidth - 24 - imageSize))
+    nextLayout.imageOffsetY = clampPreviewSize(nextLayout.imageOffsetY, 0, Math.max(0, nextLayout.rowHeight - 14 - imageSize))
+  }
+  layout.value = nextLayout
+}
+
 function resetDefault() {
   layout.value = defaultReportLayout()
   activeSavedLayoutId.value = ''
@@ -148,7 +201,24 @@ function resetDefault() {
 function selectOutputMode(mode: ReportOutputMode) {
   layout.value = {
     ...layout.value,
+    presetId: 'custom',
     outputMode: mode,
+  }
+}
+
+function setStackSalesAttr1(value: boolean) {
+  layout.value = {
+    ...layout.value,
+    presetId: 'custom',
+    stackSalesAttr1: value,
+  }
+}
+
+function setStackSalesAttr2(value: boolean) {
+  layout.value = {
+    ...layout.value,
+    presetId: 'custom',
+    stackSalesAttr2: value,
   }
 }
 
@@ -258,6 +328,124 @@ function layoutStyleSummary(targetLayout: ReportLayout): string {
   return `${layoutOutputLabel(targetLayout)} / ${groupMode} / ${columnCount} 列`
 }
 
+function clampPreviewSize(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min
+  return Math.min(Math.max(Math.round(value), min), max)
+}
+
+function skuImageColumn() {
+  return layout.value.columns.find((column) => column.key === 'sku_image')
+}
+
+function imageCellPixelWidth(): number {
+  const column = skuImageColumn()
+  return Math.max(32, column ? reportColumnPixelWidth(column) - 24 : layout.value.imageWidth)
+}
+
+function imageCellPixelHeight(): number {
+  return Math.max(32, layout.value.rowHeight - 14)
+}
+
+function imageOffsetBounds() {
+  return {
+    maxX: Math.max(0, imageCellPixelWidth() - layout.value.imageWidth),
+    maxY: Math.max(0, imageCellPixelHeight() - layout.value.imageHeight),
+  }
+}
+
+function applyImageSize(size: number) {
+  const imageSize = clampPreviewSize(size, 32, 220)
+  const currentImageColumnWidth = skuImageColumn() ? reportColumnPixelWidth(skuImageColumn()!) : imageSize + 28
+  const nextImageColumnWidth = Math.max(currentImageColumnWidth, imageSize + 28)
+  const nextColumns = layout.value.columns.map((column) => {
+    if (column.key !== 'sku_image') return column
+    return {
+      ...column,
+      width: reportColumnWidthFromPixels(nextImageColumnWidth),
+    }
+  })
+  const nextLayout = {
+    ...layout.value,
+    presetId: 'custom',
+    columns: nextColumns,
+    imageWidth: imageSize,
+    imageHeight: imageSize,
+    rowHeight: Math.max(32, imageSize + 16),
+  }
+  const maxX = Math.max(0, nextImageColumnWidth - 24 - imageSize)
+  const maxY = Math.max(0, nextLayout.rowHeight - 14 - imageSize)
+  nextLayout.imageOffsetX = clampPreviewSize(nextLayout.imageOffsetX, 0, maxX)
+  nextLayout.imageOffsetY = clampPreviewSize(nextLayout.imageOffsetY, 0, maxY)
+  layout.value = nextLayout
+}
+
+function applyImageOffset(offsetX: number, offsetY: number) {
+  const bounds = imageOffsetBounds()
+  layout.value = {
+    ...layout.value,
+    presetId: 'custom',
+    imageOffsetX: clampPreviewSize(offsetX, 0, bounds.maxX),
+    imageOffsetY: clampPreviewSize(offsetY, 0, bounds.maxY),
+  }
+}
+
+function startImageMove(event: PointerEvent) {
+  event.preventDefault()
+  event.stopPropagation()
+  imageMoveState.value = {
+    startX: event.clientX,
+    startY: event.clientY,
+    startOffsetX: layout.value.imageOffsetX,
+    startOffsetY: layout.value.imageOffsetY,
+  }
+  window.addEventListener('pointermove', moveImageFromPointer)
+  window.addEventListener('pointerup', stopImageMove, { once: true })
+}
+
+function moveImageFromPointer(event: PointerEvent) {
+  const state = imageMoveState.value
+  if (!state) return
+  applyImageOffset(
+    state.startOffsetX + event.clientX - state.startX,
+    state.startOffsetY + event.clientY - state.startY,
+  )
+}
+
+function stopImageMove() {
+  imageMoveState.value = null
+  window.removeEventListener('pointermove', moveImageFromPointer)
+}
+
+function startImageResize(event: PointerEvent) {
+  event.preventDefault()
+  event.stopPropagation()
+  imageResizeState.value = {
+    startX: event.clientX,
+    startY: event.clientY,
+    startSize: layout.value.imageWidth,
+  }
+  window.addEventListener('pointermove', resizeImageFromPointer)
+  window.addEventListener('pointerup', stopImageResize, { once: true })
+}
+
+function resizeImageFromPointer(event: PointerEvent) {
+  const state = imageResizeState.value
+  if (!state) return
+  const delta = Math.max(event.clientX - state.startX, event.clientY - state.startY)
+  applyImageSize(state.startSize + delta)
+}
+
+function stopImageResize() {
+  imageResizeState.value = null
+  window.removeEventListener('pointermove', resizeImageFromPointer)
+}
+
+function handlePreviewColumnResize(newWidth: number, _oldWidth: number, column: { property?: string }) {
+  const key = column.property as ReportFieldKey | undefined
+  if (!key) return
+  updateColumnWidth(key, newWidth)
+}
+
 function skuImageAssetId(row: { sku_image_asset_id?: number | null }): number | null {
   const id = Number(row.sku_image_asset_id)
   return Number.isInteger(id) && id > 0 ? id : null
@@ -339,12 +527,8 @@ async function load() {
   layout.value = loadReportLayout(session.currentWorkspaceId)
   savedLayouts.value = loadSavedReportLayouts(session.currentWorkspaceId)
   try {
-    const [tasks, details] = await Promise.all([
-      getRecords('/capture-tasks?limit=2000'),
-      getRecords('/standard-details?limit=2000'),
-    ])
+    const tasks = await getRecords('/capture-tasks?limit=2000')
     captureTasks.value = tasks as CaptureTaskRecord[]
-    standardDetails.value = details as StandardDetailRecord[]
     ensureSelectedTask()
     await loadRecognitionPreview()
   } catch (err) {
@@ -356,15 +540,17 @@ async function load() {
 
 function imageCellStyle() {
   return {
-    width: `${layout.value.imageWidth}px`,
-    height: `${layout.value.imageHeight}px`,
+    width: `${imageCellPixelWidth()}px`,
+    height: `${imageCellPixelHeight()}px`,
   }
 }
 
 function imageElementStyle() {
   return {
-    maxWidth: `${Math.max(layout.value.imageWidth - 8, 24)}px`,
-    maxHeight: `${Math.max(layout.value.imageHeight - 8, 24)}px`,
+    left: `${layout.value.imageOffsetX}px`,
+    top: `${layout.value.imageOffsetY}px`,
+    width: `${layout.value.imageWidth}px`,
+    height: `${layout.value.imageHeight}px`,
   }
 }
 
@@ -394,14 +580,18 @@ watch(reportRows, () => {
 })
 
 onMounted(load)
-onBeforeUnmount(() => revokeSkuImageUrls())
+onBeforeUnmount(() => {
+  revokeSkuImageUrls()
+  window.removeEventListener('pointermove', resizeImageFromPointer)
+  window.removeEventListener('pointermove', moveImageFromPointer)
+})
 </script>
 
 <template>
   <section class="page-header">
     <div>
       <h1>导出表头</h1>
-      <p>先选择一个报货表预设，再按需要调整字段顺序、表头名称、列宽、行高和图片大小。</p>
+      <p>在报货表预览里维护列和图片位置，保存后导出中心直接使用当前版式。</p>
     </div>
   </section>
 
@@ -478,105 +668,32 @@ onBeforeUnmount(() => revokeSkuImageUrls())
 
   <section class="work-surface">
     <div class="section-title-row">
-      <h2>字段和参数</h2>
-      <span class="muted-line">左侧维护 Excel 字段，右侧维护输出、汇总和尺寸。</span>
+      <h2>导出方式</h2>
+      <el-button :icon="RefreshLeft" link type="primary" @click="resetDefault">恢复默认</el-button>
     </div>
 
-    <div class="layout-editor-grid">
-      <el-table :data="layout.columns" row-key="key" border class="layout-column-table">
-        <el-table-column label="启用" width="80" align="center">
-          <template #default="{ row }">
-            <el-checkbox v-model="row.visible" />
-          </template>
-        </el-table-column>
-        <el-table-column label="顺序" width="110" align="center">
-          <template #default="{ $index }">
-            <div class="layout-order-buttons">
-              <el-button :disabled="$index === 0" :icon="ArrowUp" size="small" @click="moveColumn($index, -1)" />
-              <el-button
-                :disabled="$index === layout.columns.length - 1"
-                :icon="ArrowDown"
-                size="small"
-                @click="moveColumn($index, 1)"
-              />
-            </div>
-          </template>
-        </el-table-column>
-        <el-table-column label="业务字段" min-width="150">
-          <template #default="{ row }">
-            <strong>{{ REPORT_FIELD_DEFINITIONS.find((field) => field.key === row.key)?.label }}</strong>
-            <span class="muted-line">{{ fieldDescription(row.key) }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="Excel 表头名" min-width="180">
-          <template #default="{ row }">
-            <el-input v-model="row.label" />
-          </template>
-        </el-table-column>
-        <el-table-column label="列宽" width="130" align="center">
-          <template #default="{ row }">
-            <el-input-number v-model="row.width" :max="60" :min="8" controls-position="right" />
-          </template>
-        </el-table-column>
-      </el-table>
-
-      <div class="layout-size-panel">
-        <div class="layout-panel-title-row">
-          <h3>导出参数</h3>
-          <el-button :icon="RefreshLeft" link type="primary" @click="resetDefault">恢复默认</el-button>
-        </div>
-        <h4>输出方式</h4>
-        <div class="output-mode-control" role="radiogroup" aria-label="输出方式">
-          <button
-            v-for="option in REPORT_OUTPUT_MODE_OPTIONS"
-            :key="option.value"
-            class="output-mode-button"
-            :class="{ active: layout.outputMode === option.value }"
-            type="button"
-            role="radio"
-            :aria-checked="layout.outputMode === option.value"
-            @click="selectOutputMode(option.value)"
-          >
-            {{ outputModeControlLabel(option.value) }}
-          </button>
-        </div>
-        <p class="muted-text">
-          {{ REPORT_OUTPUT_MODE_OPTIONS.find((option) => option.value === layout.outputMode)?.description }}
-        </p>
-        <el-divider />
-        <h4>汇总方式</h4>
-        <div class="layout-toggle-card">
-          <div>
-            <strong>按销售属性1汇总</strong>
-            <span>开启后，同商品、同销售属性1/SKU 合并成一行；关闭后按采集到的商品项分行。</span>
-          </div>
-          <el-switch v-model="layout.stackSalesAttr1" />
-        </div>
-        <div class="layout-toggle-card">
-          <div>
-            <strong>销售属性2去重</strong>
-            <span>关闭时按数量重复显示并排序；开启后相同销售属性2只显示一次。</span>
-          </div>
-          <el-switch v-model="layout.stackSalesAttr2" />
-        </div>
-        <el-divider />
-        <h4>整体尺寸</h4>
-        <el-form label-position="top">
-          <el-form-item label="表头行高">
-            <el-input-number v-model="layout.headerRowHeight" :max="80" :min="18" controls-position="right" />
-          </el-form-item>
-          <el-form-item label="内容行高">
-            <el-input-number v-model="layout.rowHeight" :max="180" :min="24" controls-position="right" />
-          </el-form-item>
-          <el-form-item label="图片宽度">
-            <el-input-number v-model="layout.imageWidth" :max="220" :min="32" controls-position="right" />
-          </el-form-item>
-          <el-form-item label="图片高度">
-            <el-input-number v-model="layout.imageHeight" :max="220" :min="32" controls-position="right" />
-          </el-form-item>
-        </el-form>
-        <p class="muted-text">销售属性2默认不去重：尺码会按每件商品重复显示并排序，数量等于尺码个数。</p>
-        <p class="muted-text">宽度单位按 Excel 列宽，行高和图片尺寸按像素近似换算。</p>
+    <div class="direct-export-options">
+      <div class="output-mode-control" role="radiogroup" aria-label="输出方式">
+        <button
+          v-for="option in REPORT_OUTPUT_MODE_OPTIONS"
+          :key="option.value"
+          class="output-mode-button"
+          :class="{ active: layout.outputMode === option.value }"
+          type="button"
+          role="radio"
+          :aria-checked="layout.outputMode === option.value"
+          @click="selectOutputMode(option.value)"
+        >
+          {{ outputModeControlLabel(option.value) }}
+        </button>
+      </div>
+      <div class="direct-export-switches">
+        <el-checkbox :model-value="layout.stackSalesAttr1" @update:model-value="setStackSalesAttr1(Boolean($event))">
+          按销售属性1汇总
+        </el-checkbox>
+        <el-checkbox :model-value="layout.stackSalesAttr2" @update:model-value="setStackSalesAttr2(Boolean($event))">
+          销售属性2去重
+        </el-checkbox>
       </div>
     </div>
   </section>
@@ -603,41 +720,115 @@ onBeforeUnmount(() => revokeSkuImageUrls())
   <section class="work-surface export-preview-panel">
     <div class="section-title-row">
       <h2>Excel 预览</h2>
-      <span class="muted-line">{{ selectedTask ? taskLabel(selectedTask, sortedTasks.indexOf(selectedTask)) : '未选择批次' }}</span>
+      <div class="header-actions">
+        <span class="muted-line">{{ selectedTask ? taskLabel(selectedTask, sortedTasks.indexOf(selectedTask)) : '未选择批次' }}</span>
+        <el-button :icon="Check" type="primary" @click="saveCurrentLayout">应用到导出</el-button>
+      </div>
     </div>
 
     <el-alert
       v-if="exceptionCount"
       :closable="false"
-      :title="`还有 ${exceptionCount} 条商品识别异常，下载报货 Excel 时会放到“异常明细”表。`"
+      :title="`还有 ${exceptionCount} 条商品匹配异常，下载报货 Excel 时会放到“异常明细”表。`"
       type="warning"
     />
+
+    <div v-if="hiddenColumns.length" class="hidden-column-row">
+      <span>隐藏字段</span>
+      <el-tooltip
+        v-for="column in hiddenColumns"
+        :key="column.key"
+        :content="fieldDescription(column.key)"
+        placement="top"
+      >
+        <el-button size="small" @click="setColumnVisible(column.key, true)">
+          {{ fieldLabel(column.key) }}
+        </el-button>
+      </el-tooltip>
+    </div>
 
     <el-table
       v-if="reportRows.length"
       v-loading="previewLoading"
       :data="reportRows"
+      :fit="false"
       :row-style="{ height: `${layout.rowHeight}px` }"
+      allow-drag-last-column
+      border
+      class="editable-report-table"
       row-key="key"
       height="520"
       stripe
+      @header-dragend="handlePreviewColumnResize"
     >
       <el-table-column
         v-for="column in visibleColumns"
         :key="column.key"
-        :label="column.label"
+        :prop="column.key"
+        :resizable="true"
         :width="reportColumnPixelWidth(column)"
         align="center"
       >
+        <template #header>
+          <div class="editable-report-header">
+            <el-input
+              :model-value="column.label"
+              size="small"
+              @update:model-value="updateColumnLabel(column.key, String($event))"
+            />
+            <div class="editable-report-header-actions">
+              <el-tooltip content="左移" placement="top">
+                <el-button
+                  :disabled="columnIndex(column.key) === 0"
+                  :icon="ArrowLeft"
+                  circle
+                  size="small"
+                  @click.stop="moveColumnByKey(column.key, -1)"
+                />
+              </el-tooltip>
+              <el-tooltip content="右移" placement="top">
+                <el-button
+                  :disabled="columnIndex(column.key) === layout.columns.length - 1"
+                  :icon="ArrowRight"
+                  circle
+                  size="small"
+                  @click.stop="moveColumnByKey(column.key, 1)"
+                />
+              </el-tooltip>
+              <el-tooltip content="隐藏" placement="top">
+                <el-button
+                  :disabled="visibleColumns.length <= 1"
+                  :icon="Hide"
+                  circle
+                  size="small"
+                  @click.stop="setColumnVisible(column.key, false)"
+                />
+              </el-tooltip>
+            </div>
+          </div>
+        </template>
         <template #default="{ row }">
-          <div v-if="column.key === 'sku_image'" class="report-image-cell" :style="imageCellStyle()">
+          <div
+            v-if="column.key === 'sku_image'"
+            class="report-image-cell editable-report-image-cell"
+            :style="imageCellStyle()"
+          >
             <img
               v-if="skuImageUrl(row)"
               :src="skuImageUrl(row)"
               :alt="row.sales_attr1_text || 'SKU图片'"
+              draggable="false"
               :style="imageElementStyle()"
+              @pointerdown="startImageMove"
             />
             <el-tag v-else-if="skuImageLoading(row)" type="info">加载中</el-tag>
+            <button
+              v-if="skuImageUrl(row)"
+              aria-label="调整图片大小"
+              class="report-image-resize-handle"
+              type="button"
+              @pointerdown="startImageResize"
+            />
           </div>
           <span v-else>{{ previewCellText(row, column.key) }}</span>
         </template>

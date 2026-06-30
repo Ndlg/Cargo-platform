@@ -25,6 +25,6 @@ server {
     location / {
         root /usr/share/nginx/html;
         add_header Cache-Control "no-store";
-        try_files $uri $uri/ ${SPA_FALLBACK};
+        try_files $uri ${SPA_FALLBACK};
     }
 }

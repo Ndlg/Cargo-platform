@@ -20,6 +20,7 @@ ENV API_PROXY_PASS=http://backend:8000 \
     SPA_FALLBACK=/index.html
 
 COPY docker/nginx.conf.template /etc/nginx/templates/default.conf.template
+RUN rm -rf /usr/share/nginx/html/*
 COPY --from=build /out /usr/share/nginx/html
 
 EXPOSE 80

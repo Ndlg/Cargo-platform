@@ -77,12 +77,12 @@ def test_users_only_read_data_from_their_own_workspace() -> None:
         bob_headers = _login(client, bob_username, bob_password, workspace_b_id)
 
         alice_created = client.post(
-            "/api/v1/field-definitions",
+            "/api/v1/export-header-definitions",
             headers=alice_headers,
             json={"name": "Alice field", "code": "alice_field", "data_type": "text"},
         )
         bob_created = client.post(
-            "/api/v1/field-definitions",
+            "/api/v1/export-header-definitions",
             headers=bob_headers,
             json={"name": "Bob field", "code": "bob_field", "data_type": "text"},
         )
@@ -92,8 +92,8 @@ def test_users_only_read_data_from_their_own_workspace() -> None:
 
         bob_record_id = bob_created.json()["id"]
 
-        alice_list = client.get("/api/v1/field-definitions", headers=alice_headers)
-        bob_list = client.get("/api/v1/field-definitions", headers=bob_headers)
+        alice_list = client.get("/api/v1/export-header-definitions", headers=alice_headers)
+        bob_list = client.get("/api/v1/export-header-definitions", headers=bob_headers)
 
         assert alice_list.status_code == 200
         assert bob_list.status_code == 200
@@ -101,11 +101,11 @@ def test_users_only_read_data_from_their_own_workspace() -> None:
         assert [item["code"] for item in bob_list.json()] == ["bob_field"]
 
         alice_cross_workspace_query = client.get(
-            f"/api/v1/field-definitions?workspace_id={workspace_b_id}",
+            f"/api/v1/export-header-definitions?workspace_id={workspace_b_id}",
             headers=alice_headers,
         )
         alice_cross_workspace_create = client.post(
-            "/api/v1/field-definitions",
+            "/api/v1/export-header-definitions",
             headers={
                 "Authorization": alice_headers["Authorization"],
                 "X-Workspace-Id": str(workspace_b_id),
@@ -113,7 +113,7 @@ def test_users_only_read_data_from_their_own_workspace() -> None:
             json={"name": "Forbidden field", "code": "forbidden_field", "data_type": "text"},
         )
         alice_cross_record_get = client.get(
-            f"/api/v1/field-definitions/{bob_record_id}",
+            f"/api/v1/export-header-definitions/{bob_record_id}",
             headers=alice_headers,
         )
         alice_workspaces = client.get("/api/v1/workspaces", headers=alice_headers)
@@ -124,14 +124,9 @@ def test_users_only_read_data_from_their_own_workspace() -> None:
             headers=alice_headers,
             json={"name": "system_admin"},
         )
-        alice_waybill_modes = client.get("/api/v1/waybill-modes", headers=alice_headers)
-        alice_waybill_templates = client.get("/api/v1/waybill-templates", headers=alice_headers)
-        alice_waybill_template_fields = client.get("/api/v1/waybill-template-fields", headers=alice_headers)
-        alice_waybill_mode_create = client.post(
-            "/api/v1/waybill-modes",
-            headers=alice_headers,
-            json={"name": "Forbidden parser", "code": "forbidden_parser", "input_format": "json"},
-        )
+        deprecated_waybill_modes = client.get("/api/v1/waybill-modes", headers=alice_headers)
+        deprecated_waybill_templates = client.get("/api/v1/waybill-templates", headers=alice_headers)
+        deprecated_waybill_template_fields = client.get("/api/v1/waybill-template-fields", headers=alice_headers)
 
         assert alice_cross_workspace_query.status_code == 403
         assert alice_cross_workspace_create.status_code == 403
@@ -141,10 +136,9 @@ def test_users_only_read_data_from_their_own_workspace() -> None:
         assert alice_tenants.status_code == 403
         assert alice_users.status_code == 403
         assert alice_role_escalation.status_code == 403
-        assert alice_waybill_modes.status_code == 200
-        assert alice_waybill_templates.status_code == 200
-        assert alice_waybill_template_fields.status_code == 200
-        assert alice_waybill_mode_create.status_code == 403
+        assert deprecated_waybill_modes.status_code == 404
+        assert deprecated_waybill_templates.status_code == 404
+        assert deprecated_waybill_template_fields.status_code == 404
 
 
 def test_soft_deleted_roles_do_not_grant_permissions() -> None:
@@ -170,7 +164,7 @@ def test_soft_deleted_roles_do_not_grant_permissions() -> None:
         assert tenants.status_code == 403
 
         denied_create = client.post(
-            "/api/v1/field-definitions",
+            "/api/v1/export-header-definitions",
             headers=headers,
             json={"name": "Denied", "code": "denied", "data_type": "text"},
         )
@@ -202,7 +196,7 @@ def test_mismatched_role_membership_does_not_grant_permissions() -> None:
         me = client.get("/api/v1/auth/me", headers=headers)
         tenants = client.get("/api/v1/tenants", headers=headers)
         denied_create = client.post(
-            "/api/v1/field-definitions",
+            "/api/v1/export-header-definitions",
             headers=headers,
             json={"name": "Denied", "code": "denied_mismatch", "data_type": "text"},
         )
