@@ -48,3 +48,4 @@ The system must not hide multiple products in one field. A multi-product waybill
 - `07-recognition-rule-packs.md`: switchable recognition rule pack contract and lifecycle.
 - `08-usability-audit-and-remediation-plan.md`: usability audit, system risks, target data flow, page responsibilities, and staged remediation plan.
 - `09-independent-recognition-engine.md`: independent recognition engine boundary, API contract, rule-pack editor direction, migration plan, and acceptance criteria.
+- `10-windows-installer-control-panel.md`: Windows installer and local control panel design for non-technical users, including Docker dependency handling, port configuration, service control, diagnostics, and data preservation.
