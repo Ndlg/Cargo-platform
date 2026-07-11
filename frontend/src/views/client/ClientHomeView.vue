@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { CircleClose, Document, Download, Upload, VideoPlay, Warning } from '@element-plus/icons-vue'
+import { Connection, Document, Download, Upload, Warning } from '@element-plus/icons-vue'
 
 import {
   getOrderRowDrafts,
@@ -46,21 +46,6 @@ const statusTiles = computed(() => [
     note: '缺商品、缺数量或规则包无法安全解析',
   },
 ])
-
-const captureControls = [
-  {
-    label: '开始采集',
-    description: '连接当前工作空间下的业务机采集器，准备接收本轮面单订单。',
-    icon: VideoPlay,
-    type: 'primary' as const,
-  },
-  {
-    label: '结束采集',
-    description: '关闭本轮采集批次，等待面单原文回传并进入平台处理。',
-    icon: CircleClose,
-    type: 'danger' as const,
-  },
-]
 
 const nextActions = [
   {
@@ -149,10 +134,10 @@ onMounted(loadHomeSummary)
   <section class="page-header">
     <div>
       <h1>业务页面</h1>
-      <p>{{ workspaceName }}。一线人员从这里控制采集、采集后的处理、异常和导出。</p>
+      <p>{{ workspaceName }}。一线人员从这里查看采集状态、采集后的处理、异常和导出。</p>
     </div>
     <el-button :icon="Document" type="primary" @click="router.push('/capture-records')">
-      采集控制
+      进入采集记录
     </el-button>
   </section>
 
@@ -167,19 +152,17 @@ onMounted(loadHomeSummary)
   </section>
 
   <section class="work-surface">
-    <h2>本轮采集</h2>
-    <div class="process-grid">
-      <article v-for="control in captureControls" :key="control.label" class="process-card">
-        <el-icon><component :is="control.icon" /></el-icon>
-        <div>
-          <strong>{{ control.label }}</strong>
-          <p>{{ control.description }}</p>
-        </div>
-        <el-button :type="control.type" plain @click="router.push('/capture-records')">
-          {{ control.label }}
-        </el-button>
-      </article>
-    </div>
+    <h2>采集入口</h2>
+    <article class="process-card single-process-card">
+      <el-icon><Connection /></el-icon>
+      <div>
+        <strong>进入采集记录页操作采集</strong>
+        <p>开始采集、结束采集、刷新采集器状态和查看采集原文都在采集记录页完成。</p>
+      </div>
+      <el-button type="primary" plain @click="router.push('/capture-records')">
+        进入采集记录
+      </el-button>
+    </article>
   </section>
 
   <section class="work-surface">

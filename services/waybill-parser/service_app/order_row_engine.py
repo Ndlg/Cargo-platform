@@ -16,7 +16,10 @@ from service_app.douyin_product_info import (
 
 ORDER_ROW_DRAFTS_CONTRACT_VERSION = "order_row_drafts_v1"
 TRAILING_ORDER_QUANTITY_PATTERN = re.compile(
-    r"\s*(?:[【\[\(（]\s*)?(?:[*xX×]\s*(\d+)|(\d+)\s*(?:件|双|雙|个|個|条|條|套|份|只|支|瓶|包|组|組))(?:\s*[】\]\)）])?\s*$"
+    r"\s*(?:"
+    r"(?:[【\[\(（]\s*)?(?:[*xX×]\s*(\d+)|(\d+)\s*(?:件|双|雙|个|個|条|條|套|份|只|支|瓶|包|组|組))(?:\s*[】\]\)）])?"
+    r"|(?<![A-Za-z0-9\u4e00-\u9fff])[【\[\(（]\s*(\d{1,3})\s*[】\]\)）](?![A-Za-z0-9\u4e00-\u9fff])"
+    r")\s*[;；，,]*\s*$"
 )
 LOGISTICS_TAIL_PATTERN = re.compile(
     r"\s*(?:运单号|物流单号|快递单号)\s*[:：]\s*(?:\[[^\]]*\]|【[^】]*】|[A-Z]{1,8}\d[\w,，\-\s]*)\s*$",
@@ -27,6 +30,52 @@ SHOE_SIZE_VALUE_PATTERN = re.compile(
 )
 NOISY_SHOE_SIZE_PREFIX_PATTERN = re.compile(
     r"^(?P<size>(?:2[0-9]|3[0-9]|4[0-9]|5[0-5])(?:\.\d)?)(?=\s*(?:[*xX×]\s*\d+|\d+\s*(?:件|双|雙)|运单号|物流单号|快递单号|$))"
+)
+ATTR1_FIELD_LABELS = {"颜色分类", "颜色", "规格", "款式"}
+ATTR2_FIELD_LABELS = {"鞋码", "尺码"}
+FIELD_LABEL_PATTERN = re.compile(r"(?P<label>颜色分类|颜色|鞋码|尺码|规格|款式)\s*[:：]\s*")
+ATTRIBUTE_SUFFIX_TERMS = tuple(
+    sorted(
+        {
+            "黑白蓝",
+            "灰绿黑",
+            "黑白灰",
+            "二代灰黑",
+            "二代灰白",
+            "二代白紫",
+            "二代灰色",
+            "深卡其",
+            "低帮黑白",
+            "低帮深卡其",
+            "低帮浅绿",
+            "全黑",
+            "黑灰",
+            "白黑",
+            "黑白",
+            "灰黑",
+            "灰蓝",
+            "灰绿",
+            "灰橙",
+            "浅绿",
+            "蓝白",
+            "白色",
+            "黑色",
+            "灰色",
+            "红色",
+            "蓝色",
+            "绿色",
+            "紫色",
+            "粉色",
+            "黄色",
+            "橙色",
+            "卡其",
+            "米白",
+            "米黄",
+            "军绿",
+        },
+        key=len,
+        reverse=True,
+    )
 )
 
 
@@ -91,7 +140,7 @@ def business_parent_label(
 
 def remove_field_label(value: str) -> str:
     text = compact_spaces(value)
-    return re.sub(r"^(?:颜色分类|颜色|鞋码|尺码|规格|款式)\s*[:：]\s*", "", text).strip()
+    return FIELD_LABEL_PATTERN.sub("", text, count=1).strip()
 
 
 def normalize_sales_attr2(value: str) -> str:
@@ -139,6 +188,30 @@ def split_commas_outside_brackets(value: str) -> list[str]:
     return parts
 
 
+def split_semicolon_size_suffix_outside_brackets(value: str) -> tuple[str, str] | None:
+    depth = 0
+    split_index: int | None = None
+    for index, char in enumerate(value):
+        if char in "([{（【":
+            depth += 1
+            continue
+        if char in ")]}）】" and depth > 0:
+            depth -= 1
+            continue
+        if char in ";；" and depth == 0:
+            split_index = index
+    if split_index is None:
+        return None
+
+    productish = compact_spaces(value[:split_index])
+    size_text = compact_spaces(value[split_index + 1 :])
+    if not productish or not size_text:
+        return None
+    if not SHOE_SIZE_VALUE_PATTERN.match(normalize_sales_attr2(size_text)):
+        return None
+    return productish, size_text
+
+
 def int_value(value: Any) -> int | None:
     try:
         parsed = int(str(value).strip())
@@ -166,16 +239,16 @@ def parse_labeled_attr_line(value: str) -> tuple[str, str] | None:
         return None
 
     fields: dict[str, str] = {}
-    for part in re.split(r"[;；,，]+", text):
-        item = compact_spaces(part)
-        match = re.match(r"^(?P<label>颜色分类|颜色|鞋码|尺码|规格|款式)\s*[:：]\s*(?P<value>.+)$", item)
-        if not match:
-            continue
+    matches = list(FIELD_LABEL_PATTERN.finditer(text))
+    for index, match in enumerate(matches):
         label = match.group("label")
-        field_value = compact_spaces(match.group("value"))
-        if label in {"颜色分类", "颜色", "规格", "款式"} and "sales_attr1" not in fields:
+        value_end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        field_value = compact_spaces(text[match.end() : value_end]).strip(" ，,;；")
+        if not field_value:
+            continue
+        if label in ATTR1_FIELD_LABELS and "sales_attr1" not in fields:
             fields["sales_attr1"] = remove_field_label(field_value)
-        elif label in {"鞋码", "尺码"} and "sales_attr2" not in fields:
+        elif label in ATTR2_FIELD_LABELS and "sales_attr2" not in fields:
             fields["sales_attr2"] = normalize_sales_attr2(field_value)
 
     sales_attr1 = fields.get("sales_attr1", "")
@@ -187,6 +260,38 @@ def parse_labeled_attr_line(value: str) -> tuple[str, str] | None:
 
 def clean_product_line_text(value: str) -> str:
     return compact_spaces(value).strip(" ，,;；")
+
+
+def is_attr1_suffix_candidate(value: str) -> bool:
+    text = remove_field_label(value).strip(" ，,;；")
+    if not text or len(text) > 20:
+        return False
+    if quantity_from_text(text) or SHOE_SIZE_VALUE_PATTERN.match(normalize_sales_attr2(text)):
+        return False
+    if re.search(r"[，,;；/／\\]", text):
+        return False
+    return text in ATTRIBUTE_SUFFIX_TERMS or any(term in text for term in ATTRIBUTE_SUFFIX_TERMS)
+
+
+def split_product_line_with_attr1_suffix(value: str) -> tuple[str, str]:
+    text = clean_product_line_text(value)
+    if not text:
+        return "", ""
+
+    head, separator, tail = text.rpartition(" ")
+    if separator:
+        suffix = remove_field_label(tail)
+        if is_attr1_suffix_candidate(suffix) and len(head.replace(" ", "")) >= 8:
+            return clean_product_line_text(head), suffix
+
+    for suffix in ATTRIBUTE_SUFFIX_TERMS:
+        if not text.endswith(suffix):
+            continue
+        product = clean_product_line_text(text[: -len(suffix)])
+        if len(product.replace(" ", "")) >= 8:
+            return product, suffix
+
+    return "", ""
 
 
 def strip_logistics_tail(value: str) -> str:
@@ -205,7 +310,7 @@ def strip_order_quantity_suffix(value: str) -> tuple[str, str]:
         return "", ""
     match = TRAILING_ORDER_QUANTITY_PATTERN.search(text)
     if match:
-        quantity = match.group(1) or match.group(2) or ""
+        quantity = next((group for group in match.groups() if group), "")
         return compact_spaces(text[: match.start()]), quantity
     return strip_trailing_quantity_text(text)
 
@@ -324,6 +429,59 @@ def parse_trailing_attr_size_product_text(
         return None
 
     quantity = quantity_from_text(trailing_quantity_text, fallback_quantity_text, original_text) or 1
+    remark = compact_spaces(remark_text)
+    image_match_text = compact_spaces(" ".join(str(part) for part in (product, sales_attr1, sales_attr2, quantity, remark) if part))
+    return {
+        "product": product,
+        "sales_attr1": sales_attr1,
+        "sales_attr2": sales_attr2,
+        "quantity": quantity,
+        "remark": remark,
+        "image_match_text": image_match_text,
+        "original_text": original_text,
+        "status": "draft",
+        "review_reason": "",
+    }
+
+
+def parse_product_suffix_attr_size_text(
+    item_text: str,
+    *,
+    fallback_quantity_text: str = "",
+    remark_text: str = "",
+) -> dict[str, Any] | None:
+    if re.search(r"[\r\n]", text_value(item_text)):
+        return None
+
+    original_text = compact_spaces(item_text)
+    without_quantity, trailing_quantity_text = strip_order_quantity_suffix(original_text)
+    parts = split_commas_outside_brackets(without_quantity)
+    semicolon_parts = split_semicolon_size_suffix_outside_brackets(without_quantity)
+    if len(parts) < 2 and semicolon_parts is None:
+        return None
+
+    if len(parts) >= 2:
+        productish = compact_spaces("，".join(parts[:-1]))
+        sales_attr2_text = parts[-1]
+    else:
+        assert semicolon_parts is not None
+        productish, sales_attr2_text = semicolon_parts
+
+    if not has_product_title_marker(productish):
+        return None
+
+    sales_attr2 = normalize_sales_attr2(sales_attr2_text)
+    if not SHOE_SIZE_VALUE_PATTERN.match(sales_attr2):
+        return None
+
+    product, sales_attr1 = split_product_line_with_attr1_suffix(productish)
+    if not product or not sales_attr1:
+        return None
+
+    quantity = quantity_from_text(trailing_quantity_text, fallback_quantity_text, original_text)
+    if quantity is None:
+        return None
+
     remark = compact_spaces(remark_text)
     image_match_text = compact_spaces(" ".join(str(part) for part in (product, sales_attr1, sales_attr2, quantity, remark) if part))
     return {
@@ -487,13 +645,61 @@ def parse_two_line_product_attr_text(
     }
 
 
+def parse_two_line_product_attr_size_continuation_text(
+    item_text: str,
+    *,
+    fallback_quantity_text: str = "",
+    remark_text: str = "",
+) -> dict[str, Any] | None:
+    lines = [compact_spaces(line) for line in re.split(r"[\r\n]+", text_value(item_text)) if compact_spaces(line)]
+    if len(lines) != 2:
+        return None
+
+    product_line, size_line = lines
+    if not has_product_title_marker(product_line):
+        return None
+    if parse_labeled_attr_line(size_line) is not None:
+        return None
+
+    size_without_quantity, trailing_quantity_text = strip_order_quantity_suffix(size_line)
+    sales_attr2 = normalize_sales_attr2(size_without_quantity)
+    if not SHOE_SIZE_VALUE_PATTERN.match(sales_attr2):
+        return None
+
+    product, sales_attr1 = split_product_line_with_attr1_suffix(product_line)
+    if not product or not sales_attr1:
+        return None
+
+    quantity = quantity_from_text(trailing_quantity_text, fallback_quantity_text, size_line)
+    if quantity is None:
+        return None
+
+    remark = compact_spaces(remark_text)
+    image_match_text = compact_spaces(" ".join(str(part) for part in (product, sales_attr1, sales_attr2, quantity, remark) if part))
+    return {
+        "product": product,
+        "sales_attr1": sales_attr1,
+        "sales_attr2": sales_attr2,
+        "quantity": quantity,
+        "remark": remark,
+        "image_match_text": image_match_text,
+        "original_text": text_value(item_text),
+        "status": "draft",
+        "review_reason": "",
+    }
+
+
 def parse_two_line_waybill_text(
     item_text: str,
     *,
     fallback_quantity_text: str = "",
     remark_text: str = "",
 ) -> dict[str, Any] | None:
-    return parse_multiline_product_with_free_remark_text(
+    return parse_two_line_product_attr_size_continuation_text(
+        item_text,
+        fallback_quantity_text=fallback_quantity_text,
+        remark_text=remark_text,
+    ) or parse_multiline_product_with_free_remark_text(
         item_text,
         fallback_quantity_text=fallback_quantity_text,
         remark_text=remark_text,
@@ -577,6 +783,12 @@ def product_item_texts(
         remark_text=remark_text,
     ):
         return [product_text]
+    if parse_product_suffix_attr_size_text(
+        product_text,
+        fallback_quantity_text=quantity_text,
+        remark_text=remark_text,
+    ):
+        return [product_text]
 
     paired_item_texts = pair_product_lines_with_labeled_attr_lines(product_text)
     if paired_item_texts:
@@ -627,6 +839,14 @@ def parse_item_text(item_text: str, *, fallback_quantity_text: str = "", remark_
     )
     if trailing_attr_size_product_fields is not None:
         return trailing_attr_size_product_fields
+
+    product_suffix_attr_size_fields = parse_product_suffix_attr_size_text(
+        parse_text,
+        fallback_quantity_text=fallback_quantity_text,
+        remark_text=remark_text,
+    )
+    if product_suffix_attr_size_fields is not None:
+        return product_suffix_attr_size_fields
 
     without_quantity, trailing_quantity_text = strip_order_quantity_suffix(original_text)
     quantity = quantity_from_text(trailing_quantity_text, fallback_quantity_text, original_text)

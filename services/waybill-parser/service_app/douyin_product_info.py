@@ -11,15 +11,16 @@ DOUYIN_FIELD_STRUCTURE_VERSION = 1
 STAR_MULTIPLIER_QUANTITY_TEXT = r"[*×]\s*(\d+)(?![A-Za-z0-9\u4e00-\u9fff])"
 LETTER_MULTIPLIER_QUANTITY_TEXT = r"(?<![A-Za-z0-9])[xX]\s*(\d+)(?![A-Za-z0-9\u4e00-\u9fff])"
 COUNT_QUANTITY_TEXT = r"(\d+)\s*(?:件|双|雙|个|個|条|條|套|份|只|支|瓶|包|组|組)"
+BRACKETED_BARE_QUANTITY_TEXT = r"(?<![A-Za-z0-9\u4e00-\u9fff])[【\[\(（]\s*(\d{1,3})\s*[】\]\)）](?![A-Za-z0-9\u4e00-\u9fff])"
 MULTIPLIER_QUANTITY_TEXT = rf"(?:{STAR_MULTIPLIER_QUANTITY_TEXT}|{LETTER_MULTIPLIER_QUANTITY_TEXT})"
 QUANTITY_PATTERN = re.compile(
-    rf"(?:{MULTIPLIER_QUANTITY_TEXT}|{COUNT_QUANTITY_TEXT})"
+    rf"(?:{MULTIPLIER_QUANTITY_TEXT}|{COUNT_QUANTITY_TEXT}|{BRACKETED_BARE_QUANTITY_TEXT})"
 )
 TRAILING_QUANTITY_PATTERN = re.compile(
-    rf"(?:\s*(?:{MULTIPLIER_QUANTITY_TEXT}|{COUNT_QUANTITY_TEXT})\s*)$"
+    rf"(?:\s*(?:{MULTIPLIER_QUANTITY_TEXT}|{COUNT_QUANTITY_TEXT}|{BRACKETED_BARE_QUANTITY_TEXT})\s*)$"
 )
 ITEM_BOUNDARY_QUANTITY_PATTERN = re.compile(
-    rf"(?:[【\[\(（]\s*)?(?:{MULTIPLIER_QUANTITY_TEXT}|\d+\s*(?:件|双|雙|个|個|条|條|套|份|只|支|瓶|包|组|組))(?:\s*[】\]\)）])?"
+    rf"(?:(?:[【\[\(（]\s*)?(?:{MULTIPLIER_QUANTITY_TEXT}|\d+\s*(?:件|双|雙|个|個|条|條|套|份|只|支|瓶|包|组|組))(?:\s*[】\]\)）])?|{BRACKETED_BARE_QUANTITY_TEXT})"
 )
 
 
@@ -63,7 +64,7 @@ def strip_trailing_quantity_text(value: str) -> tuple[str, str]:
     match = TRAILING_QUANTITY_PATTERN.search(text)
     if not match:
         return text, ""
-    quantity = match.group(1) or match.group(2) or ""
+    quantity = next((group for group in match.groups() if group), "")
     return compact_spaces(text[: match.start()]), quantity
 
 

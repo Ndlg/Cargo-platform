@@ -224,6 +224,175 @@ def test_waybill_parser_service_batch_parse_contract() -> None:
     assert body["rows"][0]["quantity"] == 1
 
 
+def test_waybill_parser_service_parses_space_separated_labeled_attrs() -> None:
+    app = load_parser_service_app()
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/parse/batch",
+            json={
+                "task_id": 33,
+                "rule_pack": valid_rule_pack_payload(),
+                "standard_details": [
+                    {
+                        "standard_detail_id": 2001,
+                        "parent_sequence": 20,
+                        "field_values": {
+                            "capture_task_id": 33,
+                            "raw_record_id": 2001,
+                            "source_component": "cainiao-cnprint",
+                            "source_index": "2001",
+                            "product_short_text": "颜色分类:4.0黑白灰 鞋码:42，,*1",
+                        },
+                    },
+                    {
+                        "standard_detail_id": 2002,
+                        "parent_sequence": 21,
+                        "field_values": {
+                            "capture_task_id": 33,
+                            "raw_record_id": 2002,
+                            "source_component": "cainiao-cnprint",
+                            "source_index": "2002",
+                            "product_short_text": "颜色分类:5.0二代灰黑;鞋码:42.5，,*1",
+                        },
+                    },
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["summary"]["child_waybill_count"] == 2
+    rows = body["rows"]
+    assert rows[0]["product"] == ""
+    assert rows[0]["sales_attr1"] == "4.0黑白灰"
+    assert rows[0]["sales_attr2"] == "42"
+    assert rows[0]["quantity"] == 1
+    assert rows[0]["image_match_text"] == "4.0黑白灰 42 1"
+    assert rows[1]["product"] == ""
+    assert rows[1]["sales_attr1"] == "5.0二代灰黑"
+    assert rows[1]["sales_attr2"] == "42.5"
+    assert rows[1]["quantity"] == 1
+
+
+def test_waybill_parser_service_parses_bracket_title_product_with_attr_and_quantity_continuation() -> None:
+    app = load_parser_service_app()
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/parse/batch",
+            json={
+                "task_id": 33,
+                "rule_pack": valid_rule_pack_payload(),
+                "standard_details": [
+                    {
+                        "standard_detail_id": 2023,
+                        "parent_sequence": 23,
+                        "field_values": {
+                            "capture_task_id": 33,
+                            "raw_record_id": 2023,
+                            "source_component": "cainiao-cnprint",
+                            "source_index": "2023",
+                            "product_short_text": "【流放】男鞋针织跑步鞋全掌气垫女鞋白黑舒适休闲鞋运动鞋健身鞋全黑,43,【1】；",
+                        },
+                    },
+                    {
+                        "standard_detail_id": 2024,
+                        "parent_sequence": 24,
+                        "field_values": {
+                            "capture_task_id": 33,
+                            "raw_record_id": 2024,
+                            "source_component": "cainiao-cnprint",
+                            "source_index": "2024",
+                            "product_short_text": "【流放】男鞋针织跑步鞋全掌气垫女鞋白黑舒适休闲鞋运动鞋健身鞋灰绿黑,45,【1】；",
+                        },
+                    },
+                    {
+                        "standard_detail_id": 2044,
+                        "parent_sequence": 44,
+                        "field_values": {
+                            "capture_task_id": 33,
+                            "raw_record_id": 2044,
+                            "source_component": "cainiao-cnprint",
+                            "source_index": "2044",
+                            "product_short_text": "【HK】特2跑步鞋飞速轻轻减震防滑透气运动鞋男鞋女鞋2代联名厚底 黑白蓝\n36.5【1件】",
+                        },
+                    },
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["summary"]["child_waybill_count"] == 3
+    rows = body["rows"]
+    assert rows[0]["product"] == "【流放】男鞋针织跑步鞋全掌气垫女鞋白黑舒适休闲鞋运动鞋健身鞋"
+    assert rows[0]["sales_attr1"] == "全黑"
+    assert rows[0]["sales_attr2"] == "43"
+    assert rows[0]["quantity"] == 1
+    assert rows[0]["status"] == "draft"
+    assert rows[1]["product"] == "【流放】男鞋针织跑步鞋全掌气垫女鞋白黑舒适休闲鞋运动鞋健身鞋"
+    assert rows[1]["sales_attr1"] == "灰绿黑"
+    assert rows[1]["sales_attr2"] == "45"
+    assert rows[1]["quantity"] == 1
+    assert rows[1]["status"] == "draft"
+    assert rows[2]["product"] == "【HK】特2跑步鞋飞速轻轻减震防滑透气运动鞋男鞋女鞋2代联名厚底"
+    assert rows[2]["sales_attr1"] == "黑白蓝"
+    assert rows[2]["sales_attr2"] == "36.5"
+    assert rows[2]["quantity"] == 1
+    assert rows[2]["status"] == "draft"
+
+
+def test_waybill_parser_service_parses_semicolon_title_attr_size_quantity_sample() -> None:
+    app = load_parser_service_app()
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/parse/batch",
+            json={
+                "task_id": 34,
+                "rule_pack": valid_rule_pack_payload(),
+                "waybill_samples": [
+                    {
+                        "raw_record_id": 812,
+                        "task_id": 34,
+                        "parent_sequence": 44,
+                        "source_component": "cainiao-cnprint",
+                        "source_index": "2543",
+                        "sample_text": "【HK】特2跑步鞋飞速超轻减震防滑透气运动鞋男鞋女鞋2代联名厚底 黑白蓝;36.5 【1件】",
+                        "text_blocks": [
+                            {
+                                "block_kind": "original",
+                                "text": "【HK】特2跑步鞋飞速超轻减震防滑透气运动鞋男鞋女鞋2代联名厚底 黑白蓝;36.5 【1件】",
+                                "source_path": "task.documents[0].contents[1].data.ITEM_INFO",
+                                "order": 0,
+                            },
+                            {
+                                "block_kind": "derived_child",
+                                "text": "【HK】特2跑步鞋飞速超轻减震防滑透气运动鞋男鞋女鞋2代联名厚底 黑白蓝",
+                                "source_path": "task.documents[0].contents[1].data.ITEM_INFO",
+                                "order": 1,
+                            },
+                            {
+                                "block_kind": "derived_child",
+                                "text": "36.5 【1件】",
+                                "source_path": "task.documents[0].contents[1].data.ITEM_INFO",
+                                "order": 2,
+                            },
+                        ],
+                    }
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    rows = body["rows"]
+    assert body["summary"]["child_waybill_count"] == 1
+    assert body["summary"]["needs_review_count"] == 0
+    assert rows[0]["product"] == "【HK】特2跑步鞋飞速超轻减震防滑透气运动鞋男鞋女鞋2代联名厚底"
+    assert rows[0]["sales_attr1"] == "黑白蓝"
+    assert rows[0]["sales_attr2"] == "36.5"
+    assert rows[0]["quantity"] == 1
+
+
 def test_waybill_parser_service_splits_repeated_quantity_items_without_brackets() -> None:
     app = load_parser_service_app()
     with TestClient(app) as client:
