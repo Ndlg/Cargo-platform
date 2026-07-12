@@ -242,19 +242,38 @@ def parse_batch(payload: BatchParseRequest) -> dict[str, Any]:
         )
         for sample in payload.waybill_samples
     )
-    raw_parent_offset = len(parents)
-    for index, record in enumerate(payload.raw_records, start=1):
-        parents.append(
-            draft_rows_from_payload(
-                record.payload,
-                raw_record_id=record.raw_record_id,
-                task_id=record.task_id,
-                source_component=record.source_component,
-                source_index=record.source_index,
-                parent_sequence=record.parent_sequence or raw_parent_offset + index,
-                parser_policy=payload.rule_pack.get("parser_policy"),
+    next_parent_sequence = len(parents) + 1
+    for record in payload.raw_records:
+        task = record.payload.get("task") if isinstance(record.payload, dict) else None
+        documents = task.get("documents") if isinstance(task, dict) else None
+        document_payloads = []
+        if isinstance(documents, list) and documents:
+            for document in documents:
+                if not isinstance(document, dict):
+                    continue
+                document_payloads.append(
+                    {
+                        **record.payload,
+                        "task": {**task, "documents": [document]},
+                    }
+                )
+        if not document_payloads:
+            document_payloads = [record.payload]
+
+        first_parent_sequence = record.parent_sequence or next_parent_sequence
+        for document_offset, document_payload in enumerate(document_payloads):
+            parents.append(
+                draft_rows_from_payload(
+                    document_payload,
+                    raw_record_id=record.raw_record_id,
+                    task_id=record.task_id,
+                    source_component=record.source_component,
+                    source_index=record.source_index,
+                    parent_sequence=first_parent_sequence + document_offset,
+                    parser_policy=payload.rule_pack.get("parser_policy"),
+                )
             )
-        )
+        next_parent_sequence = first_parent_sequence + len(document_payloads)
 
     return {
         "contract_version": ORDER_ROW_DRAFTS_CONTRACT_VERSION,

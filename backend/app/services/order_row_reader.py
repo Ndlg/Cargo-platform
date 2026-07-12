@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from fastapi import HTTPException, status
@@ -89,6 +90,28 @@ def order_row_sample_inputs_from_records(records: list[RawCaptureRecord]) -> lis
         for sample in samples:
             sample_inputs.append(parser_waybill_sample_input(sample, len(sample_inputs) + 1))
     return sample_inputs
+
+
+def parser_raw_record_inputs(records: list[RawCaptureRecord]) -> list[dict[str, Any]]:
+    inputs: list[dict[str, Any]] = []
+    for record in records:
+        try:
+            payload = json.loads(record.raw_payload)
+        except (TypeError, json.JSONDecodeError):
+            payload = {"raw_text": text_value(record.raw_payload)}
+        if not isinstance(payload, dict):
+            payload = {"raw_value": payload}
+
+        inputs.append(
+            {
+                "raw_record_id": int(record.id),
+                "task_id": int(record.task_id) if record.task_id is not None else None,
+                "source_component": record.source_component,
+                "source_index": record.source_index,
+                "payload": payload,
+            }
+        )
+    return inputs
 
 
 def has_readable_waybill_samples(sample_inputs: list[dict[str, Any]]) -> bool:
@@ -365,12 +388,33 @@ def parse_raw_records_to_order_rows(
     task_id: int,
     records: list[RawCaptureRecord],
 ) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
-    return parse_waybill_sample_inputs_to_order_rows(
-        db,
-        workspace_id=workspace_id,
-        task_id=task_id,
-        sample_inputs=order_row_sample_inputs_from_records(records),
-        records=records,
+    active_pack = active_recognition_rule_pack(db, workspace_id=workspace_id)
+    if active_pack is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="当前工作区没有启用识别规则包，请先导入并启用规则包。",
+        )
+    if not waybill_parser_service_enabled():
+        raise parser_service_required("订单行")
+
+    try:
+        payload = parse_order_row_drafts_with_service(
+            task_id=task_id,
+            standard_details=[],
+            raw_records=parser_raw_record_inputs(records),
+            waybill_samples=[],
+            rule_pack=active_pack.payload,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="面单解析服务暂时不可用，订单行没有使用旧解析兜底。请稍后重试或检查解析服务。",
+        ) from exc
+    details = standard_details_for_task(db, workspace_id=workspace_id, task_id=task_id)
+    return sources_from_order_parents(
+        order_row_drafts_from_parser_payload(payload),
+        standard_details_by_raw_id=standard_detail_raw_id_map(details),
+        raw_records_by_id={int(record.id): record for record in records},
     )
 
 
@@ -382,13 +426,9 @@ def order_rows_for_task(
 ) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
     records = raw_records_for_task(db, workspace_id=workspace_id, task_id=task_id)
     sample_inputs = order_row_sample_inputs_from_records(records)
-    if has_readable_waybill_samples(sample_inputs):
-        return parse_waybill_sample_inputs_to_order_rows(
-            db,
-            workspace_id=workspace_id,
-            task_id=task_id,
-            sample_inputs=sample_inputs,
-            records=records,
+    if records and has_readable_waybill_samples(sample_inputs):
+        return parse_raw_records_to_order_rows(
+            db, workspace_id=workspace_id, task_id=task_id, records=records
         )
 
     details = standard_details_for_task(db, workspace_id=workspace_id, task_id=task_id)
@@ -539,14 +579,15 @@ def task_order_row_drafts_payload(
     offset: int,
 ) -> dict[str, Any]:
     records = raw_records_for_task(db, workspace_id=workspace_id, task_id=task_id)
+    raw_inputs = parser_raw_record_inputs(records)
     sample_inputs = order_row_sample_inputs_from_records(records)
-    if has_readable_waybill_samples(sample_inputs):
+    if raw_inputs and has_readable_waybill_samples(sample_inputs):
         active_pack = active_recognition_rule_pack(db, workspace_id=workspace_id)
         if active_pack is None:
             return rule_pack_missing_order_rows_response(
                 task_id=task_id,
                 parent_waybill_count=len(sample_inputs),
-                source_type="waybill_samples",
+                source_type="raw_records",
             )
         if not waybill_parser_service_enabled():
             raise parser_service_required("订单行")
@@ -555,8 +596,8 @@ def task_order_row_drafts_payload(
             payload = parse_order_row_drafts_with_service(
                 task_id=task_id,
                 standard_details=[],
-                raw_records=[],
-                waybill_samples=sample_inputs[offset : offset + limit],
+                raw_records=raw_inputs[offset : offset + limit],
+                waybill_samples=[],
                 rule_pack=active_pack.payload,
             )
             payload.setdefault("recognition_rule_pack", recognition_rule_pack_summary(active_pack))

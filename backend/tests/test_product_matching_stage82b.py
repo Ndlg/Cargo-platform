@@ -39,6 +39,7 @@ from app.models import (  # noqa: E402
 )
 from app.services import order_row_reader as order_row_reader_service  # noqa: E402
 from service_app.order_row_engine import (  # noqa: E402
+    draft_rows_from_payload,
     draft_rows_from_standard_detail_values,
     draft_rows_from_waybill_sample,
     order_row_draft_summary,
@@ -61,7 +62,6 @@ def _use_parser_service_stub(monkeypatch) -> None:
         waybill_samples: list[dict] | None = None,
         rule_pack: dict,
     ) -> dict:
-        assert raw_records in (None, [])
         assert rule_pack["pack"]["code"] == "test-shoe-pack"
         parents = [
             draft_rows_from_standard_detail_values(
@@ -78,6 +78,27 @@ def _use_parser_service_stub(monkeypatch) -> None:
             )
             for parser_input in (waybill_samples or [])
         )
+        for parser_input in raw_records or []:
+            payloads = [parser_input["payload"]]
+            task = parser_input["payload"].get("task")
+            documents = task.get("documents") if isinstance(task, dict) else None
+            if isinstance(documents, list) and documents:
+                payloads = [
+                    {**parser_input["payload"], "task": {**task, "documents": [document]}}
+                    for document in documents
+                ]
+            for document_payload in payloads:
+                parents.append(
+                    draft_rows_from_payload(
+                        document_payload,
+                        raw_record_id=parser_input["raw_record_id"],
+                        task_id=parser_input.get("task_id"),
+                        source_component=parser_input.get("source_component"),
+                        source_index=parser_input.get("source_index"),
+                        parent_sequence=len(parents) + 1,
+                        parser_policy=rule_pack.get("parser_policy"),
+                    )
+                )
         return {
             "contract_version": "order_row_drafts_v1",
             "task_id": task_id,
@@ -1189,7 +1210,8 @@ def test_current_batch_product_matching_prefers_current_raw_samples_over_stale_s
         def fake_parse_order_row_drafts_with_service(**kwargs):
             assert kwargs["task_id"] == task_id
             assert kwargs.get("standard_details") == []
-            assert kwargs.get("waybill_samples")
+            assert kwargs.get("raw_records")
+            assert kwargs.get("waybill_samples") == []
             return {
                 "contract_version": "order_row_drafts_v1",
                 "task_id": task_id,

@@ -163,6 +163,62 @@ def test_waybill_parser_service_parses_rule_pack_structured_items_without_text_d
     }
 
 
+def test_waybill_parser_service_keeps_each_raw_document_as_one_parent_waybill() -> None:
+    app = load_parser_service_app()
+    documents = [
+        {
+            "documentID": "DOC-1",
+            "contents": [
+                {
+                    "data": {
+                        "packageItemDetail": [
+                            {"itemName": "秒21 vap2025", "specName": "二代全白 39", "itemNum": 1}
+                        ]
+                    }
+                }
+            ],
+        },
+        {
+            "documentID": "DOC-2",
+            "contents": [
+                {
+                    "data": {
+                        "packageItemDetail": [
+                            {"itemName": "范33 带木one帆布kw", "specName": "木村-3M反光 42.5", "itemNum": 1}
+                        ]
+                    }
+                }
+            ],
+        },
+    ]
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/parse/batch",
+            json={
+                "task_id": 42,
+                "rule_pack": structured_rule_pack_payload(),
+                "raw_records": [
+                    {
+                        "raw_record_id": 1149,
+                        "task_id": 42,
+                        "parent_sequence": 1,
+                        "source_component": "cainiao-cnprint",
+                        "source_index": "2639",
+                        "payload": {"task": {"documents": documents}},
+                    }
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["summary"]["parent_waybill_count"] == 2
+    assert body["summary"]["child_waybill_count"] == 2
+    assert [parent["parent_label"] for parent in body["parents"]] == ["第1批-第1单", "第1批-第2单"]
+    assert [row["product"] for row in body["rows"]] == ["秒21 vap2025", "范33 带木one帆布kw"]
+
+
 def test_current_shoe_rule_pack_declares_structured_item_source() -> None:
     rule_pack = json.loads((REPO_ROOT / "rule-packs" / "current-user-shoes.v1.json").read_text(encoding="utf-8"))
 

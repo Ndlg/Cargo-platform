@@ -94,7 +94,6 @@ def use_order_row_parser_service_stub(monkeypatch) -> None:
         waybill_samples: list[dict] | None = None,
         rule_pack: dict,
     ) -> dict:
-        assert raw_records in (None, [])
         assert rule_pack["pack"]["code"] == "test-shoes"
         parents = [
             draft_rows_from_standard_detail_values(
@@ -111,6 +110,27 @@ def use_order_row_parser_service_stub(monkeypatch) -> None:
             )
             for parser_input in (waybill_samples or [])
         )
+        for parser_input in raw_records or []:
+            payloads = [parser_input["payload"]]
+            task = parser_input["payload"].get("task")
+            documents = task.get("documents") if isinstance(task, dict) else None
+            if isinstance(documents, list) and documents:
+                payloads = [
+                    {**parser_input["payload"], "task": {**task, "documents": [document]}}
+                    for document in documents
+                ]
+            for document_payload in payloads:
+                parents.append(
+                    draft_rows_from_payload(
+                        document_payload,
+                        raw_record_id=parser_input["raw_record_id"],
+                        task_id=parser_input.get("task_id"),
+                        source_component=parser_input.get("source_component"),
+                        source_index=parser_input.get("source_index"),
+                        parent_sequence=len(parents) + 1,
+                        parser_policy=rule_pack.get("parser_policy"),
+                    )
+                )
         return parser_payload_from_parents(task_id, parents)
 
     monkeypatch.setattr(order_row_reader_service, "waybill_parser_service_enabled", lambda: True, raising=False)
@@ -148,6 +168,39 @@ def waybill_sample_with_original_lines(
         "sample_text": "\n".join(sample_lines),
         "text_blocks": blocks,
     }
+
+
+def test_raw_record_parser_inputs_preserve_complete_source_payload() -> None:
+    record = RawCaptureRecord(
+        id=1149,
+        tenant_id=1,
+        workspace_id=1,
+        task_id=42,
+        source_component="cainiao-cnprint",
+        source_index="2639",
+        payload_format="json",
+        raw_payload=json.dumps(
+            {
+                "task": {
+                    "documents": [
+                        {"documentID": "DOC-1", "contents": [{"data": {"packageItemDetail": []}}]},
+                        {"documentID": "DOC-2", "contents": [{"data": {"packageItemDetail": []}}]},
+                    ]
+                }
+            },
+            ensure_ascii=False,
+        ),
+        status="pending",
+    )
+
+    inputs = order_row_reader_service.parser_raw_record_inputs([record])
+
+    assert len(inputs) == 1
+    assert "parent_sequence" not in inputs[0]
+    assert [
+        document["documentID"]
+        for document in inputs[0]["payload"]["task"]["documents"]
+    ] == ["DOC-1", "DOC-2"]
 
 
 def test_waybill_sample_uses_labeled_remark_line_to_replace_default_attrs() -> None:

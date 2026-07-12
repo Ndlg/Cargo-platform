@@ -1105,6 +1105,16 @@ def iter_content_data(payload: dict[str, Any]) -> list[dict[str, Any]]:
             data = content.get("data")
             if isinstance(data, dict):
                 content_data.append(data)
+                continue
+            print_xml = content.get("printXML")
+            if isinstance(print_xml, str):
+                cdata_values = [
+                    compact_spaces(value)
+                    for value in re.findall(r"<!\[CDATA\[(.*?)\]\]>", print_xml, re.DOTALL)
+                ]
+                business_text = "\n".join(value for value in cdata_values if value)
+                if business_text:
+                    content_data.append({"productShortInfo": business_text})
     return content_data
 
 
