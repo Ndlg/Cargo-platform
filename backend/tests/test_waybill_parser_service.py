@@ -1,3 +1,4 @@
+import json
 import importlib.util
 import sys
 from pathlib import Path
@@ -160,6 +161,14 @@ def test_waybill_parser_service_parses_rule_pack_structured_items_without_text_d
         "item_path": "task.documents[0].contents[1].data.packageItemDetail[1]",
         "item_index": 1,
     }
+
+
+def test_current_shoe_rule_pack_declares_structured_item_source() -> None:
+    rule_pack = json.loads((REPO_ROOT / "rule-packs" / "current-user-shoes.v1.json").read_text(encoding="utf-8"))
+
+    assert rule_pack["pack"]["version"] == "1.1.0"
+    source = rule_pack["parser_policy"]["structured_item_sources"][0]
+    assert source["items_path"] == "task.documents[].contents[].data.packageItemDetail[]"
 
 
 def test_waybill_parser_service_requires_explicit_order_row_parser() -> None:

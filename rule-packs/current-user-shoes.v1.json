@@ -3,12 +3,22 @@
   "pack": {
     "code": "current-user-shoes-v1",
     "name": "当前用户鞋类面单识别规则",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "description": "适用于当前用户鞋类订单报货面单。该规则包不是系统默认规则，必须导入并启用后才会参与识别。"
   },
   "parser_policy": {
     "requires_active_rule_pack": true,
     "order_row_parser": "shoe_waybill_v1",
+    "structured_item_sources": [
+      {
+        "name": "package-item-detail",
+        "items_path": "task.documents[].contents[].data.packageItemDetail[]",
+        "product_fields": ["itemName", "simpleName"],
+        "spec_fields": ["specName", "specSimpleName", "skuFullName"],
+        "quantity_fields": ["itemNum"],
+        "remark_fields": ["remark", "buyerRemark", "sellerRemark"]
+      }
+    ],
     "special_text_keywords": [
       {
         "keyword": "微信",
