@@ -98,6 +98,7 @@ class OrderRowDraft:
     original_text: str
     status: str
     review_reason: str
+    source_trace: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -1107,6 +1108,117 @@ def iter_content_data(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return content_data
 
 
+def values_at_structured_path(payload: dict[str, Any], path: str) -> list[tuple[Any, str]]:
+    values: list[tuple[Any, str]] = [(payload, "")]
+    for segment in path.split("."):
+        is_list = segment.endswith("[]")
+        key = segment[:-2] if is_list else segment
+        next_values: list[tuple[Any, str]] = []
+        for value, resolved_path in values:
+            if not isinstance(value, dict) or key not in value:
+                continue
+            child = value[key]
+            child_path = f"{resolved_path}.{key}" if resolved_path else key
+            if is_list:
+                if isinstance(child, list):
+                    next_values.extend((item, f"{child_path}[{index}]") for index, item in enumerate(child))
+            else:
+                next_values.append((child, child_path))
+        values = next_values
+        if not values:
+            break
+    return values
+
+
+def first_structured_field(item: dict[str, Any], field_names: Any) -> str:
+    if not isinstance(field_names, list):
+        return ""
+    for field_name in field_names:
+        value = text_value(item.get(field_name))
+        if value:
+            return value
+    return ""
+
+
+def structured_rows_from_payload(
+    payload: dict[str, Any],
+    *,
+    raw_record_id: int,
+    task_id: int | None,
+    parent_label: str,
+    source_component: str,
+    source_index: str,
+    parser_policy: dict[str, Any] | None,
+) -> list[OrderRowDraft]:
+    mappings = parser_policy.get("structured_item_sources") if isinstance(parser_policy, dict) else None
+    if not isinstance(mappings, list):
+        return []
+
+    for mapping in mappings:
+        if not isinstance(mapping, dict):
+            continue
+        items_path = text_value(mapping.get("items_path"))
+        items = [(item, item_path) for item, item_path in values_at_structured_path(payload, items_path) if isinstance(item, dict)]
+        if not items:
+            continue
+
+        rows: list[OrderRowDraft] = []
+        for index, (item, item_path) in enumerate(items, start=1):
+            product = normalize_product_text(first_structured_field(item, mapping.get("product_fields")))
+            spec_text = first_structured_field(item, mapping.get("spec_fields"))
+            quantity_text = first_structured_field(item, mapping.get("quantity_fields"))
+            remark = first_structured_field(item, mapping.get("remark_fields"))
+            spec_fields = parse_item_text(
+                spec_text,
+                fallback_quantity_text=quantity_text,
+                remark_text=remark,
+            )
+            quantity = spec_fields["quantity"]
+            missing = [field for field, value in (("product", product), ("quantity", quantity)) if not value]
+            original_text = compact_spaces(" ".join(part for part in (product, spec_text, quantity_text, remark) if part))
+            image_match_text = compact_spaces(
+                " ".join(
+                    str(part)
+                    for part in (
+                        product,
+                        spec_fields["sales_attr1"],
+                        spec_fields["sales_attr2"],
+                        quantity or "",
+                        remark,
+                    )
+                    if part
+                )
+            )
+            rows.append(
+                OrderRowDraft(
+                    raw_record_id=raw_record_id,
+                    task_id=task_id,
+                    parent_label=parent_label,
+                    child_label=f"{parent_label}-子{index}",
+                    child_index=index,
+                    child_count=len(items),
+                    source_component=source_component,
+                    source_index=source_index,
+                    product=product,
+                    sales_attr1=spec_fields["sales_attr1"],
+                    sales_attr2=spec_fields["sales_attr2"],
+                    quantity=quantity,
+                    remark=remark,
+                    image_match_text=image_match_text,
+                    original_text=original_text,
+                    status="needs_review" if missing else "draft",
+                    review_reason=f"missing_{'_'.join(missing)}" if missing else "",
+                    source_trace={
+                        "items_path": items_path,
+                        "item_path": item_path,
+                        "item_index": index - 1,
+                    },
+                )
+            )
+        return rows
+    return []
+
+
 def content_product_text(data: dict[str, Any]) -> str:
     for key in ("productShortInfo", "productInfo", "SPInfo", "ITEM_NAME", "itemInfo"):
         value = text_value(data.get(key))
@@ -1171,13 +1283,22 @@ def draft_rows_from_payload(
     source_component: str | None,
     source_index: str | None,
     parent_sequence: int | None = None,
+    parser_policy: dict[str, Any] | None = None,
 ) -> ParentWaybillDraft:
     parent_label = business_parent_label(source_index, raw_record_id, parent_sequence=parent_sequence)
     component = text_value(source_component)
     source = text_value(source_index)
-    rows: list[OrderRowDraft] = []
+    rows = structured_rows_from_payload(
+        payload,
+        raw_record_id=raw_record_id,
+        task_id=task_id,
+        parent_label=parent_label,
+        source_component=component,
+        source_index=source,
+        parser_policy=parser_policy,
+    )
 
-    for data in iter_content_data(payload):
+    for data in [] if rows else iter_content_data(payload):
         product_text = content_product_text(data)
         if not product_text:
             product_text = content_product_full_text(data)

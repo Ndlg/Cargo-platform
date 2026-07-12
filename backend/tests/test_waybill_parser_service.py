@@ -31,6 +31,21 @@ def valid_rule_pack_payload() -> dict:
     }
 
 
+def structured_rule_pack_payload() -> dict:
+    payload = valid_rule_pack_payload()
+    payload["parser_policy"]["structured_item_sources"] = [
+        {
+            "name": "package-item-detail",
+            "items_path": "task.documents[].contents[].data.packageItemDetail[]",
+            "product_fields": ["itemName", "simpleName"],
+            "spec_fields": ["specName", "specSimpleName", "skuFullName"],
+            "quantity_fields": ["itemNum"],
+            "remark_fields": ["remark", "buyerRemark", "sellerRemark"],
+        }
+    ]
+    return payload
+
+
 def rule_pack_without_parser_payload() -> dict:
     return {
         "contract_version": "recognition_rule_pack_v1",
@@ -50,6 +65,101 @@ def test_waybill_parser_service_validates_rule_pack() -> None:
     assert body["contract_version"] == "recognition_rule_pack_v1"
     assert body["pack"]["code"] == "test-shoes"
     assert body["errors"] == []
+
+
+def test_waybill_parser_service_validates_structured_item_source_contract() -> None:
+    app = load_parser_service_app()
+    invalid_pack = structured_rule_pack_payload()
+    invalid_pack["parser_policy"]["structured_item_sources"][0]["product_fields"] = "itemName"
+
+    with TestClient(app) as client:
+        valid_response = client.post(
+            "/api/v1/rule-packs/validate",
+            json={"rule_pack": structured_rule_pack_payload()},
+        )
+        invalid_response = client.post(
+            "/api/v1/rule-packs/validate",
+            json={"rule_pack": invalid_pack},
+        )
+
+    assert valid_response.json()["status"] == "valid"
+    assert invalid_response.json()["status"] == "invalid"
+    assert (
+        "parser_policy.structured_item_sources[0].product_fields"
+        in invalid_response.json()["errors"]
+    )
+
+
+def test_waybill_parser_service_parses_rule_pack_structured_items_without_text_duplicates() -> None:
+    app = load_parser_service_app()
+    payload = {
+        "task": {
+            "documents": [
+                {
+                    "documentID": "YT7632498146506",
+                    "contents": [
+                        {"data": None, "encryptedData": "AES:carrier-data"},
+                        {
+                            "data": {
+                                "packageItemDetail": [
+                                    {
+                                        "itemName": "秒21 vap2025",
+                                        "simpleName": "秒21 vap2025",
+                                        "specName": "二代全白 39 ",
+                                        "specSimpleName": "二代全白 39 ",
+                                        "skuFullName": "二代全白 39",
+                                        "itemNum": 1,
+                                    },
+                                    {
+                                        "itemName": "范33 带木one帆布kw",
+                                        "specName": "木村-3M反光 42.5",
+                                        "itemNum": 2,
+                                    },
+                                ],
+                                "productShortInfo": "这段旧文本不能再次生成订单行",
+                            }
+                        },
+                    ],
+                }
+            ]
+        }
+    }
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/parse/batch",
+            json={
+                "task_id": 42,
+                "rule_pack": structured_rule_pack_payload(),
+                "raw_records": [
+                    {
+                        "raw_record_id": 1149,
+                        "task_id": 42,
+                        "parent_sequence": 1,
+                        "source_component": "cainiao-cnprint",
+                        "source_index": "2639",
+                        "payload": payload,
+                    }
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["summary"]["parent_waybill_count"] == 1
+    assert body["summary"]["child_waybill_count"] == 2
+    assert [
+        (row["product"], row["sales_attr1"], row["sales_attr2"], row["quantity"])
+        for row in body["rows"]
+    ] == [
+        ("秒21 vap2025", "二代全白", "39", 1),
+        ("范33 带木one帆布kw", "木村-3M反光", "42.5", 2),
+    ]
+    assert body["rows"][1]["source_trace"] == {
+        "items_path": "task.documents[].contents[].data.packageItemDetail[]",
+        "item_path": "task.documents[0].contents[1].data.packageItemDetail[1]",
+        "item_index": 1,
+    }
 
 
 def test_waybill_parser_service_requires_explicit_order_row_parser() -> None:

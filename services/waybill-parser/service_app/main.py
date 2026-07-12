@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+import re
 
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
@@ -18,6 +19,8 @@ app = FastAPI(title="Cargo Platform Waybill Parser", version="0.1.0")
 
 RECOGNITION_RULE_PACK_CONTRACT_VERSION = "recognition_rule_pack_v1"
 SUPPORTED_ORDER_ROW_PARSERS = {"shoe_waybill_v1"}
+STRUCTURED_ITEM_FIELD_LISTS = ("product_fields", "spec_fields", "quantity_fields", "remark_fields")
+STRUCTURED_ITEM_PATH_PATTERN = re.compile(r"^[A-Za-z0-9_]+(?:\[\])?(?:\.[A-Za-z0-9_]+(?:\[\])?)*$")
 
 
 class StandardDetailParseInput(BaseModel):
@@ -83,6 +86,27 @@ def rule_pack_validation_errors(rule_pack: dict[str, Any] | None) -> list[str]:
         order_row_parser = str(parser_policy.get("order_row_parser") or "").strip()
         if not order_row_parser or order_row_parser not in SUPPORTED_ORDER_ROW_PARSERS:
             errors.append("parser_policy.order_row_parser")
+        structured_sources = parser_policy.get("structured_item_sources")
+        if structured_sources is not None:
+            if not isinstance(structured_sources, list):
+                errors.append("parser_policy.structured_item_sources")
+            else:
+                for index, source in enumerate(structured_sources):
+                    prefix = f"parser_policy.structured_item_sources[{index}]"
+                    if not isinstance(source, dict):
+                        errors.append(prefix)
+                        continue
+                    if not str(source.get("name") or "").strip():
+                        errors.append(f"{prefix}.name")
+                    items_path = str(source.get("items_path") or "").strip()
+                    if not items_path or not STRUCTURED_ITEM_PATH_PATTERN.fullmatch(items_path) or not items_path.endswith("[]"):
+                        errors.append(f"{prefix}.items_path")
+                    for field_name in STRUCTURED_ITEM_FIELD_LISTS:
+                        field_names = source.get(field_name)
+                        if not isinstance(field_names, list) or not all(
+                            isinstance(field, str) and field.strip() for field in field_names
+                        ):
+                            errors.append(f"{prefix}.{field_name}")
     return errors
 
 
@@ -228,6 +252,7 @@ def parse_batch(payload: BatchParseRequest) -> dict[str, Any]:
                 source_component=record.source_component,
                 source_index=record.source_index,
                 parent_sequence=record.parent_sequence or raw_parent_offset + index,
+                parser_policy=payload.rule_pack.get("parser_policy"),
             )
         )
 
