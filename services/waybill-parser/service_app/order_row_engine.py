@@ -1230,7 +1230,7 @@ def structured_rows_from_payload(
 
 
 def content_product_text(data: dict[str, Any]) -> str:
-    for key in ("productShortInfo", "productInfo", "SPInfo", "ITEM_NAME", "itemInfo"):
+    for key in ("productShortInfo", "productInfo", "SPInfo", "ITEM_NAME", "itemInfo", "ITEM_INFO"):
         value = text_value(data.get(key))
         if value:
             return value
@@ -1238,7 +1238,7 @@ def content_product_text(data: dict[str, Any]) -> str:
 
 
 def content_product_full_text(data: dict[str, Any]) -> str:
-    for key in ("productInfo", "productShortInfo", "SPInfo", "ITEM_NAME", "itemInfo"):
+    for key in ("productInfo", "productShortInfo", "SPInfo", "ITEM_NAME", "itemInfo", "ITEM_INFO"):
         value = text_value(data.get(key))
         if value:
             return value

@@ -714,6 +714,66 @@ def test_waybill_parser_service_raw_records_use_batch_sequence_labels() -> None:
     assert body["rows"][0]["child_label"] == "第1批-第8单-子1"
 
 
+def test_waybill_parser_service_raw_records_parse_item_info_documents() -> None:
+    item_texts = [
+        "2026赤足跑步鞋 5.0黑白蓝;42 【1件】",
+        "2026赤足跑步鞋 5.0黑白紫;36 【1件】",
+        "2026赤足跑步鞋 5.0灰橙;37.5 【1件】",
+        "2026赤足跑步鞋 5.0黑白紫;36.5 【1件】",
+        "2026超轻减震跑步鞋 4.0二代黑白;36.5 【1件】",
+    ]
+
+    def documents(values: list[str]) -> list[dict]:
+        return [
+            {
+                "documentID": f"DOC-{index}",
+                "contents": [
+                    {"encryptedData": "AES:carrier-data"},
+                    {"data": {"ITEM_INFO": value, "ITEM_TOTAL_COUNT": "1"}},
+                ],
+            }
+            for index, value in enumerate(values, start=1)
+        ]
+
+    app = load_parser_service_app()
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/parse/batch",
+            json={
+                "task_id": 45,
+                "rule_pack": structured_rule_pack_payload(),
+                "raw_records": [
+                    {
+                        "raw_record_id": 1234,
+                        "task_id": 45,
+                        "source_component": "cainiao-cnprint",
+                        "source_index": "2656",
+                        "payload": {"task": {"documents": documents(item_texts[:4])}},
+                    },
+                    {
+                        "raw_record_id": 1237,
+                        "task_id": 45,
+                        "source_component": "cainiao-cnprint",
+                        "source_index": "2657",
+                        "payload": {"task": {"documents": documents(item_texts[4:])}},
+                    },
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["summary"] == {
+        "parent_waybill_count": 5,
+        "child_waybill_count": 5,
+        "draft_count": 5,
+        "needs_review_count": 0,
+        "special_count": 0,
+    }
+    assert [row["quantity"] for row in body["rows"]] == [1, 1, 1, 1, 1]
+    assert [row["original_text"] for row in body["rows"]] == item_texts
+
+
 def test_waybill_parser_service_refuses_to_parse_without_rule_pack() -> None:
     app = load_parser_service_app()
     with TestClient(app) as client:
