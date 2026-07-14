@@ -454,6 +454,77 @@ def test_raw_record_upload_contract_stops_at_raw_capture_record() -> None:
         assert stop.json()["status"] == "completed"
 
 
+def test_raw_record_upload_preserves_identical_prints_with_different_source_indexes() -> None:
+    with TestClient(app) as client:
+        headers = login_headers(client)
+        registration = register_collector(client, headers, "repeated-print-machine")
+        collector_headers = {"X-Collector-Token": str(registration["collector_token"])}
+        task = client.post(
+            "/api/v1/collector-control/start",
+            headers=headers,
+            json={"name": "Repeated print capture"},
+        )
+        assert task.status_code == 201
+        task_id = task.json()["id"]
+        repeated_payload = '{"order":"SAME-WAYBILL"}'
+
+        upload = client.post(
+            "/api/v1/collector-runtime/raw-records",
+            headers=collector_headers,
+            json={
+                "task_id": task_id,
+                "records": [
+                    {
+                        "document_id": "REPEATED-PRINT-1",
+                        "source_component": "cainiao-cnprint",
+                        "source_index": "101",
+                        "dedupe_key": "same-content-key",
+                        "payload_format": "json",
+                        "raw_payload": repeated_payload,
+                    },
+                    {
+                        "document_id": "REPEATED-PRINT-2",
+                        "source_component": "cainiao-cnprint",
+                        "source_index": "102",
+                        "dedupe_key": "same-content-key",
+                        "payload_format": "json",
+                        "raw_payload": repeated_payload,
+                    },
+                ],
+            },
+        )
+
+        retry = client.post(
+            "/api/v1/collector-runtime/raw-records",
+            headers=collector_headers,
+            json={
+                "task_id": task_id,
+                "records": [
+                    {
+                        "document_id": "REPEATED-PRINT-1",
+                        "source_component": "cainiao-cnprint",
+                        "source_index": "101",
+                        "dedupe_key": "same-content-key",
+                        "payload_format": "json",
+                        "raw_payload": repeated_payload,
+                    }
+                ],
+            },
+        )
+
+        stop = client.post(
+            "/api/v1/collector-control/stop",
+            headers=headers,
+            json={"task_id": task_id},
+        )
+
+        assert upload.status_code == 201
+        assert upload.json() == {"inserted": 2, "skipped": 0}
+        assert retry.status_code == 201
+        assert retry.json() == {"inserted": 0, "skipped": 1}
+        assert stop.status_code == 200
+
+
 def test_raw_record_upload_rejects_unbounded_batches_and_payloads() -> None:
     with TestClient(app) as client:
         headers = login_headers(client)
