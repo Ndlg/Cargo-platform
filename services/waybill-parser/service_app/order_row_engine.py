@@ -1067,7 +1067,7 @@ def preferred_waybill_sample_texts(sample: dict[str, Any]) -> list[str]:
     blocks = text_blocks if isinstance(text_blocks, list) else []
     valid_blocks = [block for block in blocks if isinstance(block, dict)]
 
-    for source_keyword in ("productShortInfo", "productInfo", "ITEM_INFO"):
+    for source_keyword in ("productShortInfo", "productInfo", "ITEM_INFO", "customContent"):
         source_blocks = text_blocks_for_first_source_path(valid_blocks, source_path_keyword=source_keyword)
         if not source_blocks:
             continue
@@ -1230,7 +1230,7 @@ def structured_rows_from_payload(
 
 
 def content_product_text(data: dict[str, Any]) -> str:
-    for key in ("productShortInfo", "productInfo", "SPInfo", "ITEM_NAME", "itemInfo", "ITEM_INFO"):
+    for key in ("productShortInfo", "productInfo", "SPInfo", "ITEM_NAME", "itemInfo", "ITEM_INFO", "customContent"):
         value = text_value(data.get(key))
         if value:
             return value
@@ -1238,7 +1238,7 @@ def content_product_text(data: dict[str, Any]) -> str:
 
 
 def content_product_full_text(data: dict[str, Any]) -> str:
-    for key in ("productInfo", "productShortInfo", "SPInfo", "ITEM_NAME", "itemInfo", "ITEM_INFO"):
+    for key in ("productInfo", "productShortInfo", "SPInfo", "ITEM_NAME", "itemInfo", "ITEM_INFO", "customContent"):
         value = text_value(data.get(key))
         if value:
             return value

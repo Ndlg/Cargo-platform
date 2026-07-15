@@ -774,6 +774,63 @@ def test_waybill_parser_service_raw_records_parse_item_info_documents() -> None:
     assert [row["original_text"] for row in body["rows"]] == item_texts
 
 
+def test_waybill_parser_service_raw_records_parse_custom_content_documents() -> None:
+    item_text = "【流放】男鞋针织跑步鞋全掌气垫女鞋白黑舒适休闲鞋运动鞋健身鞋,全黑,42,【1】；"
+
+    app = load_parser_service_app()
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/parse/batch",
+            json={
+                "task_id": 46,
+                "rule_pack": valid_rule_pack_payload(),
+                "raw_records": [
+                    {
+                        "raw_record_id": 1279,
+                        "task_id": 46,
+                        "source_component": "cainiao-cnprint",
+                        "source_index": "2664",
+                        "payload": {
+                            "task": {
+                                "documents": [
+                                    {
+                                        "documentID": "YT7633039580373",
+                                        "contents": [
+                                            {"data": None, "encryptedData": "AES:carrier-data"},
+                                            {"data": {"customContent": item_text}},
+                                        ],
+                                    }
+                                ]
+                            }
+                        },
+                    }
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["summary"]["needs_review_count"] == 0
+    assert [
+        (
+            row["product"],
+            row["sales_attr1"],
+            row["sales_attr2"],
+            row["quantity"],
+            row["original_text"],
+        )
+        for row in body["rows"]
+    ] == [
+        (
+            "【流放】男鞋针织跑步鞋全掌气垫女鞋白黑舒适休闲鞋运动鞋健身鞋",
+            "全黑",
+            "42",
+            1,
+            item_text,
+        )
+    ]
+
+
 def test_waybill_parser_service_refuses_to_parse_without_rule_pack() -> None:
     app = load_parser_service_app()
     with TestClient(app) as client:
