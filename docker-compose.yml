@@ -76,3 +76,4 @@ services:
 
 volumes:
   cargo-platform-data:
+    name: cargo-platform-data
