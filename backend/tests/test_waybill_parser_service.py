@@ -831,6 +831,59 @@ def test_waybill_parser_service_raw_records_parse_custom_content_documents() -> 
     ]
 
 
+def test_waybill_parser_service_parses_bracketed_custom_content_comma_attrs() -> None:
+    item_texts = [
+        "【HK】特2跑步鞋飞速超轻减震防滑透气运动鞋男鞋女鞋2代联名厚底,粉银,38.5,【1】；",
+        "【流放】男鞋针织跑步鞋全掌气垫女鞋白黑舒适休闲鞋运动鞋健身鞋,全白,42,【1】；",
+        "【流放】男鞋针织跑步鞋全掌气垫女鞋白黑舒适休闲鞋运动鞋健身鞋,荧光绿,40,【1】；",
+        "【流放】男鞋针织跑步鞋全掌气垫女鞋白黑舒适休闲鞋运动鞋健身鞋,黑灰白,44.5,【1】；",
+    ]
+
+    app = load_parser_service_app()
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/parse/batch",
+            json={
+                "task_id": 46,
+                "rule_pack": valid_rule_pack_payload(),
+                "raw_records": [
+                    {
+                        "raw_record_id": 1279,
+                        "task_id": 46,
+                        "source_component": "cainiao-cnprint",
+                        "source_index": "2664",
+                        "payload": {
+                            "task": {
+                                "documents": [
+                                    {
+                                        "documentID": f"DOC-{index}",
+                                        "contents": [
+                                            {"data": None, "encryptedData": "AES:carrier-data"},
+                                            {"data": {"customContent": item_text}},
+                                        ],
+                                    }
+                                    for index, item_text in enumerate(item_texts, start=1)
+                                ]
+                            }
+                        },
+                    }
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [
+        (row["product"], row["sales_attr1"], row["sales_attr2"], row["quantity"])
+        for row in body["rows"]
+    ] == [
+        ("【HK】特2跑步鞋飞速超轻减震防滑透气运动鞋男鞋女鞋2代联名厚底", "粉银", "38.5", 1),
+        ("【流放】男鞋针织跑步鞋全掌气垫女鞋白黑舒适休闲鞋运动鞋健身鞋", "全白", "42", 1),
+        ("【流放】男鞋针织跑步鞋全掌气垫女鞋白黑舒适休闲鞋运动鞋健身鞋", "荧光绿", "40", 1),
+        ("【流放】男鞋针织跑步鞋全掌气垫女鞋白黑舒适休闲鞋运动鞋健身鞋", "黑灰白", "44.5", 1),
+    ]
+
+
 def test_waybill_parser_service_refuses_to_parse_without_rule_pack() -> None:
     app = load_parser_service_app()
     with TestClient(app) as client:

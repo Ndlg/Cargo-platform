@@ -461,6 +461,26 @@ def parse_product_suffix_attr_size_text(
     if len(parts) < 2 and semicolon_parts is None:
         return None
 
+    if len(parts) >= 3:
+        product = clean_product_line_text("，".join(parts[:-2]))
+        sales_attr1 = remove_field_label(parts[-2])
+        sales_attr2 = normalize_sales_attr2(parts[-1])
+        quantity = quantity_from_text(trailing_quantity_text, fallback_quantity_text, original_text)
+        if has_product_title_marker(product) and sales_attr1 and SHOE_SIZE_VALUE_PATTERN.match(sales_attr2) and quantity is not None:
+            remark = compact_spaces(remark_text)
+            image_match_text = compact_spaces(" ".join(str(part) for part in (product, sales_attr1, sales_attr2, quantity, remark) if part))
+            return {
+                "product": product,
+                "sales_attr1": sales_attr1,
+                "sales_attr2": sales_attr2,
+                "quantity": quantity,
+                "remark": remark,
+                "image_match_text": image_match_text,
+                "original_text": original_text,
+                "status": "draft",
+                "review_reason": "",
+            }
+
     if len(parts) >= 2:
         productish = compact_spaces("，".join(parts[:-1]))
         sales_attr2_text = parts[-1]
