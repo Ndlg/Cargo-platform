@@ -583,6 +583,11 @@ def parse_label_only_attr_text(
         return None
 
     sales_attr1, sales_attr2 = labeled_attrs
+    first_label = FIELD_LABEL_PATTERN.search(without_quantity)
+    if first_label and first_label.group("label") in ATTR2_FIELD_LABELS and not sales_attr1 and sales_attr2:
+        prefix = compact_spaces(without_quantity[: first_label.start()]).strip(" ，,;；")
+        if prefix and not has_product_title_marker(prefix) and len(prefix) <= 36:
+            sales_attr1 = remove_field_label(prefix)
     quantity = quantity_from_text(trailing_quantity_text, fallback_quantity_text, original_text) or 1
     remark = compact_spaces(remark_text)
     image_match_text = compact_spaces(" ".join(str(part) for part in (sales_attr1, sales_attr2, quantity, remark) if part))

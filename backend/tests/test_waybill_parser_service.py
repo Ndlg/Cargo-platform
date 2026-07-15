@@ -933,6 +933,65 @@ def test_waybill_parser_service_parses_bracketed_item_info_semicolon_attrs() -> 
     ]
 
 
+def test_waybill_parser_service_preserves_attr_before_size_label_from_print_xml() -> None:
+    item_text = "5.0二代全黑鞋码：40，,*1"
+
+    app = load_parser_service_app()
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/parse/batch",
+            json={
+                "task_id": 46,
+                "rule_pack": valid_rule_pack_payload(),
+                "raw_records": [
+                    {
+                        "raw_record_id": 1291,
+                        "task_id": 46,
+                        "source_component": "cainiao-cnprint",
+                        "source_index": "7392",
+                        "parent_sequence": 100,
+                        "payload": {
+                            "task": {
+                                "documents": [
+                                    {
+                                        "documentID": "DOC-100",
+                                        "contents": [
+                                            {"data": None, "encryptedData": "AES:carrier-data"},
+                                            {"printXML": f"<text><![CDATA[{item_text}]]></text>"},
+                                        ],
+                                    }
+                                ]
+                            }
+                        },
+                    }
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [
+        (
+            row["product"],
+            row["sales_attr1"],
+            row["sales_attr2"],
+            row["quantity"],
+            row["image_match_text"],
+            row["original_text"],
+        )
+        for row in body["rows"]
+    ] == [
+        (
+            "",
+            "5.0二代全黑",
+            "40",
+            1,
+            "5.0二代全黑 40 1",
+            item_text,
+        )
+    ]
+
+
 def test_waybill_parser_service_refuses_to_parse_without_rule_pack() -> None:
     app = load_parser_service_app()
     with TestClient(app) as client:
