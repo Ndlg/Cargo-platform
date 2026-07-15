@@ -2493,11 +2493,15 @@ def upload_raw_records(
     inserted = 0
     skipped = 0
     for item in payload.records:
-        if item.dedupe_key:
+        if item.source_component and item.source_index:
+            # A source row is one print event. Equal payloads may be legitimate reprints.
             existing = db.scalars(
                 select(RawCaptureRecord).where(
                     RawCaptureRecord.workspace_id == collector.workspace_id,
-                    RawCaptureRecord.dedupe_key == item.dedupe_key,
+                    RawCaptureRecord.task_id == task.id,
+                    RawCaptureRecord.collector_id == collector.id,
+                    RawCaptureRecord.source_component == item.source_component,
+                    RawCaptureRecord.source_index == item.source_index,
                     RawCaptureRecord.is_deleted.is_(False),
                     RawCaptureRecord.archived_at.is_(None),
                 )
