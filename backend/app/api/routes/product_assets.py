@@ -39,10 +39,8 @@ def _safe_stem(name: str) -> str:
 
 def _sku_name_from_file(filename: str) -> str:
     stem = Path(filename).stem
-    clean = re.sub(r"^SKU图_\d+_", "", stem)
-    parts = clean.split("-", 1)
-    sku_name = parts[1].strip() if len(parts) > 1 else clean.strip()
-    return sku_name or clean or stem
+    sku_name = re.sub(r"^SKU图_\d+[_-]", "", stem).strip()
+    return sku_name or stem
 
 
 def _mime_type(extension: str) -> str:
