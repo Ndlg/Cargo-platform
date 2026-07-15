@@ -31,6 +31,9 @@ build/
 *.log
 logs/
 
+# Local code index
+.codegraph/
+
 # Runtime storage
 local-dev.db
 backend/tests/*_test.db
