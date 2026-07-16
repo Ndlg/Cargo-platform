@@ -279,6 +279,10 @@ def split_douyin_product_line(value: str) -> list[str]:
     return items
 
 
+def is_standalone_quantity_line(value: str) -> bool:
+    return bool(QUANTITY_PATTERN.fullmatch(compact_spaces(value)))
+
+
 def split_douyin_product_lines_with_boundary(value: Any) -> tuple[list[str], str]:
     text = text_value(value)
     if not text:
@@ -288,6 +292,9 @@ def split_douyin_product_lines_with_boundary(value: Any) -> tuple[list[str], str
     if len(lines) > 1:
         line_results = [split_douyin_product_line_with_boundary(line) for line in lines]
         line_items = [item for items, _boundary_type in line_results for item in items]
+        product_items = [item for item in line_items if not is_standalone_quantity_line(item)]
+        if product_items and len(product_items) < len(line_items):
+            return product_items, "newline_quantity_summary"
         if len(line_items) > 1:
             nested_boundary = next(
                 (

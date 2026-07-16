@@ -6,6 +6,7 @@ from typing import Any
 
 from service_app.douyin_product_info import (
     compact_spaces,
+    is_standalone_quantity_line,
     quantity_from_text,
     split_douyin_attr_tail,
     split_douyin_product_lines,
@@ -981,7 +982,7 @@ def is_cancelled_placeholder_line(value: str) -> bool:
 
 def is_non_business_line(value: str) -> bool:
     text = compact_spaces(value)
-    return not text or text.lower() == "auto" or is_cancelled_placeholder_line(text)
+    return not text or text.lower() == "auto" or is_cancelled_placeholder_line(text) or is_standalone_quantity_line(text)
 
 
 def is_plain_attr_size_line(value: str) -> bool:

@@ -243,6 +243,26 @@ def test_waybill_sample_product_line_followed_by_free_remark_stays_one_row() -> 
     assert row.status == "draft"
 
 
+def test_waybill_sample_product_line_followed_by_quantity_summary_stays_one_row() -> None:
+    sample = waybill_sample_with_original_lines(
+        [
+            ("task.documents[0].contents[1].printXML.cdata[0]", "秒55 b，,黑色Cloud 6，43*2"),
+            ("task.documents[0].contents[1].printXML.cdata[1]", "2双"),
+        ],
+        raw_record_id=1327,
+    )
+
+    result = draft_rows_from_waybill_sample(sample, parent_sequence=74)
+
+    assert result.child_count == 1
+    row = result.rows[0]
+    assert row.product == "秒55 b"
+    assert row.sales_attr1 == "黑色Cloud 6"
+    assert row.sales_attr2 == "43"
+    assert row.quantity == 2
+    assert row.status == "draft"
+
+
 def test_waybill_sample_product_line_followed_by_shipping_remark_stays_one_row() -> None:
     sample = waybill_sample_with_original_lines(
         [
