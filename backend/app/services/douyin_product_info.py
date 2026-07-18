@@ -264,8 +264,9 @@ def split_douyin_product_line_with_boundary(value: str) -> tuple[list[str], str]
         for part in re.split(r"[;；]+", text)
         if trim_douyin_item_separators(part)
     ]
+    repeated_bracket_title = any(part.startswith("【") for part in semicolon_parts[1:])
     if len(semicolon_parts) > 1 and (
-        any(part.startswith("【") for part in semicolon_parts)
+        repeated_bracket_title
         or sum(1 for part in semicolon_parts if has_trailing_quantity(part)) >= 2
     ):
         return semicolon_parts, "semicolon"

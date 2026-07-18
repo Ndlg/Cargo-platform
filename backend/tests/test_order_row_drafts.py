@@ -397,6 +397,50 @@ def test_waybill_sample_ignores_buyer_memo_when_item_info_is_available() -> None
     assert row.quantity == 1
 
 
+def test_raw_payload_item_info_semicolon_size_keeps_one_row_per_item_line() -> None:
+    payload = {
+        "task": {
+            "documents": [
+                {
+                    "documentID": "YT7633567203412",
+                    "contents": [
+                        {
+                            "data": {
+                                "ITEM_INFO": (
+                                    "【HK】特2跑步鞋飞速超轻减震防滑透气运动鞋男鞋女鞋2代联名厚底 褐绿色;44 【1件】\n"
+                                    "【HK】特2跑步鞋飞速超轻减震防滑透气运动鞋男鞋女鞋2代联名厚底 橄榄绿;39 【1件】\n"
+                                ),
+                                "ITEM_TOTAL_COUNT": "2件",
+                            }
+                        }
+                    ],
+                }
+            ]
+        }
+    }
+
+    result = draft_rows_from_payload(
+        payload,
+        raw_record_id=1394,
+        task_id=49,
+        source_component="cainiao-cnprint",
+        source_index="2696",
+        parent_sequence=27,
+    )
+
+    assert result.parent_label == "第1批-第27单"
+    assert result.child_count == 2
+    assert [row.child_label for row in result.rows] == ["第1批-第27单-子1", "第1批-第27单-子2"]
+    assert [row.product for row in result.rows] == [
+        "【HK】特2跑步鞋飞速超轻减震防滑透气运动鞋男鞋女鞋2代联名厚底",
+        "【HK】特2跑步鞋飞速超轻减震防滑透气运动鞋男鞋女鞋2代联名厚底",
+    ]
+    assert [row.sales_attr1 for row in result.rows] == ["褐绿色", "橄榄绿"]
+    assert [row.sales_attr2 for row in result.rows] == ["44", "39"]
+    assert [row.quantity for row in result.rows] == [1, 1]
+    assert all(row.status == "draft" for row in result.rows)
+
+
 def test_multi_product_waybill_becomes_multiple_child_waybills() -> None:
     product_line = (
         "【登山鞋涉水鞋防水机能户外徒步男鞋女鞋休闲防滑溯溪越野鞋跑步鞋】低帮黑白 42 1件；"
