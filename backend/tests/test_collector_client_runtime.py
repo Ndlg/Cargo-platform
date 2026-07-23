@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import http.client
+from datetime import datetime, timedelta
 from io import BytesIO
 import os
 from pathlib import Path
@@ -335,6 +336,41 @@ def test_collector_client_builds_raw_record_without_parser_fields(tmp_path) -> N
     assert "parsed_payload" not in record
     assert "field_mapping" not in record
     assert "product_match" not in record
+
+
+def test_collector_task_watermark_ignores_rows_before_capture_start(tmp_path) -> None:
+    db_path = tmp_path / "print.db"
+    start_utc = datetime.fromisoformat("2026-07-23T06:51:39.241233+00:00")
+    start_local = start_utc.astimezone().replace(tzinfo=None)
+    before_start = (start_local - timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S")
+    after_start = (start_local + timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S")
+    with collector_client.sqlite3.connect(db_path) as connection:
+        connection.execute("create table task (taskID text, msg text, time text)")
+        connection.execute(
+            "insert into task (taskID, msg, time) values (?, ?, ?)",
+            ("old-local-task", '{"task":{"taskID":"OLD"}}', before_start),
+        )
+        connection.execute(
+            "insert into task (taskID, msg, time) values (?, ?, ?)",
+            ("new-local-task", '{"task":{"taskID":"NEW"}}', after_start),
+        )
+
+    adapter = collector_client.PrintDbAdapter(
+        source_component="cainiao-cnprint",
+        display_name="Cainiao",
+        db_path=db_path,
+    )
+    state = collector_client.CollectorState(idle_watermarks={"cainiao-cnprint": 0})
+
+    watermark = state.start_capture_watermark(
+        58,
+        adapter,
+        capture_started_at="2026-07-23T06:51:39.241233+00:00",
+    )
+
+    assert watermark == 1
+    rows = adapter.read_since(watermark, 10)
+    assert [row.task_id for row in rows] == ["new-local-task"]
 
 
 def test_raw_record_upload_contract_stops_at_raw_capture_record() -> None:

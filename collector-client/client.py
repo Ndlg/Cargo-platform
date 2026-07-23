@@ -37,6 +37,19 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def local_db_time_from_iso(value: str | None) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return text[:19].replace("T", " ")
+    if moment.tzinfo is not None:
+        moment = moment.astimezone()
+    return moment.replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
+
+
 def sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8", "ignore")).hexdigest()
 
@@ -291,6 +304,28 @@ class PrintDbAdapter:
             return 0
         return int(status.get("max_rowid") or 0)
 
+    def max_rowid_before_time(self, capture_started_at: str | None) -> int:
+        cutoff = local_db_time_from_iso(capture_started_at)
+        if not cutoff or not self.db_path.exists():
+            return 0
+
+        try:
+            with self.connect() as connection:
+                row = connection.execute(
+                    """
+                    select coalesce(max(rowid), 0) as max_rowid
+                    from task
+                    where time is not null
+                      and trim(time) <> ''
+                      and time < ?
+                    """,
+                    (cutoff,),
+                ).fetchone()
+        except sqlite3.Error:
+            return 0
+
+        return int(row["max_rowid"] or 0)
+
     def read_since(self, rowid: int, limit: int) -> list[PrintTaskRow]:
         if not self.db_path.exists():
             return []
@@ -360,12 +395,22 @@ class CollectorState:
     def update_idle_watermark(self, adapter: PrintDbAdapter) -> None:
         self.idle_watermarks[adapter.source_component] = adapter.max_rowid()
 
-    def start_capture_watermark(self, task_id: int, adapter: PrintDbAdapter) -> int:
+    def start_capture_watermark(
+        self,
+        task_id: int,
+        adapter: PrintDbAdapter,
+        capture_started_at: str | None = None,
+    ) -> int:
         key = self.capture_key(task_id, adapter.source_component)
         if key not in self.capture_watermarks:
             baseline = self.idle_watermark(adapter)
             if baseline is None:
-                baseline = adapter.max_rowid()
+                if capture_started_at:
+                    baseline = adapter.max_rowid_before_time(capture_started_at)
+                else:
+                    baseline = adapter.max_rowid()
+            if capture_started_at:
+                baseline = max(baseline, adapter.max_rowid_before_time(capture_started_at))
             self.capture_watermarks[key] = baseline
         return self.capture_watermarks[key]
 
@@ -609,8 +654,13 @@ def upload_rows_for_task(
     task_id: int,
     adapter: PrintDbAdapter,
     batch_size: int,
+    capture_started_at: str | None = None,
 ) -> int:
-    watermark = state.start_capture_watermark(task_id, adapter)
+    watermark = state.start_capture_watermark(
+        task_id,
+        adapter,
+        capture_started_at=capture_started_at,
+    )
     rows = adapter.read_since(watermark, batch_size)
     if not rows:
         return 0
@@ -648,13 +698,23 @@ def run_sqlite_once(
         runtime_status="listening",
     )
     active_tasks = heartbeat_state.get("tasks", [])
-    active_task_ids = {int(task["id"]) for task in active_tasks}
+    active_tasks_by_id = {int(task["id"]): task for task in active_tasks}
+    active_task_ids = set(active_tasks_by_id)
     LOGGER.info("heartbeat ok, active tasks: %s", len(active_task_ids))
 
     if active_task_ids:
         for task_id in sorted(active_task_ids):
+            capture_started_at = active_tasks_by_id[task_id].get("started_at")
             for adapter in adapters:
-                upload_rows_for_task(base_url, token, state, task_id, adapter, batch_size)
+                upload_rows_for_task(
+                    base_url,
+                    token,
+                    state,
+                    task_id,
+                    adapter,
+                    batch_size,
+                    capture_started_at=capture_started_at,
+                )
         return
 
     closing_task_ids = state.active_task_ids()
