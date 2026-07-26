@@ -1,0 +1,16 @@
+services:
+  backend:
+    image: cargo-platform-backend:field-20260727-004852
+    build: !reset null
+
+  waybill-parser:
+    image: cargo-platform-waybill-parser:field-20260727-004852
+    build: !reset null
+
+  tenant-ui:
+    image: cargo-platform-tenant-ui:field-20260727-004852
+    build: !reset null
+
+  platform-admin-ui:
+    image: cargo-platform-admin-ui:field-20260727-004852
+    build: !reset null
