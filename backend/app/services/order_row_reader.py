@@ -439,6 +439,10 @@ def order_rows_for_task(
             task_id=task_id,
             details=details,
         )
+    if records:
+        return parse_raw_records_to_order_rows(
+            db, workspace_id=workspace_id, task_id=task_id, records=records
+        )
     return [], []
 
 

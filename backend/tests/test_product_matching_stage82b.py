@@ -1023,6 +1023,65 @@ def test_recognition_preview_uses_waybill_sequence_not_raw_record_source_index(m
         assert all("2648" not in label and "7132" not in label for label in labels)
 
 
+def test_recognition_export_keeps_unreadable_raw_print_in_exception_sheet(monkeypatch) -> None:
+    _use_parser_service_stub(monkeypatch)
+
+    with TestClient(app) as client:
+        headers = _headers(client)
+        _activate_test_recognition_pack()
+        with SessionLocal() as db:
+            task = CaptureTask(
+                tenant_id=1,
+                workspace_id=1,
+                name="不可读打印记录覆盖测试",
+                status="completed",
+            )
+            db.add(task)
+            db.flush()
+            db.add(
+                RawCaptureRecord(
+                    tenant_id=1,
+                    workspace_id=1,
+                    task_id=task.id,
+                    document_id="ENCRYPTED-ONLY",
+                    source_component="cloud-print-client",
+                    source_index="encrypted-1",
+                    payload_format="json",
+                    raw_payload=json.dumps(
+                        {"encryptedOrderData": "ciphertext-only"},
+                        ensure_ascii=False,
+                    ),
+                    status="pending",
+                )
+            )
+            db.commit()
+            task_id = task.id
+
+        preview_response = client.get(
+            f"/api/v1/collector-control/tasks/{task_id}/recognition-preview",
+            headers=headers,
+        )
+
+        assert preview_response.status_code == 200
+        preview = preview_response.json()
+        assert preview["waybill_count"] == 1
+        assert preview["order_row_count"] == 1
+        assert preview["rows"][0]["status"] == "product_unmatched"
+        assert preview["rows"][0]["source_label"] == "第1批-第1单-子1"
+
+        workbook_response = client.get(
+            f"/api/v1/collector-control/tasks/{task_id}/report-workbook",
+            headers=headers,
+            params={"layout": json.dumps({"output_mode": "merged_sheet"}, ensure_ascii=False)},
+        )
+
+    assert workbook_response.status_code == 200
+    workbook = load_workbook(BytesIO(workbook_response.content))
+    assert workbook["报货表"].max_row == 1
+    assert workbook["异常面单"].max_row == 2
+    assert workbook["异常面单"]["A2"].value
+
+
 def test_current_batch_product_matching_uses_parser_service_order_rows(monkeypatch) -> None:
     with TestClient(app) as client:
         headers = _headers(client)

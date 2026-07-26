@@ -4,7 +4,7 @@
 
 **Goal:** 让没有可读商品文本、也没有旧标准明细的原始打印记录仍产生一条可复核异常行。
 
-**Architecture:** 保留识别服务现有异常占位能力，只修正后端任务读取入口的错误分流。原始记录存在时一律进入 `parse_raw_records_to_order_rows`，不再由预读文本决定是否跳过识别服务。
+**Architecture:** 保留识别服务现有异常占位能力和现有来源优先级，只修正后端任务读取入口的空结果分支。可读原始记录仍优先、已有标准明细仍可使用；只有即将返回空结果且存在原始记录时，才进入 `parse_raw_records_to_order_rows`。
 
 **Tech Stack:** Python 3.12、FastAPI、SQLAlchemy、pytest。
 
@@ -21,7 +21,7 @@
 
 **Files:**
 - Modify: `backend/app/services/order_row_reader.py:421-442`
-- Test: `backend/tests/test_order_row_drafts.py`
+- Test: `backend/tests/test_product_matching_stage82b.py`
 
 **Interfaces:**
 - Consumes: `raw_records_for_task(...) -> list[RawCaptureRecord]`
@@ -29,40 +29,35 @@
 
 - [ ] **Step 1: 写失败回归测试**
 
-在 `backend/tests/test_order_row_drafts.py` 增加接口测试，写入一条只有不可读加密字段的 `RawCaptureRecord`，不写入 `StandardDetail`，然后请求 `/api/v1/order-row-drafts/tasks/{task_id}`。断言结果包含一张父面单和一条 `needs_review` 子行，并保留 `source_index`。
+在 `backend/tests/test_product_matching_stage82b.py` 增加接口测试，写入一条只有不可读加密字段的 `RawCaptureRecord`，不写入 `StandardDetail`。断言识别预览仍包含一张面单和一条异常订单行，并断言最终工作簿的 `异常面单` 表保留该行。
 
 - [ ] **Step 2: 运行测试并确认按预期失败**
 
 Run:
 
 ```powershell
-pwsh.exe -NoProfile -File .\scripts\backend_test.ps1 backend/tests/test_order_row_drafts.py::test_order_row_draft_endpoint_keeps_unreadable_raw_record_as_review_exception -q
+pwsh.exe -NoProfile -File .\scripts\backend_test.ps1 backend/tests/test_product_matching_stage82b.py::test_recognition_export_keeps_unreadable_raw_print_in_exception_sheet -q
 ```
 
-Expected: FAIL，因为当前返回的 `parent_waybill_count` 和 `child_waybill_count` 都是 `0`。
+Expected: FAIL，因为当前识别预览的 `waybill_count` 和 `order_row_count` 都是 `0`。
 
 - [ ] **Step 3: 写最小实现**
 
-将 `order_rows_for_task` 的原始记录分支从：
-
-```python
-if records and has_readable_waybill_samples(sample_inputs):
-```
-
-改为：
+保留现有可读原始记录和标准明细分支，在最终 `return [], []` 前增加：
 
 ```python
 if records:
+    return parse_raw_records_to_order_rows(
+        db, workspace_id=workspace_id, task_id=task_id, records=records
+    )
 ```
-
-删除该函数中不再需要的 `sample_inputs` 局部变量，其他分支保持不变。
 
 - [ ] **Step 4: 运行单项测试并确认通过**
 
 Run:
 
 ```powershell
-pwsh.exe -NoProfile -File .\scripts\backend_test.ps1 backend/tests/test_order_row_drafts.py::test_order_row_draft_endpoint_keeps_unreadable_raw_record_as_review_exception -q
+pwsh.exe -NoProfile -File .\scripts\backend_test.ps1 backend/tests/test_product_matching_stage82b.py::test_recognition_export_keeps_unreadable_raw_print_in_exception_sheet -q
 ```
 
 Expected: PASS。
@@ -80,6 +75,6 @@ Expected: 全部通过。
 - [ ] **Step 6: 提交原子补丁**
 
 ```powershell
-git add backend/tests/test_order_row_drafts.py backend/app/services/order_row_reader.py
+git add backend/tests/test_product_matching_stage82b.py backend/app/services/order_row_reader.py
 git commit -m "fix: keep unreadable print records reviewable"
 ```
