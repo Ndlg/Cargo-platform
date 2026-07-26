@@ -4,7 +4,7 @@
 
 `cargo-platform` exists to help the user turn collected order/waybill data into supplier order-reporting Excel workbooks.
 
-The current system is being rewritten because the previous technical workflow became confusing, fragile, and difficult to use in real business. Future work must be centered on business order rows, not on technical intermediate screens.
+The current field business workflow is the product baseline. Future work must preserve that workflow and improve only the rule-driven recognition and matching behind it. Do not replace it with a manual order-row editing or confirmation workflow.
 
 Primary business row contract:
 
@@ -18,6 +18,8 @@ Primary business row contract:
 
 Multi-product waybills must become multiple child order rows. Never hide several products inside one text field.
 
+One capture task is one complete collection round from `开始采集` to `结束采集`. Keep every print event collected in that round. Do not deduplicate records merely because their business content is identical.
+
 ## Hard Direction Reset
 
 Do not rebuild or improve the retired technical mapping/workbench route as the primary product.
@@ -26,11 +28,15 @@ The platform should work like this:
 
 1. Collect raw records from collector clients.
 2. Send raw records plus the active recognition rule pack to an independent recognition engine service.
-3. Receive one or more editable order rows from that engine.
-4. Let the user inspect and correct rows in a table-like workflow.
-5. Convert user-confirmed corrections into inspectable learning records or updated rule packs.
-6. Match confirmed rows to product, SKU, and image assets.
+3. Receive one or more rule-generated order rows from that engine.
+4. Automatically match those rows to product, SKU, image, and stall assets by applying maintained matching rules.
+5. Send unresolved results to the exception page with an actionable reason.
+6. Let administrators correct the responsible rule pack, matching rule, or maintained asset, then automatically rerun the affected capture task.
 7. Export the final supplier workbook and an exception sheet.
+
+Order rows are rule outputs, not user-maintained business records. Users must not edit, confirm, exclude, or approve individual order rows. Business users start collection, stop collection, inspect exceptions, and download Excel; administrators maintain rules and assets.
+
+Every collected print must remain traceable to either a normal exported row or an exception entry. Never silently drop an uncertain or unsupported print.
 
 If no active recognition rule pack exists, parsing/recognition must return a business-readable missing-rule-pack response. Do not silently run hidden built-in recognition.
 
@@ -62,7 +68,8 @@ The main platform may:
 - activate, deactivate, import, export, and delete rule packs
 - pass raw capture records and an active rule pack to the recognition engine
 - store and display the engine output
-- let users correct rows and save inspectable learning records
+- route unresolved results to the responsible rule or asset maintenance page
+- rerun affected capture tasks after a rule or asset revision
 
 The main platform must not:
 
@@ -70,6 +77,7 @@ The main platform must not:
 - hard-code shoe-specific parsing behavior
 - keep business-specific parser functions as the source of truth
 - silently parse when no active rule pack exists
+- treat manual row edits or confirmations as the correction mechanism
 
 The recognition engine service may:
 
@@ -118,7 +126,7 @@ Must not parse order rows, match products, maintain assets, or export Excel.
 
 ### 2. Independent Recognition Engine / Waybill Parsing Service
 
-Responsibility: convert one raw capture record into business order row candidates by applying a provided rule pack.
+Responsibility: convert one raw capture record into rule-generated business order rows by applying a provided rule pack.
 
 Input: raw capture record plus recognition rule pack payload.
 
@@ -133,21 +141,23 @@ Must support special waybills and multi-product waybills. If parsing cannot prod
 
 Must be callable as a separate service. It must not read or write platform business tables.
 
-### 3. Order Row Review Module
+### 3. 面单解析结果模块
 
-Responsibility: let the user review, edit, confirm, exclude, or revise parsed order rows.
+Responsibility: display rule-generated parent waybills, child product rows, special-waybill status, and parse exceptions.
 
-Input: parsed order row candidates.
+Input: recognition-engine output.
 
-Output: confirmed order rows ready for product matching.
+Output: rule-generated order rows ready for automatic product matching, plus actionable parse exceptions.
 
-The UI should show business labels such as `第1批-第24单-子1`, not raw database IDs as the primary label.
+This module is read-only for business row content. It must not provide row editing, row confirmation, batch confirmation, exclusion, or approval actions. A parsing error must be fixed through the recognition rule pack and then rerun.
+
+The UI should identify rows within the selected collection round without exposing raw database IDs or technical task numbers as the primary business label.
 
 ### 4. 商品匹配模块
 
-Responsibility: consume confirmed order rows and match them to product, SKU, and image assets.
+Responsibility: consume rule-generated order rows and automatically match them to product, SKU, image, and stall assets.
 
-Input: confirmed order rows.
+Input: rule-generated order rows.
 
 Output:
 
@@ -157,7 +167,7 @@ Output:
 - match status
 - exception reason
 
-Must not parse waybills or change upstream row parsing. It may use user-confirmed product/SKU/image rules and maintained assets.
+Must not parse waybills or change upstream row parsing. It may use administrator-maintained product/SKU/image rules and maintained assets. Matching failures must be corrected by changing rules or assets and rerunning the affected task, never by editing the result row.
 
 ### 5. Export Module
 
@@ -183,7 +193,7 @@ Output:
 - validated rule pack
 - business-readable rule sections
 - preview result and impact summary
-- revised rule-pack version after user confirmation
+- revised rule-pack version after the administrator saves the rule change
 
 Must not directly parse orders through hidden platform code. Preview and validation must go through the independent recognition engine contract.
 
@@ -212,13 +222,13 @@ The product UI should follow the business flow:
 
 1. `采集记录`: collector status and collected waybill count.
 2. `面单解析`: raw waybill, parsed child rows, special-waybill status, parse errors.
-3. `订单行整理`: editable business rows and batch confirmation.
-4. `商品匹配`: product/SKU/image matching and exceptions.
-5. `异常处理`: unresolved rows grouped by actionable reason.
-6. `导出中心`: workbook preview, row counts, download.
-7. `规则包`: import, export, activate, revise, and inspect recognition rule packs.
+3. `异常处理`: unresolved parse/product/SKU/image results grouped by actionable reason and routed to rule or asset maintenance.
+4. `导出中心`: automatically generated workbook preview, row counts, and download.
+5. `管理页面`: collector connections, stalls, products/SKUs/images, product matching rules, recognition rule packs, export headers, and system settings.
 
 Avoid exposing source paths, JSON traces, internal IDs, or technical parse artifacts unless the user opens diagnostics.
+
+Do not add an `订单行整理` step between parsing and matching. Do not add manual row editing or confirmation controls.
 
 ## Development Rules
 
@@ -226,8 +236,10 @@ Avoid exposing source paths, JSON traces, internal IDs, or technical parse artif
 - Keep changes scoped to the responsible module.
 - Prefer simple, inspectable data structures over hidden inference.
 - Use real task data to verify that parsed rows, matched rows, exceptions, and exported rows add up.
-- If a row is uncertain, keep it reviewable. Do not silently guess.
-- User-confirmed corrections should become visible learning records or rule-pack revisions.
+- If a row is uncertain, keep it as an actionable exception. Do not silently guess or drop it.
+- Corrections must become visible rule-pack revisions, matching-rule revisions, or maintained asset changes; never persist a manual row override as the source of truth.
+- Verify the invariant `collected prints = normal export coverage + exception coverage` for every tested capture task.
+- A row without a matched product must not enter the normal supplier workbook.
 - Do not delete the database, Docker volumes, or `cargo-platform-data` without explicit user authorization.
 - Preserve collector data, raw records, product/SKU/image/stall assets, and export/download foundation.
 
@@ -246,6 +258,6 @@ Avoid exposing source paths, JSON traces, internal IDs, or technical parse artif
 
 - Collection Module Agent: `019ed62f-f90f-7ad2-86e8-a71bc9dcf257`
 - Waybill Parsing Module Agent: `019ed630-1b0a-7c73-900e-200182d58cbe`
-- Order Row Review Module Agent: `019ed630-4fd2-72b3-971e-b8c22ed535e7`
+- Retired manual Order Row Review Module Agent (do not use for row editing/confirmation): `019ed630-4fd2-72b3-971e-b8c22ed535e7`
 - 商品匹配模块 Agent: `019ed630-7198-7641-8dd2-5d9d76a78de7`
 - Export Module Agent: `019ed630-9377-77b1-811b-0d6bc6413050`
