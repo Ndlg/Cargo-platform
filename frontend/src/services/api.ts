@@ -93,6 +93,8 @@ export interface CollectorRecord extends ApiRecord {
     adapter_status?: Record<string, Record<string, unknown>>
     queue_size?: number | null
     last_error?: string | null
+    last_upload_at?: string | null
+    last_reconnect_reason?: 'network' | 'http' | 'auth' | 'sqlite' | 'state_save' | null
     received_at?: string | null
     stale_reason?: string | null
     heartbeat_timeout_seconds?: number | null

@@ -108,6 +108,17 @@ function runtimeStatusLabel(status: unknown): string {
   return textValue(status, '未知')
 }
 
+function reconnectReasonLabel(value: unknown): string {
+  const labels: Record<string, string> = {
+    network: '网络中断',
+    http: '服务端暂时不可用',
+    auth: '采集器凭证失效',
+    sqlite: '打印数据库暂时不可读',
+    state_save: '本地采集状态保存失败',
+  }
+  return labels[String(value ?? '')] ?? '无'
+}
+
 function runtimeStatusType(status: unknown) {
   if (status === 'stale') return 'info'
   return status === 'listening' ? 'success' : 'warning'
@@ -277,7 +288,15 @@ onMounted(load)
               </div>
               <div class="detail-line">
                 <span>本地队列</span>
-                <strong>{{ textValue(row.status_payload?.queue_size, '0') }}</strong>
+                <strong>{{ textValue(row.status_payload?.queue_size, '未知') }}</strong>
+              </div>
+              <div class="detail-line">
+                <span>最后成功上传</span>
+                <strong>{{ formatDateTime(row.status_payload?.last_upload_at) }}</strong>
+              </div>
+              <div class="detail-line">
+                <span>最近重连原因</span>
+                <strong>{{ reconnectReasonLabel(row.status_payload?.last_reconnect_reason) }}</strong>
               </div>
               <div class="detail-line">
                 <span>最近错误</span>
