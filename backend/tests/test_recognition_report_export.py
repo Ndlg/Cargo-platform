@@ -55,7 +55,7 @@ def test_export_contract_consumes_product_sku_linking_results() -> None:
     assert recognition_report_export_rows(rows) == [["鞋款A", "黑色", "", "42", 2, "加急", "鞋款A 黑色 42"]]
 
 
-def test_export_routes_non_matched_rows_to_exception_sheet() -> None:
+def test_export_routes_non_matched_and_special_rows_to_exception_sheet() -> None:
     details = [
         SimpleNamespace(
             id=102,
@@ -74,12 +74,26 @@ def test_export_routes_non_matched_rows_to_exception_sheet() -> None:
                 },
             },
         ),
+        SimpleNamespace(
+            id=103,
+            field_values={
+                "product_sku_linking_result": {
+                    "match_status": "special",
+                    "standard_fields": {},
+                    "image_match_text": "特殊面单原文",
+                    "exception_reason": "特殊面单",
+                },
+            },
+        ),
     ]
 
     rows = recognition_rows_from_product_sku_linking_results(details)
 
     assert recognition_report_export_rows(rows) == []
-    assert recognition_exception_export_rows(rows) == [["未维护鞋款 蓝色 41"]]
+    assert recognition_exception_export_rows(rows) == [
+        ["未维护鞋款 蓝色 41"],
+        ["特殊面单原文"],
+    ]
 
 
 def test_export_routes_matched_rows_with_missing_sales_attrs_to_exception_sheet() -> None:
