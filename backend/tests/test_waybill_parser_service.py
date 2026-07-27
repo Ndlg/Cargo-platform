@@ -273,6 +273,12 @@ def test_waybill_parser_service_reports_policy_fields_that_are_not_applied() -> 
     app = load_parser_service_app()
     rule_pack = structured_rule_pack_payload()
     rule_pack["parser_policy"]["quantity"] = {"default": 1}
+    rule_pack["parser_policy"]["multi_item"] = {
+        "split_parent_waybill": True,
+        "preserve_parent_text": True,
+        "pair_product_lines_with_labeled_attr_lines": True,
+        "output_item_rows": True,
+    }
     rule_pack["parser_policy"]["special_text_keywords"] = [
         {"keyword": "特殊单", "status": "special", "reason": "special_waybill"}
     ]
@@ -283,20 +289,44 @@ def test_waybill_parser_service_reports_policy_fields_that_are_not_applied() -> 
 
     assert validation["warnings"] == [
         {"code": "policy_field_not_applied", "field": "parser_policy.quantity"},
-        {"code": "policy_field_not_applied", "field": "parser_policy.requires_active_rule_pack"},
     ]
     assert explanation["policy_usage"] == {
         "selected": ["order_row_parser"],
-        "applied": ["special_text_keywords", "structured_item_sources"],
+        "applied": [
+            "multi_item",
+            "requires_active_rule_pack",
+            "special_text_keywords",
+            "structured_item_sources",
+        ],
         "configured_but_not_applied": [
             "quantity",
-            "requires_active_rule_pack",
         ],
     }
     assert explanation["warnings"] == validation["warnings"]
     assert "special waybill policy" not in explanation["capabilities"]
     assert "special waybill keyword rules" in explanation["capabilities"]
     assert "quantity normalization" not in explanation["capabilities"]
+
+
+def test_waybill_parser_service_rejects_disabled_required_multi_item_contract() -> None:
+    app = load_parser_service_app()
+    rule_pack = structured_rule_pack_payload()
+    rule_pack["parser_policy"]["requires_active_rule_pack"] = False
+    rule_pack["parser_policy"]["multi_item"] = {
+        "split_parent_waybill": True,
+        "preserve_parent_text": True,
+        "pair_product_lines_with_labeled_attr_lines": True,
+        "output_item_rows": False,
+    }
+
+    with TestClient(app) as client:
+        body = client.post("/api/v1/rule-packs/validate", json={"rule_pack": rule_pack}).json()
+
+    assert body["status"] == "invalid"
+    assert body["errors"] == [
+        "parser_policy.requires_active_rule_pack",
+        "parser_policy.multi_item.output_item_rows",
+    ]
 
 
 def test_waybill_parser_service_applies_and_validates_special_keyword_rules() -> None:

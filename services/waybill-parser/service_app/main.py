@@ -22,7 +22,18 @@ SUPPORTED_ORDER_ROW_PARSERS = {"shoe_waybill_v1"}
 STRUCTURED_ITEM_FIELD_LISTS = ("product_fields", "spec_fields", "quantity_fields", "remark_fields")
 STRUCTURED_ITEM_PATH_PATTERN = re.compile(r"^[A-Za-z0-9_]+(?:\[\])?(?:\.[A-Za-z0-9_]+(?:\[\])?)*$")
 SELECTED_PARSER_POLICY_FIELDS = {"order_row_parser"}
-APPLIED_PARSER_POLICY_FIELDS = {"special_text_keywords", "structured_item_sources"}
+APPLIED_PARSER_POLICY_FIELDS = {
+    "multi_item",
+    "requires_active_rule_pack",
+    "special_text_keywords",
+    "structured_item_sources",
+}
+REQUIRED_MULTI_ITEM_FIELDS = (
+    "split_parent_waybill",
+    "preserve_parent_text",
+    "pair_product_lines_with_labeled_attr_lines",
+    "output_item_rows",
+)
 
 
 class StandardDetailParseInput(BaseModel):
@@ -88,6 +99,19 @@ def rule_pack_validation_errors(rule_pack: dict[str, Any] | None) -> list[str]:
         order_row_parser = str(parser_policy.get("order_row_parser") or "").strip()
         if not order_row_parser or order_row_parser not in SUPPORTED_ORDER_ROW_PARSERS:
             errors.append("parser_policy.order_row_parser")
+        if (
+            "requires_active_rule_pack" in parser_policy
+            and parser_policy.get("requires_active_rule_pack") is not True
+        ):
+            errors.append("parser_policy.requires_active_rule_pack")
+        multi_item = parser_policy.get("multi_item")
+        if multi_item is not None:
+            if not isinstance(multi_item, dict):
+                errors.append("parser_policy.multi_item")
+            else:
+                for field in REQUIRED_MULTI_ITEM_FIELDS:
+                    if multi_item.get(field) is not True:
+                        errors.append(f"parser_policy.multi_item.{field}")
         structured_sources = parser_policy.get("structured_item_sources")
         if structured_sources is not None:
             if not isinstance(structured_sources, list):
