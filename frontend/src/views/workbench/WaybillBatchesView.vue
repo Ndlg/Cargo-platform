@@ -36,7 +36,7 @@ const sortedTasks = computed(() => [...captureTasks.value].sort((a, b) => b.id -
 const selectedTask = computed(() => sortedTasks.value.find((task) => task.id === selectedTaskId.value) ?? null)
 const allRows = computed(() => drafts.value?.rows ?? [])
 const reviewRows = computed(() => allRows.value.filter((row) => row.status === 'needs_review'))
-const rulePackMissing = computed(() => drafts.value?.status === 'rule_pack_missing' || drafts.value?.rule_pack_required === true)
+const rulePackMissing = computed(() => drafts.value?.status === 'rule_pack_missing')
 const activeRulePackName = computed(() => drafts.value?.recognition_rule_pack?.name ?? '')
 const parentCount = computed(() => drafts.value?.summary.parent_waybill_count ?? waybillCountForTask(selectedTask.value))
 const childCount = computed(() => drafts.value?.summary.child_waybill_count ?? 0)

@@ -54,6 +54,25 @@ def parser_service_required(context: str) -> HTTPException:
     )
 
 
+def require_usable_parser_payload(payload: dict[str, Any]) -> None:
+    parser_status = text_value(payload.get("status"))
+    if parser_status == "rule_pack_missing":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="当前工作区没有启用识别规则包，请先导入并启用规则包。",
+        )
+    if parser_status != "rule_pack_invalid":
+        return
+
+    validation = payload.get("rule_pack_validation")
+    errors = validation.get("errors") if isinstance(validation, dict) else []
+    first_error = next((text_value(error) for error in errors if text_value(error)), "")
+    detail = "当前识别规则包无效"
+    if first_error:
+        detail += f"：{first_error}"
+    raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail)
+
+
 def parser_standard_detail_input(detail: StandardDetail, parent_sequence: int) -> dict[str, Any]:
     return {
         "standard_detail_id": int(detail.id),
@@ -337,6 +356,7 @@ def parse_standard_details_to_order_rows(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="面单解析服务暂时不可用，订单行没有使用旧解析兜底。请稍后重试或检查解析服务。",
         ) from exc
+    require_usable_parser_payload(payload)
     return sources_from_order_parents(
         order_row_drafts_from_parser_payload(payload),
         standard_details_by_raw_id=standard_detail_raw_id_map(details),
@@ -373,6 +393,7 @@ def parse_waybill_sample_inputs_to_order_rows(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="面单解析服务暂时不可用，订单行没有使用旧解析兜底。请稍后重试或检查解析服务。",
         ) from exc
+    require_usable_parser_payload(payload)
     details = standard_details_for_task(db, workspace_id=workspace_id, task_id=task_id)
     return sources_from_order_parents(
         order_row_drafts_from_parser_payload(payload),
@@ -410,6 +431,7 @@ def parse_raw_records_to_order_rows(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="面单解析服务暂时不可用，订单行没有使用旧解析兜底。请稍后重试或检查解析服务。",
         ) from exc
+    require_usable_parser_payload(payload)
     details = standard_details_for_task(db, workspace_id=workspace_id, task_id=task_id)
     return sources_from_order_parents(
         order_row_drafts_from_parser_payload(payload),
@@ -604,13 +626,14 @@ def task_order_row_drafts_payload(
                 waybill_samples=[],
                 rule_pack=active_pack.payload,
             )
-            payload.setdefault("recognition_rule_pack", recognition_rule_pack_summary(active_pack))
-            return payload
         except Exception as exc:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail="面单解析服务暂时不可用，订单行没有使用旧解析兜底。",
             ) from exc
+        require_usable_parser_payload(payload)
+        payload.setdefault("recognition_rule_pack", recognition_rule_pack_summary(active_pack))
+        return payload
 
     details = standard_details_for_task(db, workspace_id=workspace_id, task_id=task_id)
     if details:
@@ -636,13 +659,14 @@ def task_order_row_drafts_payload(
                 raw_records=[],
                 rule_pack=active_pack.payload,
             )
-            payload.setdefault("recognition_rule_pack", recognition_rule_pack_summary(active_pack))
-            return payload
         except Exception as exc:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail="面单解析服务暂时不可用，订单行没有使用旧解析兜底。",
             ) from exc
+        require_usable_parser_payload(payload)
+        payload.setdefault("recognition_rule_pack", recognition_rule_pack_summary(active_pack))
+        return payload
 
     if offset == 0 and not records:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Capture task records not found.")

@@ -1534,3 +1534,57 @@ def test_order_row_draft_endpoint_does_not_fallback_when_parser_service_fails(mo
 
     assert response.status_code == 502
     assert "面单解析服务暂时不可用" in response.json()["detail"]
+
+
+def test_order_row_draft_endpoint_reports_invalid_rule_pack(monkeypatch) -> None:
+    def invalid_rule_pack_response(**_kwargs: dict) -> dict:
+        return {
+            "contract_version": "order_row_drafts_v1",
+            "status": "rule_pack_invalid",
+            "rule_pack_required": True,
+            "rule_pack_validation": {
+                "valid": False,
+                "errors": ["parser_policy.order_row_parser 不受支持"],
+            },
+            "parents": [],
+            "rows": [],
+        }
+
+    monkeypatch.setattr(order_row_reader_service, "waybill_parser_service_enabled", lambda: True, raising=False)
+    monkeypatch.setattr(
+        order_row_reader_service,
+        "parse_order_row_drafts_with_service",
+        invalid_rule_pack_response,
+        raising=False,
+    )
+
+    with TestClient(app) as client:
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin123"})
+        assert login.status_code == 200
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}", "X-Workspace-Id": "1"}
+
+        activate_test_rule_pack()
+
+        with SessionLocal() as db:
+            db.add(
+                StandardDetail(
+                    tenant_id=1,
+                    workspace_id=1,
+                    standard_detail_batch_id=1,
+                    waybill_mode="douyin_cloud_print",
+                    full_text="【规则包无效时不能静默为空】黑色 42 1件",
+                    field_values={
+                        "capture_task_id": 8806,
+                        "raw_record_id": 12,
+                        "source_component": "cloud-print-client",
+                        "source_index": "12",
+                        "product_short_text": "【规则包无效时不能静默为空】黑色 42 1件",
+                    },
+                )
+            )
+            db.commit()
+
+        response = client.get("/api/v1/order-row-drafts/tasks/8806", headers=headers)
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "当前识别规则包无效：parser_policy.order_row_parser 不受支持"
