@@ -317,9 +317,18 @@ def strip_order_quantity_suffix(value: str) -> tuple[str, str]:
     return strip_trailing_quantity_text(text)
 
 
-def special_wechat_waybill_text(value: str) -> bool:
+def special_waybill_reason(value: str, parser_policy: dict[str, Any] | None) -> str:
     text = compact_spaces(value)
-    return "微信" in text
+    rules = parser_policy.get("special_text_keywords") if isinstance(parser_policy, dict) else None
+    if not isinstance(rules, list):
+        return ""
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        keyword = compact_spaces(rule.get("keyword"))
+        if keyword and keyword in text:
+            return text_value(rule.get("reason")) or "special_waybill"
+    return ""
 
 
 def parse_delimited_product_attrs(value: str) -> tuple[str, str, str] | None:
@@ -848,11 +857,18 @@ def has_product_title_marker(value: str) -> bool:
     return "【" in text and "】" in text
 
 
-def parse_item_text(item_text: str, *, fallback_quantity_text: str = "", remark_text: str = "") -> dict[str, Any]:
+def parse_item_text(
+    item_text: str,
+    *,
+    fallback_quantity_text: str = "",
+    remark_text: str = "",
+    parser_policy: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     parse_text = strip_logistics_tail(item_text)
     original_text = compact_spaces(parse_text)
-    if special_wechat_waybill_text(original_text):
-        return special_waybill_fields(original_text, "wechat_special_waybill")
+    special_reason = special_waybill_reason(original_text, parser_policy)
+    if special_reason:
+        return special_waybill_fields(original_text, special_reason)
 
     label_only_fields = parse_label_only_attr_text(
         parse_text,
@@ -1223,25 +1239,37 @@ def structured_rows_from_payload(
             spec_text = first_structured_field(item, mapping.get("spec_fields"))
             quantity_text = first_structured_field(item, mapping.get("quantity_fields"))
             remark = first_structured_field(item, mapping.get("remark_fields"))
-            spec_fields = parse_item_text(
-                spec_text,
-                fallback_quantity_text=quantity_text,
-                remark_text=remark,
+            original_text = compact_spaces(" ".join(part for part in (product, spec_text, quantity_text, remark) if part))
+            special_reason = special_waybill_reason(original_text, parser_policy)
+            spec_fields = (
+                special_waybill_fields(original_text, special_reason)
+                if special_reason
+                else parse_item_text(
+                    spec_text,
+                    fallback_quantity_text=quantity_text,
+                    remark_text=remark,
+                    parser_policy=parser_policy,
+                )
             )
+            if special_reason:
+                product = ""
             quantity = spec_fields["quantity"]
             missing = [field for field, value in (("product", product), ("quantity", quantity)) if not value]
-            original_text = compact_spaces(" ".join(part for part in (product, spec_text, quantity_text, remark) if part))
-            image_match_text = compact_spaces(
-                " ".join(
-                    str(part)
-                    for part in (
-                        product,
-                        spec_fields["sales_attr1"],
-                        spec_fields["sales_attr2"],
-                        quantity or "",
-                        remark,
+            image_match_text = (
+                spec_fields["image_match_text"]
+                if special_reason
+                else compact_spaces(
+                    " ".join(
+                        str(part)
+                        for part in (
+                            product,
+                            spec_fields["sales_attr1"],
+                            spec_fields["sales_attr2"],
+                            quantity or "",
+                            remark,
+                        )
+                        if part
                     )
-                    if part
                 )
             )
             rows.append(
@@ -1261,8 +1289,8 @@ def structured_rows_from_payload(
                     remark=remark,
                     image_match_text=image_match_text,
                     original_text=original_text,
-                    status="needs_review" if missing else "draft",
-                    review_reason=f"missing_{'_'.join(missing)}" if missing else "",
+                    status="special" if special_reason else ("needs_review" if missing else "draft"),
+                    review_reason=special_reason or (f"missing_{'_'.join(missing)}" if missing else ""),
                     source_trace={
                         "items_path": items_path,
                         "item_path": item_path,
@@ -1374,6 +1402,7 @@ def draft_rows_from_payload(
                 item_text,
                 fallback_quantity_text=quantity_text,
                 remark_text=remark_text,
+                parser_policy=parser_policy,
             )
             rows.append(
                 OrderRowDraft(
@@ -1448,6 +1477,7 @@ def draft_rows_from_waybill_sample(
     sample: dict[str, Any],
     *,
     parent_sequence: int,
+    parser_policy: dict[str, Any] | None = None,
 ) -> ParentWaybillDraft:
     raw_record_id = int_value(sample.get("raw_record_id")) or parent_sequence
     task_id = int_value(sample.get("task_id"))
@@ -1464,7 +1494,7 @@ def draft_rows_from_waybill_sample(
 
     rows: list[OrderRowDraft] = []
     for index, item_text in enumerate(item_texts, start=1):
-        fields = parse_item_text(item_text)
+        fields = parse_item_text(item_text, parser_policy=parser_policy)
         rows.append(
             OrderRowDraft(
                 raw_record_id=raw_record_id,
@@ -1538,6 +1568,7 @@ def draft_rows_from_standard_detail_values(
     *,
     standard_detail_id: int,
     parent_sequence: int,
+    parser_policy: dict[str, Any] | None = None,
 ) -> ParentWaybillDraft:
     task_id = int_value(values.get("capture_task_id"))
     raw_record_id = int_value(values.get("raw_record_id")) or standard_detail_id
@@ -1562,6 +1593,7 @@ def draft_rows_from_standard_detail_values(
             item_text,
             fallback_quantity_text=quantity_text,
             remark_text=remark_text,
+            parser_policy=parser_policy,
         )
         rows.append(
             OrderRowDraft(

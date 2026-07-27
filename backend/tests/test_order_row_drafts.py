@@ -812,6 +812,15 @@ def test_standard_detail_special_wechat_text_is_normal_special_row() -> None:
             },
             standard_detail_id=733,
             parent_sequence=47,
+            parser_policy={
+                "special_text_keywords": [
+                    {
+                        "keyword": "微信",
+                        "status": "special",
+                        "reason": "wechat_special_waybill",
+                    }
+                ]
+            },
         )
 
         assert result.child_count == 1

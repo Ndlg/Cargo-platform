@@ -22,7 +22,7 @@ SUPPORTED_ORDER_ROW_PARSERS = {"shoe_waybill_v1"}
 STRUCTURED_ITEM_FIELD_LISTS = ("product_fields", "spec_fields", "quantity_fields", "remark_fields")
 STRUCTURED_ITEM_PATH_PATTERN = re.compile(r"^[A-Za-z0-9_]+(?:\[\])?(?:\.[A-Za-z0-9_]+(?:\[\])?)*$")
 SELECTED_PARSER_POLICY_FIELDS = {"order_row_parser"}
-APPLIED_PARSER_POLICY_FIELDS = {"structured_item_sources"}
+APPLIED_PARSER_POLICY_FIELDS = {"special_text_keywords", "structured_item_sources"}
 
 
 class StandardDetailParseInput(BaseModel):
@@ -109,6 +109,22 @@ def rule_pack_validation_errors(rule_pack: dict[str, Any] | None) -> list[str]:
                             isinstance(field, str) and field.strip() for field in field_names
                         ):
                             errors.append(f"{prefix}.{field_name}")
+        special_rules = parser_policy.get("special_text_keywords")
+        if special_rules is not None:
+            if not isinstance(special_rules, list):
+                errors.append("parser_policy.special_text_keywords")
+            else:
+                for index, rule in enumerate(special_rules):
+                    prefix = f"parser_policy.special_text_keywords[{index}]"
+                    if not isinstance(rule, dict):
+                        errors.append(prefix)
+                        continue
+                    if not str(rule.get("keyword") or "").strip():
+                        errors.append(f"{prefix}.keyword")
+                    if rule.get("status") != "special":
+                        errors.append(f"{prefix}.status")
+                    if not str(rule.get("reason") or "").strip():
+                        errors.append(f"{prefix}.reason")
     return errors
 
 
@@ -193,6 +209,9 @@ def explain_rule_pack(payload: RulePackRequest) -> dict[str, Any]:
         "structured item source rules"
         if "structured_item_sources" in usage["applied"]
         else "no structured item source rules",
+        "special waybill keyword rules"
+        if "special_text_keywords" in usage["applied"]
+        else "no special waybill keyword rules",
     ]
     return {
         "contract_version": RECOGNITION_RULE_PACK_CONTRACT_VERSION,
@@ -246,11 +265,13 @@ def parse_batch(payload: BatchParseRequest) -> dict[str, Any]:
             "rows": [],
         }
 
+    parser_policy = payload.rule_pack.get("parser_policy")
     parents = [
         draft_rows_from_standard_detail_values(
             detail.field_values,
             standard_detail_id=detail.standard_detail_id,
             parent_sequence=detail.parent_sequence,
+            parser_policy=parser_policy,
         )
         for detail in payload.standard_details
     ]
@@ -258,6 +279,7 @@ def parse_batch(payload: BatchParseRequest) -> dict[str, Any]:
         draft_rows_from_waybill_sample(
             sample.model_dump(),
             parent_sequence=sample.parent_sequence,
+            parser_policy=parser_policy,
         )
         for sample in payload.waybill_samples
     )
@@ -289,7 +311,7 @@ def parse_batch(payload: BatchParseRequest) -> dict[str, Any]:
                     source_component=record.source_component,
                     source_index=record.source_index,
                     parent_sequence=first_parent_sequence + document_offset,
-                    parser_policy=payload.rule_pack.get("parser_policy"),
+                    parser_policy=parser_policy,
                 )
             )
         next_parent_sequence = first_parent_sequence + len(document_payloads)

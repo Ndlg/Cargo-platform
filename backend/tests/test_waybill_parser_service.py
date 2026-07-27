@@ -273,7 +273,9 @@ def test_waybill_parser_service_reports_policy_fields_that_are_not_applied() -> 
     app = load_parser_service_app()
     rule_pack = structured_rule_pack_payload()
     rule_pack["parser_policy"]["quantity"] = {"default": 1}
-    rule_pack["parser_policy"]["special_text_keywords"] = ["特殊单"]
+    rule_pack["parser_policy"]["special_text_keywords"] = [
+        {"keyword": "特殊单", "status": "special", "reason": "special_waybill"}
+    ]
 
     with TestClient(app) as client:
         validation = client.post("/api/v1/rule-packs/validate", json={"rule_pack": rule_pack}).json()
@@ -282,20 +284,101 @@ def test_waybill_parser_service_reports_policy_fields_that_are_not_applied() -> 
     assert validation["warnings"] == [
         {"code": "policy_field_not_applied", "field": "parser_policy.quantity"},
         {"code": "policy_field_not_applied", "field": "parser_policy.requires_active_rule_pack"},
-        {"code": "policy_field_not_applied", "field": "parser_policy.special_text_keywords"},
     ]
     assert explanation["policy_usage"] == {
         "selected": ["order_row_parser"],
-        "applied": ["structured_item_sources"],
+        "applied": ["special_text_keywords", "structured_item_sources"],
         "configured_but_not_applied": [
             "quantity",
             "requires_active_rule_pack",
-            "special_text_keywords",
         ],
     }
     assert explanation["warnings"] == validation["warnings"]
     assert "special waybill policy" not in explanation["capabilities"]
+    assert "special waybill keyword rules" in explanation["capabilities"]
     assert "quantity normalization" not in explanation["capabilities"]
+
+
+def test_waybill_parser_service_applies_and_validates_special_keyword_rules() -> None:
+    app = load_parser_service_app()
+    rule_pack = structured_rule_pack_payload()
+    rule_pack["parser_policy"]["special_text_keywords"] = [
+        {
+            "keyword": "线下补单",
+            "status": "special",
+            "reason": "offline_special",
+        }
+    ]
+    sample = {
+        "raw_record_id": 1,
+        "task_id": 1,
+        "parent_sequence": 1,
+        "sample_text": "线下补单 黑色 40",
+    }
+    invalid_pack = valid_rule_pack_payload()
+    invalid_pack["parser_policy"]["special_text_keywords"] = [{"keyword": ""}]
+
+    with TestClient(app) as client:
+        parsed = client.post(
+            "/api/v1/parse/batch",
+            json={
+                "task_id": 1,
+                "rule_pack": rule_pack,
+                "standard_details": [
+                    {
+                        "standard_detail_id": 1,
+                        "parent_sequence": 2,
+                        "field_values": {"product_short_text": "线下补单 黑色 40"},
+                    }
+                ],
+                "waybill_samples": [sample],
+                "raw_records": [
+                    {
+                        "raw_record_id": 2,
+                        "task_id": 1,
+                        "parent_sequence": 3,
+                        "payload": {
+                            "task": {
+                                "documents": [
+                                    {
+                                        "contents": [
+                                            {
+                                                "data": {
+                                                    "packageItemDetail": [
+                                                        {
+                                                            "itemName": "线下补单",
+                                                            "specName": "黑色 40",
+                                                            "itemNum": 1,
+                                                        }
+                                                    ]
+                                                }
+                                            }
+                                        ]
+                                    }
+                                ]
+                            }
+                        },
+                    }
+                ],
+            },
+        ).json()
+        without_rule = client.post(
+            "/api/v1/parse/batch",
+            json={"task_id": 1, "rule_pack": valid_rule_pack_payload(), "waybill_samples": [sample]},
+        ).json()
+        invalid = client.post(
+            "/api/v1/rule-packs/validate",
+            json={"rule_pack": invalid_pack},
+        ).json()
+
+    assert [(row["status"], row["review_reason"]) for row in parsed["rows"]] == [
+        ("special", "offline_special"),
+        ("special", "offline_special"),
+        ("special", "offline_special"),
+    ]
+    assert without_rule["rows"][0]["status"] != "special"
+    assert invalid["status"] == "invalid"
+    assert "parser_policy.special_text_keywords[0].keyword" in invalid["errors"]
 
 
 def test_waybill_parser_service_refuses_hidden_default_parser_when_pack_has_no_parser() -> None:
