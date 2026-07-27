@@ -146,13 +146,13 @@ function rowKey(row: OrderRowDraftRecord): string {
 }
 
 function rowStatusLabel(row: OrderRowDraftRecord): string {
-  if (row.status === 'draft') return '已生成订单行'
+  if (row.status === 'draft') return '已生成商品行'
   if (row.status === 'special') return '特殊单'
   if (row.review_reason === 'no_readable_waybill_text') return '没有读到面单文字'
   if (row.review_reason === 'no_product_text') return '未读到商品'
   if (row.review_reason.includes('quantity')) return '缺数量'
   if (row.review_reason.includes('product')) return '缺商品'
-  return '需要复核'
+  return '待补规则'
 }
 
 function rowReviewText(row: OrderRowDraftRecord): string {
@@ -161,8 +161,12 @@ function rowReviewText(row: OrderRowDraftRecord): string {
   if (row.review_reason === 'no_readable_waybill_text') return '没有读到可用面单文字，请展开查看来源。'
   if (row.review_reason === 'no_product_text') return '有面单文字，但没有拆出商品；请展开查看原文。'
   if (row.review_reason.includes('quantity')) return '没有拆出数量；默认规则无法安全确认。'
-  if (row.review_reason.includes('product')) return '没有拆出商品；需要补解析规则或人工复核。'
-  return row.review_reason || '需要复核。'
+  if (row.review_reason.includes('product')) return '没有拆出商品；需要补解析规则。'
+  return row.review_reason || '需要补解析规则。'
+}
+
+function businessRowLabel(row: OrderRowDraftRecord): string {
+  return row.child_count > 1 ? `商品 ${row.child_index}/${row.child_count}` : '单商品'
 }
 
 function productDisplayText(row: OrderRowDraftRecord): string {
@@ -262,7 +266,7 @@ onMounted(load)
   <section class="page-header">
     <div>
       <h1>面单解析</h1>
-      <p>按采集任务查看面单原文和解析出的订单行；多商品面单应拆成多行，异常进入复核。</p>
+      <p>按采集轮次查看面单原文和规则生成的商品行；多商品面单拆成多行，未识别内容进入异常处理。</p>
     </div>
     <div class="action-row">
       <el-select
@@ -347,7 +351,7 @@ onMounted(load)
       <small>抖店 {{ sourceCounts.douyin }} / 菜鸟 {{ sourceCounts.cainiao }} / 其他 {{ sourceCounts.other }}</small>
     </div>
     <div class="stat-tile">
-      <span>需复核</span>
+      <span>待处理异常</span>
       <strong>{{ reviewCount }}</strong>
       <small>缺商品、缺数量或无法读取</small>
     </div>
@@ -366,7 +370,7 @@ onMounted(load)
             { label: '全部', value: 'all' },
             { label: '可用', value: 'draft' },
             { label: '特殊单', value: 'special' },
-            { label: '需复核', value: 'needs_review' },
+            { label: '待处理异常', value: 'needs_review' },
           ]"
         />
         <el-input
@@ -406,9 +410,9 @@ onMounted(load)
           </div>
         </template>
       </el-table-column>
-      <el-table-column label="订单行" min-width="170" fixed>
+      <el-table-column label="面单商品" min-width="170" fixed>
         <template #default="{ row }">
-          <strong>{{ row.child_label }}</strong>
+          <strong>{{ businessRowLabel(row) }}</strong>
           <div v-if="row.child_count > 1" class="muted-line">多商品 {{ row.child_index }}/{{ row.child_count }}</div>
         </template>
       </el-table-column>
@@ -444,7 +448,7 @@ onMounted(load)
         </template>
       </el-table-column>
       <template #empty>
-        <el-empty description="当前采集任务还没有可展示的订单行" />
+        <el-empty description="当前采集轮次还没有可展示的商品行" />
       </template>
     </el-table>
 
@@ -460,7 +464,7 @@ onMounted(load)
   </section>
 
   <section v-if="reviewRows.length" class="work-surface">
-    <h2>需复核原文</h2>
+    <h2>待处理异常原文</h2>
     <el-alert
       :closable="false"
       title="这些行已经保存为原始采集记录，但还不能安全进入商品匹配。"
@@ -468,7 +472,9 @@ onMounted(load)
       show-icon
     />
     <el-table :data="reviewRows" height="280" stripe>
-      <el-table-column label="订单行" prop="child_label" width="170" />
+      <el-table-column label="面单商品" width="170">
+        <template #default="{ row }">{{ businessRowLabel(row) }}</template>
+      </el-table-column>
       <el-table-column label="原因" width="180">
         <template #default="{ row }">{{ rowStatusLabel(row) }}</template>
       </el-table-column>
@@ -491,7 +497,7 @@ onMounted(load)
     >
       <template #title>
         <el-icon><Warning /></el-icon>
-        需复核行不会静默进入商品匹配或导出。
+        异常行不会静默进入商品匹配或导出。
       </template>
     </el-alert>
   </section>

@@ -334,12 +334,12 @@ onMounted(load)
 
   <section class="work-surface">
     <div class="capture-control-bar">
-      <strong>监听批次</strong>
+      <strong>采集轮次</strong>
       <el-select
         v-model="selectedTaskId"
         class="task-select"
         filterable
-        placeholder="选择监听批次"
+        placeholder="选择采集轮次"
       >
         <el-option
           v-for="(task, index) in sortedTasks"
@@ -460,8 +460,8 @@ onMounted(load)
       </el-table-column>
       <el-table-column label="面单" width="160">
         <template #default="{ row }">
-          <strong>{{ row.source_label }}</strong>
-          <div class="muted-line">{{ itemLabel(row) }}</div>
+          <strong>{{ itemLabel(row) }}</strong>
+          <div class="muted-line">本轮采集面单</div>
         </template>
       </el-table-column>
       <el-table-column label="异常" width="132">
@@ -503,7 +503,7 @@ onMounted(load)
     <el-empty
       v-else
       v-loading="previewLoading"
-      description="当前批次没有会进入异常面单的待处理行"
+      description="当前采集轮次没有会进入异常面单的待处理行"
     />
   </section>
 </template>

@@ -33,7 +33,7 @@ const statusTiles = computed(() => [
   {
     label: '面单数量',
     value: latestTask.value ? String(latestTaskWaybillCount.value) : summaryLoadingValue.value,
-    note: latestTask.value ? `采集任务 #${latestTask.value.id}，本轮采集到的业务面单` : '还没有可读取面单',
+    note: latestTask.value ? '本轮采集到的业务面单' : '还没有可读取面单',
   },
   {
     label: '订单行',
@@ -41,7 +41,7 @@ const statusTiles = computed(() => [
     note: summary.value ? `可用 ${summary.value.draft_count} / 特殊 ${summary.value.special_count ?? 0}` : '读取订单行中',
   },
   {
-    label: '需复核',
+    label: '待处理异常',
     value: summary.value ? String(summary.value.needs_review_count) : summaryLoadingValue.value,
     note: '缺商品、缺数量或规则包无法安全解析',
   },
@@ -56,7 +56,7 @@ const nextActions = [
   },
   {
     label: '面单解析',
-    description: '查看采集到的面单如何被解析成可编辑订单行。',
+    description: '查看采集到的面单如何按规则包自动生成商品行。',
     path: '/waybill-batches',
     icon: Upload,
   },
