@@ -7,8 +7,11 @@
 | 01 | `validation-stage-01-regression-gate-20260728` | `f96497a` | 现场基线和回归门禁 | 已留存 |
 | 02 | `validation-stage-02-policy-audit-20260728` | `74c5054` | 规则字段生效审计 | 已留存 |
 | 03 | `validation-stage-03-special-rules-20260728` | `6435290` | 特殊单关键词规则化 | 已部署验证 |
-| 04 | `validation-stage-04-rule-status-20260728` | `2a55022` | 精确区分规则包错误 | 待部署验证 |
-| 05 | `validation-stage-05-rule-contract-20260728` | 生成后填写 | 强制业务约束进入规则包校验 | 待部署验证 |
+| 04 | `validation-stage-04-rule-status-20260728` | `2a55022` | 精确区分规则包错误 | 已随最终阶段验证 |
+| 05 | `validation-stage-05-rule-contract-20260728` | `adedebe` | 强制业务约束进入规则包校验 | 已随最终阶段验证 |
+| 06 | `validation-stage-06-rule-editor-20260728` | `d14cc37` | 编辑已生效的特殊单子规则 | 已随最终阶段验证 |
+| 07 | `validation-stage-07-business-labels-20260728` | `7f89d21` | 业务结果不显示技术批次号 | 已随最终阶段验证 |
+| 07b | `validation-stage-07b-label-sweep-20260728` | `c3f6788` | 清理其余页面的技术任务号 | 当前 6173 |
 
 ## 固定验证资源
 
@@ -28,4 +31,39 @@
 4. 验证健康接口、页面和指定样本。
 5. 不通过时恢复刚才记录的镜像。
 
-最终镜像名和逐阶段验证结果会在后续阶段完成后补入本表。
+## 当前 6173 镜像
+
+- 页面：`cargo-platform-validation-ui:stage-08-c3f6788`
+- 后端：`cargo-platform-validation-backend:stage-08-7f89d21`
+- 解析服务：`cargo-platform-validation-parser:stage-08-7f89d21`
+
+## 已保留的立即回退容器
+
+- stage 03 页面：`cargo-platform-validation-ui-rollback-f96497a-night`
+- stage 03 后端：`cargo-platform-validation-backend-rollback-f96497a-night`
+- stage 03 解析服务：`cargo-platform-validation-parser-rollback-special-r2-night`
+- stage 02 解析服务：`cargo-platform-validation-parser-rollback-policy-audit-20260728`
+- stage 01 解析服务：`cargo-platform-validation-parser-rollback-20260728-005134`
+- stage 07 页面：`cargo-platform-validation-ui-rollback-stage08-7f89d21`
+
+这些容器均已停止但未删除。切换时继续使用同一个验证数据副本卷，不复制、不删除数据。
+
+## 明早逐级判断
+
+从当前 `07b` 开始验证。若不通过：
+
+1. 先切页面到保留的 stage 07 页面，判断是否只是最后一轮文字收口问题。
+2. 再按 Git 标签依次构建并切换 `06`、`05`、`04`；每次只切一个标签。
+3. 若仍不通过，直接恢复三个 stage 03 保留容器。
+4. stage 03 以下只需要替换解析服务，即可依次判断特殊单规则、规则审计、原始基线。
+
+所有 Git 标签都是独立固定点。阶段 04 至 06 若需要运行，使用对应标签重新构建验证镜像；不切换 `main`，不操作 `5173`。
+
+## 当前验收结果
+
+- 后端：175 项测试通过。
+- 前端：类型检查和生产构建通过。
+- 历史副本：1815 张父面单全部覆盖，2028 个商品结果，正常 1445、异常 583，硬失败 0。
+- 页面：规则包编辑入口可打开；取消不保存；任务 61 显示 10 张面单、10 行商品结果。
+- 日志：验证页面、后端、解析服务未发现 5xx、异常堆栈。
+- 现场：`5173`、现场后端、现场解析服务容器 ID 和启动时间未变化。

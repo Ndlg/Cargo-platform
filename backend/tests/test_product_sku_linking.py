@@ -200,6 +200,28 @@ def test_product_sku_linking_user_rule_takes_priority_over_product_asset_names()
     assert row["matched_linking_rule"]["id"] == 101
 
 
+def test_product_rule_matches_when_keyword_appears_in_any_selected_field() -> None:
+    product = record(1, "VAP")
+
+    preview = preview_product_sku_linking(
+        [{"product": "跑步鞋", "sales_attr1": "VAP 二代黑白", "sales_attr2": "42"}],
+        [
+            {
+                "id": 102,
+                "product_match_fields": ["product", "sales_attr1"],
+                "product_keyword": "VAP",
+                "product_id": product.id,
+            }
+        ],
+        products=[product],
+        skus=[],
+        images=[],
+    )
+
+    assert preview["rows"][0]["product"] == {"id": product.id, "name": "VAP"}
+    assert preview["rows"][0]["matched_linking_rule"]["id"] == 102
+
+
 def test_product_sku_linking_does_not_conflict_when_user_rule_field_does_not_match() -> None:
     four = record(1, "4.0", keywords=["4.0"])
     five = record(2, "5.0", keywords=["5.0"])

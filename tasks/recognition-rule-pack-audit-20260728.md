@@ -23,13 +23,13 @@
 - 真正参与解析的子规则：
   - `structured_item_sources`
   - `special_text_keywords`（只读取 `keyword`、`status`、`reason`）
+  - `requires_active_rule_pack`（必须为真）
+  - `multi_item`（多商品拆行、保留追溯、输出商品子行必须为真）
 - 已配置但当前解析代码没有读取：
   - `label_cleanup`
   - `manual_label_only`
-  - `multi_item`
   - `non_shoe`
   - `quantity`
-  - `requires_active_rule_pack`
   - `size_normalization`
 
 ## 隐藏解析行为
@@ -54,5 +54,9 @@
 - `policy_field_not_applied` 警告。
 
 特殊单识别已不再硬编码“微信”：只有规则包声明关键词时才生效，关键词、状态和异常原因均来自规则包。现行规则包仍声明“微信”，所以固定样本的业务结果不变。
+
+规则包页面已增加“编辑子规则”，当前只开放真正生效且适合逐条维护的特殊单关键词。
+多商品拆行、原文追溯和商品子行输出属于不可关闭的业务合同，规则包校验会拒绝关闭这些约束。
+缺少规则包、规则包无效、识别服务不可用现在分别返回不同状态，不再把无效规则包静默显示为零行。
 
 后续迁移子规则时，每迁移一项，都必须先用固定样本预览并通过零漏单覆盖检查。
