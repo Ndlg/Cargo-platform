@@ -8,6 +8,8 @@
 
 **Tech Stack:** Python 3.12、FastAPI、Pydantic、Vue 3、TypeScript、现有 JSON 状态文件与 SQLite 打印数据库。
 
+**Implementation Record:** 已在 `codex/collector-status-observability-design` 完成；采集器、后端和前端分别保留独立提交，最终验证为后端 170 项通过、前端生产构建通过、6173 数据副本 1815/1815 面单覆盖且硬失败为 0。
+
 ## Global Constraints
 
 - 不新增数据库表、数据库迁移、第三方依赖或监控服务。
@@ -113,14 +115,15 @@ class CollectorState:
                     watermark,
                     earliest_watermarks.get(component, watermark),
                 )
-        try:
-            return sum(
-                max(0, adapters_by_component[component].max_rowid() - watermark)
-                for component, watermark in earliest_watermarks.items()
-            )
-        except sqlite3.Error:
-            self.last_reconnect_reason = "sqlite"
-            return None
+        total = 0
+        for component, watermark in earliest_watermarks.items():
+            status = adapters_by_component[component].get_status()
+            if status.get("status") != "ready":
+                if status.get("status") == "error":
+                    self.last_reconnect_reason = "sqlite"
+                return None
+            total += max(0, int(status.get("max_rowid") or 0) - watermark)
+        return total
 ```
 
 `load()` 使用 `payload.get(...) or None` 读取两个新字段；`to_dict()` 原样写回。
@@ -322,12 +325,11 @@ Expected: FAIL 或请求字段未进入 `status_payload`。
 在 `CollectorHeartbeatRequest` 增加：
 
 ```python
-queue_size: int | None = Field(default=None, ge=0)
 last_upload_at: str | None = Field(default=None, max_length=64)
 last_reconnect_reason: str | None = Field(default=None, max_length=32)
 ```
 
-这里把现有 `queue_size: int = 0` 改为可空：打印数据库暂时不可读时显示未知，不能谎报为 0。
+现有 `queue_size: int | None` 保持不变：打印数据库暂时不可读时继续用 `null` 表示未知，不能谎报为 0。
 
 在 `collector_heartbeat()` 的现有 `status_payload` 字典增加：
 
