@@ -20,7 +20,7 @@ from app.api.routes.collector_runtime import (
 )
 
 
-def test_export_contract_consumes_product_sku_linking_results() -> None:
+def test_export_contract_keeps_matched_rows_with_or_without_images() -> None:
     details = [
         SimpleNamespace(
             id=101,
@@ -41,6 +41,25 @@ def test_export_contract_consumes_product_sku_linking_results() -> None:
                 },
             },
         ),
+        SimpleNamespace(
+            id=102,
+            field_values={
+                "product_sku_linking_result": {
+                    "match_status": "matched",
+                    "product": "鞋款B",
+                    "sku": "白色41",
+                    "image": None,
+                    "stall": {"id": 9, "name": "至尚"},
+                    "standard_fields": {
+                        "sales_attr1": "白色",
+                        "sales_attr2": "41",
+                        "quantity": "1",
+                        "remark": "",
+                    },
+                    "image_match_text": "鞋款B 白色 41",
+                },
+            },
+        ),
     ]
 
     rows = recognition_rows_from_product_sku_linking_results(details)
@@ -51,8 +70,13 @@ def test_export_contract_consumes_product_sku_linking_results() -> None:
     line_items = recognition_report_line_items(rows)
     assert line_items[0]["stall_name"] == "至尚"
     assert line_items[0]["image_label"] == "黑色图"
+    assert line_items[1]["image_label"] == ""
     assert recognition_report_rows_by_stall(line_items)["至尚"][0]["product_category"] == "鞋款A"
-    assert recognition_report_export_rows(rows) == [["鞋款A", "黑色", "", "42", 2, "加急", "鞋款A 黑色 42"]]
+    assert recognition_report_export_rows(rows) == [
+        ["鞋款A", "黑色", "", "42", 2, "加急", "鞋款A 黑色 42"],
+        ["鞋款B", "白色", "", "41", 1, "", "鞋款B 白色 41"],
+    ]
+    assert recognition_exception_export_rows(rows) == []
 
 
 def test_export_routes_non_matched_and_special_rows_to_exception_sheet() -> None:

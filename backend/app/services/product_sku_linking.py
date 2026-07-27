@@ -368,21 +368,15 @@ def product_sku_linking_result(
         )
 
     image = image_for_linking_rule(binding, sku=sku, images_by_id=images_by_id)
-    if image is None:
-        return linking_exception_result(
-            fields,
-            "image_unmatched",
-            "商品和 SKU 已命中，但没有可用图片绑定。",
-            binding=binding,
-            product=product,
-            sku=sku,
-        )
-
     return {
         "input": fields,
         "product": {"id": product_id, "name": object_name(product)},
         "sku": {"id": sku_id, "name": object_name(sku)},
-        "image": {"id": int(image.id), "name": object_name(image), "file_path": text_value(getattr(image, "file_path", ""))},
+        "image": (
+            {"id": int(image.id), "name": object_name(image), "file_path": text_value(getattr(image, "file_path", ""))}
+            if image is not None
+            else None
+        ),
         "stall": stall_summary(product, sku),
         "match_status": "matched",
         "exception_reason": "",

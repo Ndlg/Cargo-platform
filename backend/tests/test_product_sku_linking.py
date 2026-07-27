@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from app.services.product_sku_linking import (
+    exportable_product_sku_linking_result,
     preview_product_sku_linking,
     product_sku_linking_contract,
 )
@@ -264,7 +265,7 @@ def test_product_sku_linking_asset_binding_conflict_is_not_reported_as_rule_conf
     assert row["exception_reason"] == "SKU 不属于当前商品绑定。"
 
 
-def test_product_sku_linking_preview_reports_sku_and_image_exceptions_without_guessing() -> None:
+def test_product_sku_linking_preview_reports_sku_exception_but_allows_missing_image() -> None:
     product = record(1, "帆布鞋")
     sku = record(21, "黑色", product_id=product.id, image_asset_id=None)
 
@@ -298,7 +299,17 @@ def test_product_sku_linking_preview_reports_sku_and_image_exceptions_without_gu
         skus=[sku],
         images=[],
     )
-    assert image_preview["rows"][0]["match_status"] == "image_unmatched"
+    image_row = image_preview["rows"][0]
+    assert image_row["match_status"] == "matched"
+    assert image_row["product"] == {"id": product.id, "name": "帆布鞋"}
+    assert image_row["sku"] == {"id": sku.id, "name": "黑色"}
+    assert image_row["image"] is None
+    assert image_preview["summary"]["matched"] == 1
+    assert image_preview["summary"]["image_unmatched"] == 0
+    stored_result = exportable_product_sku_linking_result(image_row)
+    assert stored_result["match_status"] == "matched"
+    assert stored_result["image"] == ""
+    assert stored_result["image_asset_id"] is None
 
 
 def test_product_sku_linking_preview_prefers_more_specific_auto_sku_match() -> None:
