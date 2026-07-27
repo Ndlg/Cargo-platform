@@ -441,11 +441,11 @@ def test_raw_payload_item_info_semicolon_size_keeps_one_row_per_item_line() -> N
     assert all(row.status == "draft" for row in result.rows)
 
 
-def test_multi_product_waybill_becomes_multiple_child_waybills() -> None:
+def test_multi_product_waybill_preserves_repeated_identical_child_rows() -> None:
     product_line = (
         "【登山鞋涉水鞋防水机能户外徒步男鞋女鞋休闲防滑溯溪越野鞋跑步鞋】低帮黑白 42 1件；"
         "【登山鞋涉水鞋防水机能户外徒步男鞋女鞋休闲防滑溯溪越野鞋跑步鞋】低帮深卡其 39 1件；"
-        "【登山鞋涉水鞋防水机能户外徒步男鞋女鞋休闲防滑溯溪越野鞋跑步鞋】低帮浅绿 36 1件"
+        "【登山鞋涉水鞋防水机能户外徒步男鞋女鞋休闲防滑溯溪越野鞋跑步鞋】低帮黑白 42 1件"
     )
     payload = {
         "task": {
@@ -486,9 +486,10 @@ def test_multi_product_waybill_becomes_multiple_child_waybills() -> None:
         "登山鞋涉水鞋防水机能户外徒步男鞋女鞋休闲防滑溯溪越野鞋跑步鞋",
         "登山鞋涉水鞋防水机能户外徒步男鞋女鞋休闲防滑溯溪越野鞋跑步鞋",
     ]
-    assert [row.sales_attr1 for row in result.rows] == ["低帮黑白", "低帮深卡其", "低帮浅绿"]
-    assert [row.sales_attr2 for row in result.rows] == ["42", "39", "36"]
+    assert [row.sales_attr1 for row in result.rows] == ["低帮黑白", "低帮深卡其", "低帮黑白"]
+    assert [row.sales_attr2 for row in result.rows] == ["42", "39", "42"]
     assert [row.quantity for row in result.rows] == [1, 1, 1]
+    assert [row.remark for row in result.rows] == ["", "", ""]
     assert all(row.status == "draft" for row in result.rows)
 
 
