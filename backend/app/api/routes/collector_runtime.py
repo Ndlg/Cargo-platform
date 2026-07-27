@@ -123,6 +123,30 @@ def parse_utc_datetime(value: str | None) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+def parse_collector_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=BUSINESS_DOWNLOAD_TIMEZONE)
+    return parsed.astimezone(timezone.utc)
+
+
+def collector_record_is_inside_task_window(item: Any, task: CaptureTask) -> bool:
+    captured_at = parse_collector_datetime(item.captured_at)
+    if captured_at is None:
+        return True
+    started_at = parse_utc_datetime(task.started_at)
+    ended_at = parse_utc_datetime(task.ended_at)
+    return not (
+        (started_at is not None and captured_at < started_at.replace(microsecond=0))
+        or (ended_at is not None and captured_at > ended_at)
+    )
+
+
 def collector_heartbeat_is_stale(collector: Collector) -> bool:
     if collector.online_status != "online":
         return False
@@ -2493,6 +2517,9 @@ def upload_raw_records(
     inserted = 0
     skipped = 0
     for item in payload.records:
+        if not collector_record_is_inside_task_window(item, task):
+            skipped += 1
+            continue
         if item.source_component and item.source_index:
             # A source row is one print event. Equal payloads may be legitimate reprints.
             existing = db.scalars(

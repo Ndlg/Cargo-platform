@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import http.client
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 import os
 from pathlib import Path
@@ -371,6 +371,105 @@ def test_collector_task_watermark_ignores_rows_before_capture_start(tmp_path) ->
     assert watermark == 1
     rows = adapter.read_since(watermark, 10)
     assert [row.task_id for row in rows] == ["new-local-task"]
+
+
+def test_collector_retries_unacknowledged_rows_without_advancing_watermark(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "print.db"
+    with collector_client.sqlite3.connect(db_path) as connection:
+        connection.execute("create table task (taskID text, msg text, time text)")
+        connection.executemany(
+            "insert into task (taskID, msg, time) values (?, ?, ?)",
+            [
+                ("local-1", '{"task":"one"}', "2026-07-27 10:00:01"),
+                ("local-2", '{"task":"two"}', "2026-07-27 10:00:02"),
+            ],
+        )
+
+    adapter = collector_client.PrintDbAdapter("cainiao-cnprint", "Cainiao", db_path)
+    state = collector_client.CollectorState(idle_watermarks={"cainiao-cnprint": 0})
+    attempts: list[list[str]] = []
+
+    def upload_with_lost_first_response(_base_url, _token, _task_id, records):
+        attempts.append([record["source_index"] for record in records])
+        if len(attempts) == 1:
+            raise ConnectionError("response lost")
+        return {"inserted": 0, "skipped": len(records)}
+
+    monkeypatch.setattr(collector_client, "upload_records", upload_with_lost_first_response)
+
+    try:
+        collector_client.upload_rows_for_task("http://collector.test", "token", state, 58, adapter, 100)
+    except ConnectionError:
+        pass
+    else:
+        raise AssertionError("first upload must simulate a lost response")
+
+    assert state.capture_watermarks["58:cainiao-cnprint"] == 0
+    assert collector_client.upload_rows_for_task(
+        "http://collector.test",
+        "token",
+        state,
+        58,
+        adapter,
+        100,
+    ) == 2
+    assert attempts == [["1", "2"], ["1", "2"]]
+    assert state.capture_watermarks["58:cainiao-cnprint"] == 2
+
+
+def test_raw_record_upload_keeps_records_inside_the_capture_task_window() -> None:
+    def local_db_time(value: str, offset: timedelta = timedelta()) -> str:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00")) + offset
+        return moment.astimezone(timezone(timedelta(hours=8))).replace(tzinfo=None).isoformat(sep=" ")
+
+    def record(source_index: str, captured_at: str) -> dict[str, str]:
+        return {
+            "source_component": "cainiao-cnprint",
+            "source_index": source_index,
+            "payload_format": "json",
+            "raw_payload": f'{{"task":"{source_index}"}}',
+            "captured_at": captured_at,
+        }
+
+    with TestClient(app) as client:
+        headers = login_headers(client)
+        registration = register_collector(client, headers, "task-window-machine")
+        collector_headers = {"X-Collector-Token": str(registration["collector_token"])}
+
+        task = client.post(
+            "/api/v1/collector-control/start",
+            headers=headers,
+            json={"name": "Capture window"},
+        ).json()
+        upload = client.post(
+            "/api/v1/collector-runtime/raw-records",
+            headers=collector_headers,
+            json={
+                "task_id": task["id"],
+                "records": [
+                    record("old-window-replay", local_db_time(task["started_at"], -timedelta(minutes=1))),
+                    record("current-window", local_db_time(task["started_at"])),
+                ],
+            },
+        )
+        assert upload.json() == {"inserted": 1, "skipped": 1}
+
+        stopped_task = client.post(
+            "/api/v1/collector-control/stop",
+            headers=headers,
+            json={"task_id": task["id"]},
+        ).json()
+        after_stop = client.post(
+            "/api/v1/collector-runtime/raw-records",
+            headers=collector_headers,
+            json={
+                "task_id": task["id"],
+                "records": [
+                    record("after-stop", local_db_time(stopped_task["ended_at"], timedelta(seconds=1)))
+                ],
+            },
+        )
+        assert after_stop.json() == {"inserted": 0, "skipped": 1}
 
 
 def test_raw_record_upload_contract_stops_at_raw_capture_record() -> None:
