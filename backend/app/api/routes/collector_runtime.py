@@ -358,6 +358,8 @@ class CollectorHeartbeatRequest(BaseModel):
     adapter_status: dict[str, Any] | None = None
     queue_size: int | None = None
     last_error: str | None = None
+    last_upload_at: str | None = Field(default=None, max_length=64)
+    last_reconnect_reason: str | None = Field(default=None, max_length=32)
 
 
 class RawCaptureRecordPayload(BaseModel):
@@ -2459,6 +2461,8 @@ def collector_heartbeat(
         "adapter_status": payload.adapter_status or {},
         "queue_size": payload.queue_size,
         "last_error": payload.last_error,
+        "last_upload_at": payload.last_upload_at,
+        "last_reconnect_reason": payload.last_reconnect_reason,
         "received_at": utc_now(),
     }
     if payload.source_machine:

@@ -146,13 +146,19 @@ def test_heartbeat_replaces_existing_generic_name_with_source_machine() -> None:
                 "source_machine": "WAREHOUSE-PC-09",
                 "runtime_status": "listening",
                 "adapter_status": {"simulator": {"status": "ready"}},
-                "queue_size": 0,
+                "queue_size": 3,
+                "last_upload_at": "2026-07-27T10:00:00+00:00",
+                "last_reconnect_reason": "network",
             },
         )
 
     assert heartbeat.status_code == 200
     assert heartbeat.json()["collector"]["collector_name"] == "WAREHOUSE-PC-09"
     assert heartbeat.json()["collector"]["source_machine"] == "WAREHOUSE-PC-09"
+    status_payload = heartbeat.json()["collector"]["status_payload"]
+    assert status_payload["queue_size"] == 3
+    assert status_payload["last_upload_at"] == "2026-07-27T10:00:00+00:00"
+    assert status_payload["last_reconnect_reason"] == "network"
 
 
 def deactivate_recognition_rule_packs() -> None:
