@@ -358,9 +358,13 @@ class CollectorState:
         self,
         idle_watermarks: dict[str, int] | None = None,
         capture_watermarks: dict[str, int] | None = None,
+        last_upload_at: str | None = None,
+        last_reconnect_reason: str | None = None,
     ) -> None:
         self.idle_watermarks = idle_watermarks or {}
         self.capture_watermarks = capture_watermarks or {}
+        self.last_upload_at = last_upload_at
+        self.last_reconnect_reason = last_reconnect_reason
 
     @staticmethod
     def capture_key(task_id: int, source_component: str) -> str:
@@ -377,13 +381,20 @@ class CollectorState:
             str(key): int(value)
             for key, value in dict(payload.get("capture_watermarks") or {}).items()
         }
-        return cls(idle_watermarks=idle_watermarks, capture_watermarks=capture_watermarks)
+        return cls(
+            idle_watermarks=idle_watermarks,
+            capture_watermarks=capture_watermarks,
+            last_upload_at=str(payload.get("last_upload_at") or "").strip() or None,
+            last_reconnect_reason=str(payload.get("last_reconnect_reason") or "").strip() or None,
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "updated_at": utc_now(),
             "idle_watermarks": self.idle_watermarks,
             "capture_watermarks": self.capture_watermarks,
+            "last_upload_at": self.last_upload_at,
+            "last_reconnect_reason": self.last_reconnect_reason,
         }
 
     def save(self, path: Path) -> None:
@@ -394,6 +405,27 @@ class CollectorState:
 
     def update_idle_watermark(self, adapter: PrintDbAdapter) -> None:
         self.idle_watermarks[adapter.source_component] = adapter.max_rowid()
+
+    def pending_count(self, adapters: list[PrintDbAdapter]) -> int | None:
+        adapters_by_component = {adapter.source_component: adapter for adapter in adapters}
+        earliest_watermarks: dict[str, int] = {}
+        for key, watermark in self.capture_watermarks.items():
+            _task_id, separator, component = key.partition(":")
+            if separator and component in adapters_by_component:
+                earliest_watermarks[component] = min(
+                    watermark,
+                    earliest_watermarks.get(component, watermark),
+                )
+
+        total = 0
+        for component, watermark in earliest_watermarks.items():
+            status = adapters_by_component[component].get_status()
+            if status.get("status") != "ready":
+                if status.get("status") == "error":
+                    self.last_reconnect_reason = "sqlite"
+                return None
+            total += max(0, int(status.get("max_rowid") or 0) - watermark)
+        return total
 
     def start_capture_watermark(
         self,
@@ -487,6 +519,14 @@ def is_auth_http_error(exc: urllib.error.HTTPError) -> bool:
     return exc.code in {401, 403}
 
 
+def reconnect_reason(exc: BaseException) -> str:
+    if isinstance(exc, urllib.error.HTTPError):
+        return "auth" if is_auth_http_error(exc) else "http"
+    if isinstance(exc, sqlite3.Error):
+        return "sqlite"
+    return "network"
+
+
 class ReconnectNotice:
     def __init__(self, min_interval_seconds: int = 60) -> None:
         self.min_interval_seconds = min_interval_seconds
@@ -557,6 +597,7 @@ def save_state_safely(state: CollectorState, state_path: Path, notice: Reconnect
     try:
         state.save(state_path)
     except Exception as exc:  # noqa: BLE001 - state persistence must not kill the listener.
+        state.last_reconnect_reason = "state_save"
         notice.warning(
             "state-save",
             "collector state save failed; continuing in background: %s",
@@ -610,6 +651,7 @@ def heartbeat(
     collector_name: str | None = None,
     last_error: str | None = None,
     runtime_status: str = "checking",
+    state: CollectorState | None = None,
 ) -> dict[str, Any]:
     adapter_status = {
         adapter.source_component: {
@@ -629,8 +671,10 @@ def heartbeat(
             "client_version": CLIENT_VERSION,
             "runtime_status": runtime_status,
             "adapter_status": adapter_status,
-            "queue_size": 0,
+            "queue_size": state.pending_count(adapters) if state is not None else 0,
             "last_error": last_error,
+            "last_upload_at": state.last_upload_at if state is not None else None,
+            "last_reconnect_reason": state.last_reconnect_reason if state is not None else None,
         },
     )
 
@@ -669,6 +713,7 @@ def upload_rows_for_task(
     result = upload_records(base_url, token, task_id, records)
     max_rowid = max(row.rowid for row in rows)
     state.advance_capture_watermark(task_id, adapter, max_rowid)
+    state.last_upload_at = utc_now()
     LOGGER.info(
         "uploaded task=%s component=%s rows=%s inserted=%s skipped=%s",
         task_id,
@@ -696,6 +741,7 @@ def run_sqlite_once(
         collector_id=collector_id,
         collector_name=collector_name,
         runtime_status="listening",
+        state=state,
     )
     active_tasks = heartbeat_state.get("tasks", [])
     active_tasks_by_id = {int(task["id"]): task for task in active_tasks}
@@ -895,14 +941,17 @@ def main() -> int:
             config = poll_collector_once(config, state, adapters, sequence, config_path)
             reconnect_notice.reset()
         except urllib.error.HTTPError as exc:
+            state.last_reconnect_reason = reconnect_reason(exc)
             config = recover_from_http_error(exc, config, config_path, reconnect_notice)
         except NETWORK_RETRY_EXCEPTIONS as exc:
+            state.last_reconnect_reason = reconnect_reason(exc)
             reconnect_notice.warning(
                 "network",
                 "collector network was interrupted; staying in background and retrying: %s",
                 exc,
             )
         except sqlite3.Error as exc:
+            state.last_reconnect_reason = reconnect_reason(exc)
             LOGGER.error("collector sqlite error: %s", exc)
         finally:
             save_state_safely(state, state_path, reconnect_notice)

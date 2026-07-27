@@ -373,6 +373,58 @@ def test_collector_task_watermark_ignores_rows_before_capture_start(tmp_path) ->
     assert [row.task_id for row in rows] == ["new-local-task"]
 
 
+def test_collector_state_loads_old_file_and_counts_each_pending_row_once(tmp_path) -> None:
+    state_path = tmp_path / "collector-state.json"
+    collector_client.write_json(
+        state_path,
+        {
+            "idle_watermarks": {"cainiao-cnprint": 0},
+            "capture_watermarks": {
+                "57:cainiao-cnprint": 1,
+                "58:cainiao-cnprint": 2,
+            },
+        },
+    )
+    db_path = tmp_path / "print.db"
+    with collector_client.sqlite3.connect(db_path) as connection:
+        connection.execute("create table task (taskID text, msg text, time text)")
+        connection.executemany(
+            "insert into task (taskID, msg, time) values (?, ?, ?)",
+            [
+                ("1", "{}", "2026-07-27 10:00:01"),
+                ("2", "{}", "2026-07-27 10:00:02"),
+                ("3", "{}", "2026-07-27 10:00:03"),
+            ],
+        )
+    adapter = collector_client.PrintDbAdapter("cainiao-cnprint", "Cainiao", db_path)
+
+    state = collector_client.CollectorState.load(state_path)
+
+    assert state.last_upload_at is None
+    assert state.last_reconnect_reason is None
+    assert state.pending_count([adapter]) == 2
+
+    state.last_upload_at = "2026-07-27T10:00:00+00:00"
+    state.last_reconnect_reason = "network"
+    state.save(state_path)
+    reloaded = collector_client.CollectorState.load(state_path)
+    assert reloaded.last_upload_at == "2026-07-27T10:00:00+00:00"
+    assert reloaded.last_reconnect_reason == "network"
+
+
+def test_collector_pending_count_is_unknown_when_print_db_is_unavailable(tmp_path) -> None:
+    adapter = collector_client.PrintDbAdapter(
+        "cainiao-cnprint",
+        "Cainiao",
+        tmp_path / "missing.db",
+    )
+    state = collector_client.CollectorState(
+        capture_watermarks={"58:cainiao-cnprint": 0},
+    )
+
+    assert state.pending_count([adapter]) is None
+
+
 def test_collector_retries_unacknowledged_rows_without_advancing_watermark(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "print.db"
     with collector_client.sqlite3.connect(db_path) as connection:
@@ -396,6 +448,11 @@ def test_collector_retries_unacknowledged_rows_without_advancing_watermark(tmp_p
         return {"inserted": 0, "skipped": len(records)}
 
     monkeypatch.setattr(collector_client, "upload_records", upload_with_lost_first_response)
+    monkeypatch.setattr(
+        collector_client,
+        "utc_now",
+        lambda: "2026-07-27T10:00:00+00:00",
+    )
 
     try:
         collector_client.upload_rows_for_task("http://collector.test", "token", state, 58, adapter, 100)
@@ -405,6 +462,7 @@ def test_collector_retries_unacknowledged_rows_without_advancing_watermark(tmp_p
         raise AssertionError("first upload must simulate a lost response")
 
     assert state.capture_watermarks["58:cainiao-cnprint"] == 0
+    assert state.last_upload_at is None
     assert collector_client.upload_rows_for_task(
         "http://collector.test",
         "token",
@@ -415,6 +473,55 @@ def test_collector_retries_unacknowledged_rows_without_advancing_watermark(tmp_p
     ) == 2
     assert attempts == [["1", "2"], ["1", "2"]]
     assert state.capture_watermarks["58:cainiao-cnprint"] == 2
+    assert state.last_upload_at == "2026-07-27T10:00:00+00:00"
+
+
+def test_collector_reconnect_reason_uses_stable_categories() -> None:
+    auth_error = urllib.error.HTTPError("http://test", 401, "unauthorized", {}, None)
+    http_error = urllib.error.HTTPError("http://test", 503, "unavailable", {}, None)
+
+    assert collector_client.reconnect_reason(auth_error) == "auth"
+    assert collector_client.reconnect_reason(http_error) == "http"
+    assert collector_client.reconnect_reason(collector_client.sqlite3.OperationalError("locked")) == "sqlite"
+    assert collector_client.reconnect_reason(ConnectionError("offline")) == "network"
+
+
+def test_collector_heartbeat_reports_upload_status(monkeypatch) -> None:
+    sent_payloads: list[dict[str, object]] = []
+
+    def capture_post(_base_url, _path, _token, payload):
+        sent_payloads.append(payload)
+        return {"tasks": []}
+
+    monkeypatch.setattr(collector_client, "post_json", capture_post)
+    state = collector_client.CollectorState(
+        last_upload_at="2026-07-27T10:00:00+00:00",
+        last_reconnect_reason="network",
+    )
+
+    collector_client.heartbeat("http://collector.test", "token", [], state=state)
+
+    assert len(sent_payloads) == 1
+    assert sent_payloads[0]["queue_size"] == 0
+    assert sent_payloads[0]["last_upload_at"] == "2026-07-27T10:00:00+00:00"
+    assert sent_payloads[0]["last_reconnect_reason"] == "network"
+
+
+def test_collector_state_save_failure_records_reason(tmp_path, monkeypatch) -> None:
+    state = collector_client.CollectorState()
+
+    def fail_save(_path) -> None:
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr(state, "save", fail_save)
+
+    collector_client.save_state_safely(
+        state,
+        tmp_path / "collector-state.json",
+        collector_client.ReconnectNotice(),
+    )
+
+    assert state.last_reconnect_reason == "state_save"
 
 
 def test_raw_record_upload_keeps_records_inside_the_capture_task_window() -> None:
