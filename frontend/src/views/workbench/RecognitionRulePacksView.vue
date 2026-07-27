@@ -18,6 +18,8 @@ const session = useSessionStore()
 const loading = ref(false)
 const importing = ref(false)
 const exportingId = ref<number | null>(null)
+const editingId = ref<number | null>(null)
+const savingRules = ref(false)
 const activatingId = ref<number | null>(null)
 const deactivatingId = ref<number | null>(null)
 const deletingId = ref<number | null>(null)
@@ -26,6 +28,10 @@ const activePack = ref<RecognitionRulePackSummary | null>(null)
 const packs = ref<RecognitionRulePackSummary[]>([])
 const importText = ref('')
 const importDescription = ref('')
+const ruleEditorVisible = ref(false)
+const editingPack = ref<RecognitionRulePackSummary | null>(null)
+const editingPayload = ref<Record<string, unknown> | null>(null)
+const specialRules = ref<Array<{ keyword: string; reason: string; displayReason: string }>>([])
 
 const hasImportPayload = computed(() => importText.value.trim().length > 0)
 
@@ -204,6 +210,88 @@ async function exportPack(pack: RecognitionRulePackSummary) {
   }
 }
 
+async function editPackRules(pack: RecognitionRulePackSummary) {
+  editingId.value = pack.id
+  error.value = ''
+  try {
+    const result = await exportRecognitionRulePack(pack.id)
+    const parserPolicy = result.payload.parser_policy
+    const rules =
+      parserPolicy && typeof parserPolicy === 'object' && !Array.isArray(parserPolicy)
+        ? (parserPolicy as Record<string, unknown>).special_text_keywords
+        : []
+    editingPack.value = pack
+    editingPayload.value = result.payload
+    specialRules.value = (Array.isArray(rules) ? rules : []).map((rule, index) => {
+      const values = rule && typeof rule === 'object' && !Array.isArray(rule)
+        ? (rule as Record<string, unknown>)
+        : {}
+      return {
+        keyword: String(values.keyword ?? ''),
+        reason: String(values.reason ?? `special_keyword_${index + 1}`),
+        displayReason: String(values.display_reason ?? ''),
+      }
+    })
+    ruleEditorVisible.value = true
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : '规则包读取失败'
+  } finally {
+    editingId.value = null
+  }
+}
+
+function addSpecialRule() {
+  specialRules.value.push({
+    keyword: '',
+    reason: `special_keyword_${specialRules.value.length + 1}`,
+    displayReason: '',
+  })
+}
+
+async function savePackRules() {
+  if (!editingPack.value || !editingPayload.value) return
+  if (specialRules.value.some((rule) => !rule.keyword.trim())) {
+    ElMessage.warning('特殊单关键词不能为空。')
+    return
+  }
+
+  const parserPolicy = editingPayload.value.parser_policy
+  const nextPayload = {
+    ...editingPayload.value,
+    parser_policy: {
+      ...(parserPolicy && typeof parserPolicy === 'object' && !Array.isArray(parserPolicy)
+        ? parserPolicy
+        : {}),
+      special_text_keywords: specialRules.value.map((rule, index) => ({
+        keyword: rule.keyword.trim(),
+        status: 'special',
+        reason: rule.reason || `special_keyword_${index + 1}`,
+        parse_fields: false,
+        match_product: false,
+        match_image: false,
+        display_reason: rule.displayReason.trim() || `${rule.keyword.trim()}特殊单，保留原文，不参与商品和图片匹配。`,
+      })),
+    },
+  }
+
+  savingRules.value = true
+  error.value = ''
+  try {
+    await importRecognitionRulePack({
+      payload: nextPayload,
+      activate: activePack.value?.id === editingPack.value.id,
+      description: editingPack.value.description ?? null,
+    })
+    ruleEditorVisible.value = false
+    await loadPacks()
+    ElMessage.success('子规则已保存。')
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : '子规则保存失败'
+  } finally {
+    savingRules.value = false
+  }
+}
+
 watch(() => session.currentWorkspaceId, loadPacks)
 onMounted(loadPacks)
 </script>
@@ -294,7 +382,7 @@ onMounted(loadPacks)
         <el-table-column label="更新时间" width="190">
           <template #default="{ row }">{{ readableDate(row.updated_at) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="280" fixed="right">
+        <el-table-column label="操作" width="360" fixed="right">
           <template #default="{ row }">
             <el-button
               v-if="activePack?.id !== row.id"
@@ -319,6 +407,9 @@ onMounted(loadPacks)
             <el-button size="small" plain :loading="exportingId === row.id" @click="exportPack(row)">
               导出
             </el-button>
+            <el-button size="small" plain :loading="editingId === row.id" @click="editPackRules(row)">
+              编辑子规则
+            </el-button>
             <el-button
               size="small"
               type="danger"
@@ -333,6 +424,28 @@ onMounted(loadPacks)
       </el-table>
     </article>
   </section>
+
+  <el-dialog v-model="ruleEditorVisible" title="编辑识别子规则" width="720px">
+    <el-alert
+      :closable="false"
+      title="特殊单关键词"
+      description="面单原文中任意出现一条关键词，就按特殊单保留，不进入商品和图片匹配。多商品拆行和原文追溯是固定业务约束，不能在这里关闭。"
+      type="info"
+      show-icon
+    />
+    <div class="special-rule-list">
+      <div v-for="(rule, index) in specialRules" :key="index" class="special-rule-row">
+        <el-input v-model="rule.keyword" placeholder="关键词，例如：微信" />
+        <el-input v-model="rule.displayReason" placeholder="页面说明（可选）" />
+        <el-button type="danger" plain @click="specialRules.splice(index, 1)">删除</el-button>
+      </div>
+      <el-button plain @click="addSpecialRule">添加关键词规则</el-button>
+    </div>
+    <template #footer>
+      <el-button @click="ruleEditorVisible = false">取消</el-button>
+      <el-button type="primary" :loading="savingRules" @click="savePackRules">保存子规则</el-button>
+    </template>
+  </el-dialog>
 </template>
 
 <style scoped>
@@ -384,6 +497,19 @@ onMounted(loadPacks)
   gap: 10px;
 }
 
+.special-rule-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.special-rule-row {
+  display: grid;
+  grid-template-columns: minmax(160px, 0.7fr) minmax(260px, 1.3fr) auto;
+  gap: 10px;
+}
+
 .el-table strong {
   display: block;
   color: var(--el-text-color-primary);
@@ -397,6 +523,10 @@ onMounted(loadPacks)
 
 @media (max-width: 1100px) {
   .rule-pack-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .special-rule-row {
     grid-template-columns: 1fr;
   }
 }
