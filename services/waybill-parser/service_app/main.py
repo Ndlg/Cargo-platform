@@ -21,6 +21,8 @@ RECOGNITION_RULE_PACK_CONTRACT_VERSION = "recognition_rule_pack_v1"
 SUPPORTED_ORDER_ROW_PARSERS = {"shoe_waybill_v1"}
 STRUCTURED_ITEM_FIELD_LISTS = ("product_fields", "spec_fields", "quantity_fields", "remark_fields")
 STRUCTURED_ITEM_PATH_PATTERN = re.compile(r"^[A-Za-z0-9_]+(?:\[\])?(?:\.[A-Za-z0-9_]+(?:\[\])?)*$")
+SELECTED_PARSER_POLICY_FIELDS = {"order_row_parser"}
+APPLIED_PARSER_POLICY_FIELDS = {"structured_item_sources"}
 
 
 class StandardDetailParseInput(BaseModel):
@@ -110,6 +112,25 @@ def rule_pack_validation_errors(rule_pack: dict[str, Any] | None) -> list[str]:
     return errors
 
 
+def parser_policy_usage(rule_pack: dict[str, Any] | None) -> dict[str, list[str]]:
+    parser_policy = rule_pack.get("parser_policy") if isinstance(rule_pack, dict) else None
+    configured = set(parser_policy) if isinstance(parser_policy, dict) else set()
+    return {
+        "selected": sorted(configured & SELECTED_PARSER_POLICY_FIELDS),
+        "applied": sorted(configured & APPLIED_PARSER_POLICY_FIELDS),
+        "configured_but_not_applied": sorted(
+            configured - SELECTED_PARSER_POLICY_FIELDS - APPLIED_PARSER_POLICY_FIELDS
+        ),
+    }
+
+
+def rule_pack_validation_warnings(rule_pack: dict[str, Any] | None) -> list[dict[str, str]]:
+    return [
+        {"code": "policy_field_not_applied", "field": f"parser_policy.{field}"}
+        for field in parser_policy_usage(rule_pack)["configured_but_not_applied"]
+    ]
+
+
 def rule_pack_summary(rule_pack: dict[str, Any] | None) -> dict[str, Any] | None:
     if not isinstance(rule_pack, dict):
         return None
@@ -151,7 +172,7 @@ def validate_rule_pack(payload: RulePackRequest) -> dict[str, Any]:
         "contract_version": RECOGNITION_RULE_PACK_CONTRACT_VERSION,
         "status": "invalid" if errors else "valid",
         "errors": errors,
-        "warnings": [],
+        "warnings": rule_pack_validation_warnings(payload.rule_pack),
         "pack": rule_pack_summary(payload.rule_pack),
     }
 
@@ -160,29 +181,27 @@ def validate_rule_pack(payload: RulePackRequest) -> dict[str, Any]:
 def explain_rule_pack(payload: RulePackRequest) -> dict[str, Any]:
     errors = rule_pack_validation_errors(payload.rule_pack)
     parser_policy = payload.rule_pack.get("parser_policy") if isinstance(payload.rule_pack, dict) else {}
+    usage = parser_policy_usage(payload.rule_pack)
     order_row_parser = (
         str(parser_policy.get("order_row_parser") or "").strip() if isinstance(parser_policy, dict) else ""
     )
     capabilities = [
-        "requires active rule pack"
-        if isinstance(parser_policy, dict) and parser_policy.get("requires_active_rule_pack")
-        else "active rule pack optional",
+        "requires active rule pack",
         "shoe waybill order-row parser"
         if order_row_parser == "shoe_waybill_v1"
         else "no order-row parser configured",
-        "special waybill policy"
-        if isinstance(parser_policy, dict) and parser_policy.get("special_text_keywords")
-        else "no special waybill policy",
-        "quantity normalization"
-        if isinstance(parser_policy, dict) and parser_policy.get("quantity")
-        else "default quantity behavior",
+        "structured item source rules"
+        if "structured_item_sources" in usage["applied"]
+        else "no structured item source rules",
     ]
     return {
         "contract_version": RECOGNITION_RULE_PACK_CONTRACT_VERSION,
         "status": "invalid" if errors else "valid",
         "errors": errors,
+        "warnings": rule_pack_validation_warnings(payload.rule_pack),
         "pack": rule_pack_summary(payload.rule_pack),
         "capabilities": capabilities,
+        "policy_usage": usage,
         "business_db_access": False,
         "mutates_platform_data": False,
     }

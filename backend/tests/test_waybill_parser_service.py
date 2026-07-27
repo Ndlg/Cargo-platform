@@ -269,6 +269,35 @@ def test_waybill_parser_service_explains_rule_pack_without_business_db() -> None
     assert body["business_db_access"] is False
 
 
+def test_waybill_parser_service_reports_policy_fields_that_are_not_applied() -> None:
+    app = load_parser_service_app()
+    rule_pack = structured_rule_pack_payload()
+    rule_pack["parser_policy"]["quantity"] = {"default": 1}
+    rule_pack["parser_policy"]["special_text_keywords"] = ["特殊单"]
+
+    with TestClient(app) as client:
+        validation = client.post("/api/v1/rule-packs/validate", json={"rule_pack": rule_pack}).json()
+        explanation = client.post("/api/v1/rule-packs/explain", json={"rule_pack": rule_pack}).json()
+
+    assert validation["warnings"] == [
+        {"code": "policy_field_not_applied", "field": "parser_policy.quantity"},
+        {"code": "policy_field_not_applied", "field": "parser_policy.requires_active_rule_pack"},
+        {"code": "policy_field_not_applied", "field": "parser_policy.special_text_keywords"},
+    ]
+    assert explanation["policy_usage"] == {
+        "selected": ["order_row_parser"],
+        "applied": ["structured_item_sources"],
+        "configured_but_not_applied": [
+            "quantity",
+            "requires_active_rule_pack",
+            "special_text_keywords",
+        ],
+    }
+    assert explanation["warnings"] == validation["warnings"]
+    assert "special waybill policy" not in explanation["capabilities"]
+    assert "quantity normalization" not in explanation["capabilities"]
+
+
 def test_waybill_parser_service_refuses_hidden_default_parser_when_pack_has_no_parser() -> None:
     app = load_parser_service_app()
     with TestClient(app) as client:
