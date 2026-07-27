@@ -298,7 +298,7 @@ onMounted(load)
       <small>已读取到的面单张数</small>
     </div>
     <div class="stat-tile">
-      <span>累计监听批次</span>
+      <span>累计采集轮次</span>
       <strong>{{ captureTasks.length }}</strong>
       <small>一次开始到结束为一个采集批次</small>
     </div>

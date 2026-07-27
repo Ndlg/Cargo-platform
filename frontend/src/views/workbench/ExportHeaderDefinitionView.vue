@@ -101,7 +101,7 @@ function taskStatusLabel(status?: string | null): string {
 
 function taskLabel(task: CaptureTaskRecord, index = 0): string {
   const round = index <= 0 ? '最近一轮' : `上一轮 ${index}`
-  return `${round}：${formatTaskTime(task.started_at)} ${taskStatusLabel(task.status)} / #${task.id}`
+  return `${round}：${formatTaskTime(task.started_at)} ${taskStatusLabel(task.status)}`
 }
 
 function ensureSelectedTask() {
@@ -705,7 +705,7 @@ onBeforeUnmount(() => {
         v-model="selectedTaskId"
         class="task-select"
         filterable
-        placeholder="选择监听批次"
+        placeholder="选择采集轮次"
       >
         <el-option
           v-for="(task, index) in sortedTasks"
@@ -838,7 +838,7 @@ onBeforeUnmount(() => {
     <el-empty
       v-else
       v-loading="previewLoading"
-      description="当前批次还没有已匹配的商品 SKU。"
+      description="当前采集轮次还没有已匹配的商品 SKU。"
     />
   </section>
 </template>

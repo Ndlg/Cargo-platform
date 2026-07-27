@@ -84,7 +84,7 @@ function taskStatusLabel(status?: string | null): string {
 
 function taskLabel(task: CaptureTaskRecord, index = 0): string {
   const round = index <= 0 ? '最近一轮' : `上一轮 ${index}`
-  return `${round}：${formatTaskTime(task.started_at)} ${taskStatusLabel(task.status)} / #${task.id}`
+  return `${round}：${formatTaskTime(task.started_at)} ${taskStatusLabel(task.status)}`
 }
 
 function ensureSelectedTask() {
@@ -190,7 +190,7 @@ async function load() {
 
 async function downloadReport() {
   if (!selectedTaskId.value) {
-    error.value = '请先选择监听批次。'
+    error.value = '请先选择采集轮次。'
     return
   }
   downloading.value = true
@@ -257,7 +257,7 @@ onBeforeUnmount(() => revokeSkuImageUrls())
   <section class="page-header">
     <div>
       <h1>导出中心</h1>
-      <p>按监听批次消费商品匹配结果生成报货 Excel，表头、列宽、图片尺寸读取“导出表头”里的版式设置。</p>
+      <p>按采集轮次消费商品匹配结果生成报货 Excel，表头、列宽、图片尺寸读取“导出表头”里的版式设置。</p>
     </div>
     <div class="header-actions">
       <el-button :icon="Refresh" :loading="loading" plain @click="load">刷新</el-button>
@@ -284,12 +284,12 @@ onBeforeUnmount(() => revokeSkuImageUrls())
 
   <section class="work-surface">
     <div class="capture-control-bar">
-      <strong>监听批次</strong>
+      <strong>采集轮次</strong>
       <el-select
         v-model="selectedTaskId"
         class="task-select"
         filterable
-        placeholder="选择监听批次"
+        placeholder="选择采集轮次"
       >
         <el-option
           v-for="(task, index) in sortedTasks"
@@ -384,7 +384,7 @@ onBeforeUnmount(() => revokeSkuImageUrls())
     <el-empty
       v-else
       v-loading="previewLoading"
-      description="当前批次还没有可导出的报货行，请先完成面单解析，并让管理员补齐商品/SKU/图片规则。"
+      description="当前采集轮次还没有可导出的报货行，请先完成面单解析，并让管理员补齐商品/SKU/图片规则。"
     />
   </section>
 </template>

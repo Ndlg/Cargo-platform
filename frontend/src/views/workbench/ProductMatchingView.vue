@@ -257,7 +257,7 @@ const coverageSummaryText = computed(() => {
   const coverage = previewCoverage.value
   if (!coverage) return ''
   if (showBatchCoverage.value) {
-    return `本批次 ${coverage.total_waybill_count ?? 0} 张面单，已生成订单行 ${coverage.order_row_waybill_count ?? 0} 张，未生成订单行 ${coverage.missing_order_row_count ?? 0} 张。商品匹配只处理已生成订单行的 ${coverage.standard_row_count ?? 0} 行。`
+    return `本轮 ${coverage.total_waybill_count ?? 0} 张面单，已生成商品行 ${coverage.order_row_waybill_count ?? 0} 张，未生成商品行 ${coverage.missing_order_row_count ?? 0} 张。商品匹配只处理已生成商品行的 ${coverage.standard_row_count ?? 0} 行。`
   }
   return `当前预览包含 ${coverage.standard_row_count ?? 0} 行五字段结果。`
 })
@@ -278,7 +278,7 @@ const inboundStatusLabel = computed(() => exceptionStatusLabels[queryText(route.
 const inboundSourceLabel = computed(() => queryText(route.query.source_label))
 const inboundDetailLabel = computed(() => {
   const detailId = queryText(route.query.detail_id) || queryText(route.query.detail_ids)
-  return detailId ? `五字段结果 #${detailId}` : '已选择的五字段结果'
+  return detailId ? '已选择的面单商品' : '已选择的五字段结果'
 })
 const inboundOrderLabel = computed(() => inboundSourceLabel.value || inboundDetailLabel.value)
 const inboundReasonText = computed(() => queryText(route.query.reason))
@@ -335,7 +335,7 @@ function ruleCode(ruleId?: number | null): string {
 
 function productName(productId?: number | null): string {
   if (!productId) return '未选择商品'
-  return products.value.find((product) => product.id === productId)?.name ?? `商品 #${productId}`
+  return products.value.find((product) => product.id === productId)?.name ?? '未命名商品'
 }
 
 function fieldSummary(fields?: StandardWaybillFieldCode[]): string {
@@ -416,7 +416,7 @@ function skuCandidatesFromRow(row: ProductMatchingPreviewRow): Array<ApiRecord &
 }
 
 function skuCandidateName(candidate: ApiRecord & { id?: number; name?: string }): string {
-  return textValue(candidate.name) || (candidate.id ? `SKU #${candidate.id}` : '未命名 SKU')
+  return textValue(candidate.name) || '未命名 SKU'
 }
 
 function mergeSkuCandidates(
@@ -459,7 +459,7 @@ function conflictRuleIds(rulesToInspect: Array<ProductMatchingRuleRecord | ApiRe
 
 function focusConflictRules(group: ProductMatchingExceptionGroup) {
   if (!group.conflictRuleIds.length) {
-    ElMessage.warning('这条冲突没有返回可定位的规则编号，请重新检查本批次。')
+    ElMessage.warning('这条冲突没有返回可定位的规则编号，请重新检查本轮采集。')
     return
   }
   ruleFocusIds.value = group.conflictRuleIds
@@ -855,7 +855,7 @@ function searchImageAssets(keyword: string) {
 
 async function runSavedRulesPreview() {
   if (previewScopeIncomplete.value) {
-    error.value = '请先选择要检查的采集任务。'
+    error.value = '请先选择要检查的采集轮次。'
     return
   }
   previewing.value = true
@@ -897,7 +897,7 @@ async function saveRule() {
 
 async function applySavedRules() {
   if (previewScopeIncomplete.value) {
-    error.value = '请先选择要应用的采集任务。'
+    error.value = '请先选择要应用的采集轮次。'
     return
   }
   if (!enabledRuleCount.value) {
@@ -906,8 +906,8 @@ async function applySavedRules() {
   }
   try {
     await ElMessageBox.confirm(
-      '确认用已启用的商品匹配学习记录写回当前批次的商品匹配结果？',
-      '应用规则到本批次',
+      '确认用已启用的商品匹配学习记录写回本轮采集的商品匹配结果？',
+      '应用规则到本轮',
       { type: 'warning', confirmButtonText: '应用规则', cancelButtonText: '取消' },
     )
   } catch {
@@ -931,7 +931,7 @@ async function applySavedRules() {
     }
     ElMessage.success(`商品匹配结果已写回 ${appliedCount} 行`)
   } catch (err) {
-    error.value = err instanceof Error ? err.message : '应用规则到本批次失败'
+    error.value = err instanceof Error ? err.message : '应用规则到本轮失败'
   } finally {
     applying.value = false
   }
@@ -1225,22 +1225,22 @@ onMounted(load)
             </div>
             <div class="panel-actions">
               <el-button :disabled="previewScopeIncomplete || !enabledRuleCount" :icon="Check" :loading="applying" @click="applySavedRules">
-                应用规则到本批次
+                应用规则到本轮
               </el-button>
             </div>
           </div>
           <div class="batch-scope-bar">
-            <span>当前批次</span>
+            <span>当前采集轮次</span>
             <el-select
               v-model="selectedTaskId"
               class="full-control"
               filterable
-              placeholder="选择采集任务"
+              placeholder="选择采集轮次"
             >
             <el-option
-              v-for="task in sortedCaptureTasks"
+              v-for="(task, index) in sortedCaptureTasks"
               :key="task.id"
-              :label="`${task.name} #${task.id}`"
+              :label="`${index === 0 ? '最近一轮' : `上一轮 ${index}`}：${task.name}`"
               :value="task.id"
             />
             </el-select>
@@ -1251,7 +1251,7 @@ onMounted(load)
             type="warning"
             :closable="false"
             show-icon
-            title="请先选择当前批次，右侧会显示已保存学习记录的匹配结果。"
+            title="请先选择当前采集轮次，右侧会显示已保存学习记录的匹配结果。"
           />
           <el-alert
             v-if="coverageSummaryText"
@@ -1281,7 +1281,7 @@ onMounted(load)
             type="info"
             :closable="false"
             show-icon
-            title="进入页面会自动读取当前批次；保存学习记录后，可点“应用规则到本批次”。"
+            title="进入页面会自动读取当前采集轮次；保存学习记录后，可点“应用规则到本轮”。"
           />
           <div v-if="previewHasRun" class="summary-grid">
             <div v-for="row in previewSummaryRows" :key="row.key" class="summary-item">

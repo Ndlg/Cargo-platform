@@ -87,7 +87,7 @@ const exceptionTypes = computed(() => [
     key: 'unmatched' as ExceptionStatus,
     label: '未匹配',
     count: exceptionCountByStatus('unmatched'),
-    action: '让管理员复核商品规则覆盖',
+    action: '让管理员检查商品规则覆盖',
   },
 ])
 
@@ -112,7 +112,7 @@ function taskStatusLabel(status?: string | null): string {
 
 function taskLabel(task: CaptureTaskRecord, index = 0): string {
   const round = index <= 0 ? '最近一轮' : `上一轮 ${index}`
-  return `${round}：${formatTaskTime(task.started_at)} ${taskStatusLabel(task.status)} / #${task.id}`
+  return `${round}：${formatTaskTime(task.started_at)} ${taskStatusLabel(task.status)}`
 }
 
 function selectedTaskFromSavedState(): number | null {
@@ -205,7 +205,7 @@ function exceptionAdvice(row: RecognitionPreviewRow): string {
   if (row.status === 'image_unmatched') return '补 SKU 图片或图片资产绑定'
   if (row.status === 'conflict') return '检查同时命中的商品资产、SKU 或学习记录'
   if (row.status === 'pending') return '回面单解析查看规则包解析结果'
-  if (row.status === 'unmatched') return '让管理员复核商品规则覆盖'
+  if (row.status === 'unmatched') return '让管理员检查商品规则覆盖'
   if (row.status === 'special') return '特殊单不参与商品、SKU、图片匹配'
   return '查看订单行和匹配结果'
 }
@@ -391,7 +391,7 @@ onMounted(load)
       <el-alert
         class="exception-source-alert"
         :closable="false"
-        title="规则包未解析、商品未命中、SKU/图片未命中和冲突都会在这里复核；特殊单属于正常跳过。"
+        title="规则包未解析、商品未命中、SKU/图片未命中和冲突都会进入异常处理；特殊单属于正常跳过。"
         type="info"
       />
     </div>

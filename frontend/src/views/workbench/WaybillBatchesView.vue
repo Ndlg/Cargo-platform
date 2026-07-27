@@ -227,7 +227,7 @@ async function load() {
 
 async function downloadSelectedTaskDocument(kind: 'raw' | 'standard') {
   if (!selectedTaskId.value) {
-    error.value = '请先选择采集任务。'
+    error.value = '请先选择采集轮次。'
     return
   }
   downloadingKey.value = `${selectedTaskId.value}-${kind}`
@@ -273,7 +273,7 @@ onMounted(load)
         v-model="selectedTaskId"
         class="task-select"
         filterable
-        placeholder="选择采集任务"
+        placeholder="选择采集轮次"
         style="width: 360px"
       >
         <el-option
