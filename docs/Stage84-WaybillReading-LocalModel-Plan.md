@@ -1,5 +1,12 @@
 # Stage84-WaybillReading-LocalModel-Plan
 
+> **已废止 / Superseded（2026-07-29）**
+>
+> 本文档描述的“模型只清洗文本、不输出业务订单行”方向已被
+> [`2026-07-29-local-ai-waybill-recognition-design.md`](superpowers/specs/2026-07-29-local-ai-waybill-recognition-design.md)
+> 取代。当前实现以独立 AI 服务生成候选订单行和候选声明式规则、管理员确认后固化复用为准。
+> 本文仅保留为历史设计记录，不得作为新增代码的产品约束。
+
 ## Module Contract
 
 - Module: Waybill Reading Module
