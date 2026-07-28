@@ -124,6 +124,14 @@ def test_capture_task_list_exposes_waybill_count_not_raw_record_count() -> None:
         assert matching[0]["waybill_count"] == 2
         assert matching[0]["parent_waybill_count"] == 2
 
+        lightweight = client.get(
+            "/api/v1/capture-tasks?limit=2000&include_waybill_counts=false",
+            headers=headers,
+        )
+        assert lightweight.status_code == 200
+        lightweight_task = next(item for item in lightweight.json() if item["id"] == task_id)
+        assert "waybill_count" not in lightweight_task
+
 
 def test_capture_task_list_returns_latest_tasks_first() -> None:
     with TestClient(app) as client:

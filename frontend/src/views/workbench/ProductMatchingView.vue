@@ -5,7 +5,6 @@ import { Check, Delete, Edit, Refresh } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 import {
-  applyProductMatching,
   deleteProductMatchingRule,
   getProductMatchingRules,
   getRecord,
@@ -15,7 +14,6 @@ import {
   updateProductMatchingRule,
   type ApiRecord,
   type CaptureTaskRecord,
-  type ProductMatchingApplyResponse,
   type ProductMatchingPreviewResponse,
   type ProductMatchingPreviewRow,
   type ProductMatchingRuleRecord,
@@ -146,7 +144,6 @@ const preview = ref<ProductMatchingPreviewResponse | null>(null)
 const loading = ref(false)
 const previewing = ref(false)
 const saving = ref(false)
-const applying = ref(false)
 const productLoading = ref(false)
 const skuLoading = ref(false)
 const imageLoading = ref(false)
@@ -211,7 +208,7 @@ const previewSummaryRows = computed(() => {
   ]
 })
 const previewCoverage = computed(() => preview.value?.coverage ?? null)
-const previewHasRun = computed(() => Boolean(preview.value || applyResult.value))
+const previewHasRun = computed(() => Boolean(preview.value))
 const showBatchCoverage = computed(
   () => Boolean(previewCoverage.value?.total_waybill_count),
 )
@@ -252,7 +249,6 @@ const ruleFilterSummary = computed(() => {
   const focusText = ruleFocusIds.value.length ? `，正在看 ${ruleFocusIds.value.length} 条冲突规则` : ''
   return `共 ${total} 条，启用 ${enabledRuleCount.value} 条，停用 ${disabled} 条，当前显示 ${filteredRules.value.length} 条${focusText}`
 })
-const applyResult = ref<ProductMatchingApplyResponse | null>(null)
 const coverageSummaryText = computed(() => {
   const coverage = previewCoverage.value
   if (!coverage) return ''
@@ -260,18 +256,6 @@ const coverageSummaryText = computed(() => {
     return `本轮 ${coverage.total_waybill_count ?? 0} 张面单，已生成商品行 ${coverage.order_row_waybill_count ?? 0} 张，未生成商品行 ${coverage.missing_order_row_count ?? 0} 张。商品匹配只处理已生成商品行的 ${coverage.standard_row_count ?? 0} 行。`
   }
   return `当前预览包含 ${coverage.standard_row_count ?? 0} 行五字段结果。`
-})
-const applySummaryText = computed(() => {
-  const result = applyResult.value
-  if (!result) return ''
-  const summary = result.summary ?? {}
-  const exceptionCount = Number(summary.product_unmatched ?? 0)
-    + Number(summary.sku_unmatched ?? 0)
-    + Number(summary.image_unmatched ?? 0)
-    + Number(summary.conflict ?? 0)
-  const specialCount = Number(summary.special ?? 0)
-  const appliedCount = result.applied_item_count ?? result.applied_detail_count ?? 0
-  return `已写回 ${appliedCount} 行商品匹配结果：匹配 ${summary.matched ?? 0} 行，异常 ${exceptionCount} 行，特殊单 ${specialCount} 行。`
 })
 const inboundFromExceptions = computed(() => queryText(route.query.from) === 'exceptions')
 const inboundStatusLabel = computed(() => exceptionStatusLabels[queryText(route.query.status)] ?? '异常订单行')
@@ -492,19 +476,6 @@ const sampleRows = computed(() => {
     (rows ?? []).map((row) => ({ ...row, status })),
   )
 })
-
-function previewFromApplyResult(result: ProductMatchingApplyResponse): ProductMatchingPreviewResponse {
-  const samples = result.samples ?? {}
-  return {
-    ...preview.value,
-    ...result,
-    summary: result.summary ?? {},
-    samples,
-    rows: Object.values(samples).flat(),
-    linking_rules: rules.value,
-    coverage: preview.value?.coverage,
-  }
-}
 
 const exceptionGroups = computed<ProductMatchingExceptionGroup[]>(() => {
   const groups = new Map<string, ProductMatchingExceptionGroup>()
@@ -741,7 +712,7 @@ async function load() {
   error.value = ''
   try {
     const [taskRecords, ruleResponse] = await Promise.all([
-      getRecords('/capture-tasks?limit=2000'),
+      getRecords('/capture-tasks?limit=2000&include_waybill_counts=false'),
       getProductMatchingRules(true),
     ])
     captureTasks.value = taskRecords as CaptureTaskRecord[]
@@ -860,7 +831,6 @@ async function runSavedRulesPreview() {
   }
   previewing.value = true
   error.value = ''
-  applyResult.value = null
   try {
     preview.value = await previewProductMatching({
       scope: buildPreviewScope(),
@@ -895,48 +865,6 @@ async function saveRule() {
   }
 }
 
-async function applySavedRules() {
-  if (previewScopeIncomplete.value) {
-    error.value = '请先选择要应用的采集轮次。'
-    return
-  }
-  if (!enabledRuleCount.value) {
-    error.value = '当前没有启用的商品匹配学习记录。'
-    return
-  }
-  try {
-    await ElMessageBox.confirm(
-      '确认用已启用的商品匹配学习记录写回本轮采集的商品匹配结果？',
-      '应用规则到本轮',
-      { type: 'warning', confirmButtonText: '应用规则', cancelButtonText: '取消' },
-    )
-  } catch {
-    return
-  }
-  applying.value = true
-  error.value = ''
-  try {
-    applyResult.value = await applyProductMatching({
-      scope: buildPreviewScope(),
-      include_enabled_rules: true,
-    })
-    preview.value = previewFromApplyResult(applyResult.value)
-    const appliedCount = applyResult.value.applied_item_count
-      ?? applyResult.value.applied_standard_detail_count
-      ?? applyResult.value.applied_detail_count
-      ?? 0
-    if (appliedCount <= 0) {
-      ElMessage.warning('本次没有写回任何订单行，请检查选择范围是否有已解析订单行。')
-      return
-    }
-    ElMessage.success(`商品匹配结果已写回 ${appliedCount} 行`)
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : '应用规则到本轮失败'
-  } finally {
-    applying.value = false
-  }
-}
-
 function resetEditor() {
   editingRuleId.value = null
   form.name = ''
@@ -951,7 +879,6 @@ function resetEditor() {
   skuSearchKeyword.value = ''
   imageSearchKeyword.value = ''
   preview.value = null
-  applyResult.value = null
   draftSourceSamples.value = null
 }
 
@@ -1223,11 +1150,6 @@ onMounted(load)
               <h2>商品/SKU 问题清单</h2>
               <p>读取面单解析后的订单行，检查哪些已可导出，哪些还需要补商品、SKU 或图片。</p>
             </div>
-            <div class="panel-actions">
-              <el-button :disabled="previewScopeIncomplete || !enabledRuleCount" :icon="Check" :loading="applying" @click="applySavedRules">
-                应用规则到本轮
-              </el-button>
-            </div>
           </div>
           <div class="batch-scope-bar">
             <span>当前采集轮次</span>
@@ -1268,20 +1190,12 @@ onMounted(load)
             </template>
           </el-alert>
           <el-alert
-            v-if="applySummaryText"
-            class="coverage-alert"
-            type="success"
-            :closable="false"
-            show-icon
-            :title="applySummaryText"
-          />
-          <el-alert
             v-if="!previewHasRun && !previewing"
             class="coverage-alert"
             type="info"
             :closable="false"
             show-icon
-            title="进入页面会自动读取当前采集轮次；保存学习记录后，可点“应用规则到本轮”。"
+            title="进入页面会自动读取当前采集轮次，并按已保存的学习记录重新计算匹配结果。"
           />
           <div v-if="previewHasRun" class="summary-grid">
             <div v-for="row in previewSummaryRows" :key="row.key" class="summary-item">

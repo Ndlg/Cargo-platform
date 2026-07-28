@@ -300,6 +300,7 @@ def build_resource_router(resource_name: str, tag: str) -> APIRouter:
         offset: int = Query(default=0, ge=0),
         limit: int = Query(default=100, ge=1, le=2000),
         include_archived: bool = Query(default=False),
+        include_waybill_counts: bool = Query(default=True),
     ) -> list[dict[str, Any]]:
         ensure_server_admin_access(resource_name, current_user, write=False)
         allowed_workspace_ids = allowed_workspace_ids_for(db, current_user)
@@ -391,7 +392,7 @@ def build_resource_router(resource_name: str, tag: str) -> APIRouter:
                 allowed = current_user.allowed_workspace_ids()
                 return [record for record in records if record["id"] in allowed]
             projected = project_list_records(resource_name, records)
-            if resource_name == "capture_tasks":
+            if resource_name == "capture_tasks" and include_waybill_counts:
                 return attach_capture_task_waybill_counts(db, projected)
             return projected
         except WorkspaceAccessError as exc:

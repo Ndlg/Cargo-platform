@@ -7,6 +7,9 @@ PRODUCT_MATCHING_VIEW = PROJECT_ROOT / "frontend" / "src" / "views" / "workbench
 COLLECTOR_CONNECTIONS_VIEW = PROJECT_ROOT / "frontend" / "src" / "views" / "workbench" / "CollectorConnectionsView.vue"
 CAPTURE_RECORDS_VIEW = PROJECT_ROOT / "frontend" / "src" / "views" / "workbench" / "CaptureRecordsView.vue"
 WAYBILL_BATCHES_VIEW = PROJECT_ROOT / "frontend" / "src" / "views" / "workbench" / "WaybillBatchesView.vue"
+EXCEPTIONS_VIEW = PROJECT_ROOT / "frontend" / "src" / "views" / "workbench" / "ExceptionsView.vue"
+EXPORT_CENTER_VIEW = PROJECT_ROOT / "frontend" / "src" / "views" / "workbench" / "ExportCenterView.vue"
+EXPORT_HEADER_VIEW = PROJECT_ROOT / "frontend" / "src" / "views" / "workbench" / "ExportHeaderDefinitionView.vue"
 
 
 def test_product_catalog_does_not_load_all_skus_for_selected_product() -> None:
@@ -78,3 +81,14 @@ def test_waybill_batches_page_hides_internal_source_positioning_language() -> No
     assert "来源诊断" not in template
     assert "采集来源" in template
     assert "可追溯到原始面单" in source
+
+
+def test_matching_repairs_route_to_the_responsible_screen_without_heavy_task_counts() -> None:
+    matching_source = PRODUCT_MATCHING_VIEW.read_text(encoding="utf-8")
+    exceptions_source = EXCEPTIONS_VIEW.read_text(encoding="utf-8")
+
+    assert "应用规则到本轮" not in matching_source
+    assert "path: '/admin/products'" in exceptions_source
+    assert "if (row.status === 'sku_unmatched') return '维护 SKU'" in exceptions_source
+    for view in (PRODUCT_MATCHING_VIEW, EXCEPTIONS_VIEW, EXPORT_CENTER_VIEW, EXPORT_HEADER_VIEW):
+        assert "include_waybill_counts=false" in view.read_text(encoding="utf-8")

@@ -177,7 +177,7 @@ async function load() {
   error.value = ''
   reportLayout.value = loadReportLayout(session.currentWorkspaceId)
   try {
-    const tasks = await getRecords('/capture-tasks?limit=2000')
+    const tasks = await getRecords('/capture-tasks?limit=2000&include_waybill_counts=false')
     captureTasks.value = tasks as CaptureTaskRecord[]
     ensureSelectedTask()
     await loadRecognitionPreview()

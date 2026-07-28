@@ -212,8 +212,8 @@ function exceptionAdvice(row: RecognitionPreviewRow): string {
 
 function repairTarget(row: RecognitionPreviewRow): string {
   if (row.status === 'product_unmatched') return '补商品匹配'
-  if (row.status === 'sku_unmatched') return '补 SKU 匹配'
-  if (row.status === 'image_unmatched') return '补图片绑定'
+  if (row.status === 'sku_unmatched') return '维护 SKU'
+  if (row.status === 'image_unmatched') return '维护 SKU 图片'
   if (row.status === 'conflict') return '处理匹配冲突'
   if (row.status === 'pending') return '查看订单行'
   if (row.status === 'special') return '无需处理'
@@ -245,6 +245,16 @@ function repairRoute(row: RecognitionPreviewRow) {
     return {
       path: '/waybill-batches',
       query: selectedTaskId.value ? { task_id: String(selectedTaskId.value) } : {},
+    }
+  }
+
+  if (
+    (row.status === 'sku_unmatched' || row.status === 'image_unmatched')
+    && row.product_id
+  ) {
+    return {
+      path: '/admin/products',
+      query: { product_id: String(row.product_id) },
     }
   }
 
@@ -286,7 +296,7 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    const tasks = await getRecords('/capture-tasks?limit=2000')
+    const tasks = await getRecords('/capture-tasks?limit=2000&include_waybill_counts=false')
     captureTasks.value = tasks as CaptureTaskRecord[]
     const previousTaskId = selectedTaskId.value
     ensureSelectedTask()
