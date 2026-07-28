@@ -23,8 +23,13 @@ STRUCTURED_ITEM_FIELD_LISTS = ("product_fields", "spec_fields", "quantity_fields
 STRUCTURED_ITEM_PATH_PATTERN = re.compile(r"^[A-Za-z0-9_]+(?:\[\])?(?:\.[A-Za-z0-9_]+(?:\[\])?)*$")
 SELECTED_PARSER_POLICY_FIELDS = {"order_row_parser"}
 APPLIED_PARSER_POLICY_FIELDS = {
+    "label_cleanup",
+    "manual_label_only",
     "multi_item",
+    "non_shoe",
+    "quantity",
     "requires_active_rule_pack",
+    "size_normalization",
     "special_text_keywords",
     "structured_item_sources",
 }
@@ -149,6 +154,57 @@ def rule_pack_validation_errors(rule_pack: dict[str, Any] | None) -> list[str]:
                         errors.append(f"{prefix}.status")
                     if not str(rule.get("reason") or "").strip():
                         errors.append(f"{prefix}.reason")
+        quantity = parser_policy.get("quantity")
+        if quantity is not None:
+            if not isinstance(quantity, dict):
+                errors.append("parser_policy.quantity")
+            else:
+                default_quantity = quantity.get("default_if_missing")
+                if (
+                    not isinstance(default_quantity, int)
+                    or isinstance(default_quantity, bool)
+                    or default_quantity <= 0
+                ):
+                    errors.append("parser_policy.quantity.default_if_missing")
+        label_cleanup = parser_policy.get("label_cleanup")
+        if label_cleanup is not None:
+            if not isinstance(label_cleanup, dict):
+                errors.append("parser_policy.label_cleanup")
+            else:
+                for field in ("strip_prefixes", "separator_chars"):
+                    values = label_cleanup.get(field)
+                    if not isinstance(values, list) or not all(
+                        isinstance(value, str) and value.strip() for value in values
+                    ):
+                        errors.append(f"parser_policy.label_cleanup.{field}")
+        size_normalization = parser_policy.get("size_normalization")
+        if size_normalization is not None:
+            if not isinstance(size_normalization, dict):
+                errors.append("parser_policy.size_normalization")
+            else:
+                for field in ("enabled", "strip_purchase_hint"):
+                    if not isinstance(size_normalization.get(field), bool):
+                        errors.append(f"parser_policy.size_normalization.{field}")
+        manual_label_only = parser_policy.get("manual_label_only")
+        if manual_label_only is not None:
+            if not isinstance(manual_label_only, dict):
+                errors.append("parser_policy.manual_label_only")
+            else:
+                if not isinstance(manual_label_only.get("allow_empty_product"), bool):
+                    errors.append("parser_policy.manual_label_only.allow_empty_product")
+                default_quantity = manual_label_only.get("default_quantity_if_missing")
+                if (
+                    not isinstance(default_quantity, int)
+                    or isinstance(default_quantity, bool)
+                    or default_quantity <= 0
+                ):
+                    errors.append("parser_policy.manual_label_only.default_quantity_if_missing")
+        non_shoe = parser_policy.get("non_shoe")
+        if non_shoe is not None:
+            if not isinstance(non_shoe, dict):
+                errors.append("parser_policy.non_shoe")
+            elif not isinstance(non_shoe.get("allow_non_numeric_sales_attr2"), bool):
+                errors.append("parser_policy.non_shoe.allow_non_numeric_sales_attr2")
     return errors
 
 
@@ -236,6 +292,21 @@ def explain_rule_pack(payload: RulePackRequest) -> dict[str, Any]:
         "special waybill keyword rules"
         if "special_text_keywords" in usage["applied"]
         else "no special waybill keyword rules",
+        "quantity defaults"
+        if "quantity" in usage["applied"]
+        else "no quantity defaults",
+        "field label cleanup"
+        if "label_cleanup" in usage["applied"]
+        else "no field label cleanup",
+        "size normalization"
+        if "size_normalization" in usage["applied"]
+        else "no size normalization",
+        "manual label-only policy"
+        if "manual_label_only" in usage["applied"]
+        else "no manual label-only policy",
+        "non-shoe attribute policy"
+        if "non_shoe" in usage["applied"]
+        else "no non-shoe attribute policy",
     ]
     return {
         "contract_version": RECOGNITION_RULE_PACK_CONTRACT_VERSION,

@@ -3,7 +3,7 @@
   "pack": {
     "code": "current-user-shoes-v1",
     "name": "当前用户鞋类面单识别规则",
-    "version": "1.1.0",
+    "version": "1.2.0",
     "description": "适用于当前用户鞋类订单报货面单。该规则包不是系统默认规则，必须导入并启用后才会参与识别。"
   },
   "parser_policy": {
@@ -31,9 +31,7 @@
       }
     ],
     "quantity": {
-      "default_if_missing": 1,
-      "patterns": ["*1", "1件", "2件", "3件"],
-      "strip_from_field_text": true
+      "default_if_missing": 1
     },
     "label_cleanup": {
       "strip_prefixes": ["颜色分类", "颜色", "鞋码", "尺码", "规格"],
@@ -42,11 +40,7 @@
     },
     "size_normalization": {
       "enabled": true,
-      "strip_purchase_hint": true,
-      "examples": [
-        "44(偏大一码，建议拍小) -> 44",
-        "鞋码:42.5 -> 42.5"
-      ]
+      "strip_purchase_hint": true
     },
     "multi_item": {
       "split_parent_waybill": true,
@@ -56,12 +50,10 @@
     },
     "manual_label_only": {
       "allow_empty_product": true,
-      "default_quantity_if_missing": 1,
-      "reason": "用户手工单可能只写颜色分类和鞋码，商品归属交给后续商品匹配规则。"
+      "default_quantity_if_missing": 1
     },
     "non_shoe": {
-      "allow_non_numeric_sales_attr2": true,
-      "reason": "非鞋类或特殊商品可能没有标准尺码。"
+      "allow_non_numeric_sales_attr2": true
     }
   },
   "product_matching_policy": {

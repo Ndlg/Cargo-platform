@@ -32,6 +32,11 @@ const ruleEditorVisible = ref(false)
 const editingPack = ref<RecognitionRulePackSummary | null>(null)
 const editingPayload = ref<Record<string, unknown> | null>(null)
 const specialRules = ref<Array<{ keyword: string; reason: string; displayReason: string }>>([])
+const quantityDefault = ref(1)
+const labelPrefixesText = ref('')
+const stripPurchaseHint = ref(true)
+const allowEmptyProduct = ref(true)
+const allowNonNumericSalesAttr2 = ref(true)
 
 const hasImportPayload = computed(() => importText.value.trim().length > 0)
 
@@ -42,6 +47,12 @@ function readableDate(value?: string | null): string {
 
 function packDisplayName(pack: RecognitionRulePackSummary): string {
   return `${pack.name} (${pack.code} / ${pack.version})`
+}
+
+function recordValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {}
 }
 
 async function loadPacks() {
@@ -215,13 +226,23 @@ async function editPackRules(pack: RecognitionRulePackSummary) {
   error.value = ''
   try {
     const result = await exportRecognitionRulePack(pack.id)
-    const parserPolicy = result.payload.parser_policy
-    const rules =
-      parserPolicy && typeof parserPolicy === 'object' && !Array.isArray(parserPolicy)
-        ? (parserPolicy as Record<string, unknown>).special_text_keywords
-        : []
+    const policy = recordValue(result.payload.parser_policy)
+    const quantity = recordValue(policy.quantity)
+    const labelCleanup = recordValue(policy.label_cleanup)
+    const sizeNormalization = recordValue(policy.size_normalization)
+    const manualLabelOnly = recordValue(policy.manual_label_only)
+    const nonShoe = recordValue(policy.non_shoe)
+    const rules = policy.special_text_keywords
     editingPack.value = pack
     editingPayload.value = result.payload
+    const configuredQuantity = Number(quantity.default_if_missing)
+    quantityDefault.value = Number.isInteger(configuredQuantity) && configuredQuantity > 0 ? configuredQuantity : 1
+    labelPrefixesText.value = Array.isArray(labelCleanup.strip_prefixes)
+      ? labelCleanup.strip_prefixes.map(String).join('、')
+      : ''
+    stripPurchaseHint.value = sizeNormalization.strip_purchase_hint !== false
+    allowEmptyProduct.value = manualLabelOnly.allow_empty_product !== false
+    allowNonNumericSalesAttr2.value = nonShoe.allow_non_numeric_sales_attr2 !== false
     specialRules.value = (Array.isArray(rules) ? rules : []).map((rule, index) => {
       const values = rule && typeof rule === 'object' && !Array.isArray(rule)
         ? (rule as Record<string, unknown>)
@@ -254,14 +275,34 @@ async function savePackRules() {
     ElMessage.warning('特殊单关键词不能为空。')
     return
   }
+  if (!Number.isInteger(quantityDefault.value) || quantityDefault.value <= 0) {
+    ElMessage.warning('默认数量必须是大于 0 的整数。')
+    return
+  }
 
-  const parserPolicy = editingPayload.value.parser_policy
+  const currentPolicy = recordValue(editingPayload.value.parser_policy)
+  const packMeta = recordValue(editingPayload.value.pack)
+  const currentQuantity = recordValue(currentPolicy.quantity)
+  const currentLabelCleanup = recordValue(currentPolicy.label_cleanup)
+  const currentSizeNormalization = recordValue(currentPolicy.size_normalization)
+  const currentManualLabelOnly = recordValue(currentPolicy.manual_label_only)
+  const currentNonShoe = recordValue(currentPolicy.non_shoe)
+  const versionMatch = String(packMeta.version ?? '1.0.0').match(/^(\d+)\.(\d+)\.(\d+)$/)
+  const nextVersion = versionMatch
+    ? `${versionMatch[1]}.${versionMatch[2]}.${Number(versionMatch[3]) + 1}`
+    : String(packMeta.version ?? '1.0.0')
+  const prefixes = labelPrefixesText.value
+    .split(/[、,，\n]+/)
+    .map((value) => value.trim())
+    .filter(Boolean)
   const nextPayload = {
     ...editingPayload.value,
+    pack: {
+      ...packMeta,
+      version: nextVersion,
+    },
     parser_policy: {
-      ...(parserPolicy && typeof parserPolicy === 'object' && !Array.isArray(parserPolicy)
-        ? parserPolicy
-        : {}),
+      ...currentPolicy,
       special_text_keywords: specialRules.value.map((rule, index) => ({
         keyword: rule.keyword.trim(),
         status: 'special',
@@ -271,6 +312,31 @@ async function savePackRules() {
         match_image: false,
         display_reason: rule.displayReason.trim() || `${rule.keyword.trim()}特殊单，保留原文，不参与商品和图片匹配。`,
       })),
+      quantity: {
+        ...currentQuantity,
+        default_if_missing: quantityDefault.value,
+      },
+      label_cleanup: {
+        ...currentLabelCleanup,
+        strip_prefixes: prefixes,
+        separator_chars: Array.isArray(currentLabelCleanup.separator_chars)
+          ? currentLabelCleanup.separator_chars
+          : [':', '：', ';', '；', ',', '，', '/', '|'],
+      },
+      size_normalization: {
+        ...currentSizeNormalization,
+        enabled: true,
+        strip_purchase_hint: stripPurchaseHint.value,
+      },
+      manual_label_only: {
+        ...currentManualLabelOnly,
+        allow_empty_product: allowEmptyProduct.value,
+        default_quantity_if_missing: quantityDefault.value,
+      },
+      non_shoe: {
+        ...currentNonShoe,
+        allow_non_numeric_sales_attr2: allowNonNumericSalesAttr2.value,
+      },
     },
   }
 
@@ -425,7 +491,43 @@ onMounted(loadPacks)
     </article>
   </section>
 
-  <el-dialog v-model="ruleEditorVisible" title="编辑识别子规则" width="720px">
+  <el-dialog v-model="ruleEditorVisible" title="编辑识别子规则" width="760px">
+    <el-form class="policy-form" label-position="top">
+      <el-form-item label="面单没有写数量时">
+        <el-input-number v-model="quantityDefault" :min="1" :max="999" />
+        <span class="field-help">系统使用这个默认数量，不从商品或尺码数字里猜数量。</span>
+      </el-form-item>
+      <el-form-item label="需要从商品属性开头去掉的字段名">
+        <el-input
+          v-model="labelPrefixesText"
+          type="textarea"
+          :rows="2"
+          placeholder="例如：颜色分类、颜色、鞋码、尺码、规格"
+        />
+        <span class="field-help">用顿号、逗号或换行分隔；只清理开头字段名，原始面单仍保留。</span>
+      </el-form-item>
+      <el-form-item label="尺码中的购买提示">
+        <el-switch
+          v-model="stripPurchaseHint"
+          active-text="去掉提示，只保留尺码"
+          inactive-text="保留提示原文"
+        />
+      </el-form-item>
+      <el-form-item label="只有颜色/尺码、没有商品名的手工单">
+        <el-switch
+          v-model="allowEmptyProduct"
+          active-text="允许进入商品匹配"
+          inactive-text="列为解析异常"
+        />
+      </el-form-item>
+      <el-form-item label="非数字规格（例如均码）">
+        <el-switch
+          v-model="allowNonNumericSalesAttr2"
+          active-text="允许"
+          inactive-text="列为解析异常"
+        />
+      </el-form-item>
+    </el-form>
     <el-alert
       :closable="false"
       title="特殊单关键词"
@@ -502,6 +604,16 @@ onMounted(loadPacks)
   flex-direction: column;
   gap: 12px;
   margin-top: 16px;
+}
+
+.policy-form {
+  margin-bottom: 18px;
+}
+
+.field-help {
+  margin-left: 10px;
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
 }
 
 .special-rule-row {

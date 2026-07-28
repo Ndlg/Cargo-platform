@@ -857,6 +857,106 @@ def has_product_title_marker(value: str) -> bool:
     return "【" in text and "】" in text
 
 
+def apply_output_policy(
+    fields: dict[str, Any],
+    *,
+    original_text: str,
+    fallback_quantity_text: str,
+    parser_policy: dict[str, Any] | None,
+) -> dict[str, Any]:
+    policy = parser_policy if isinstance(parser_policy, dict) else {}
+    result = dict(fields)
+
+    cleanup = policy.get("label_cleanup")
+    if isinstance(cleanup, dict):
+        prefixes = sorted(
+            [compact_spaces(value) for value in cleanup.get("strip_prefixes", []) if compact_spaces(value)],
+            key=len,
+            reverse=True,
+        )
+        separators = "".join(
+            compact_spaces(value) for value in cleanup.get("separator_chars", []) if compact_spaces(value)
+        )
+        separator_pattern = rf"[\s{re.escape(separators)}]*" if separators else r"\s*[:：]?\s*"
+        for key in ("sales_attr1", "sales_attr2"):
+            value = compact_spaces(result.get(key))
+            for prefix in prefixes:
+                cleaned = re.sub(rf"^{re.escape(prefix)}{separator_pattern}", "", value, count=1)
+                if cleaned != value:
+                    value = cleaned
+                    break
+            result[key] = value
+
+    size_policy = policy.get("size_normalization")
+    if isinstance(size_policy, dict):
+        sales_attr2 = compact_spaces(result.get("sales_attr2"))
+        if (
+            size_policy.get("enabled") is False
+            or size_policy.get("strip_purchase_hint") is False
+        ) and sales_attr2:
+            hint_match = re.search(
+                rf"(?<!\d){re.escape(sales_attr2)}\s*(?P<hint>[（(][^）)]*[）)])",
+                original_text,
+            )
+            if hint_match:
+                sales_attr2 = f"{sales_attr2}{hint_match.group('hint')}"
+        else:
+            sales_attr2 = normalize_sales_attr2(sales_attr2)
+        result["sales_attr2"] = sales_attr2
+
+    reasons = [reason for reason in text_value(result.get("review_reason")).split(",") if reason]
+    explicit_quantity = quantity_from_text(fallback_quantity_text, original_text)
+    if explicit_quantity is None:
+        quantity_policy = policy.get("quantity")
+        manual_policy = policy.get("manual_label_only")
+        default_quantity = None
+        if not result.get("product") and isinstance(manual_policy, dict):
+            default_quantity = manual_policy.get("default_quantity_if_missing")
+        if default_quantity is None and isinstance(quantity_policy, dict):
+            default_quantity = quantity_policy.get("default_if_missing")
+        if isinstance(default_quantity, int) and not isinstance(default_quantity, bool) and default_quantity > 0:
+            result["quantity"] = default_quantity
+            reasons = [reason for reason in reasons if reason != "quantity"]
+
+    manual_policy = policy.get("manual_label_only")
+    if (
+        not result.get("product")
+        and isinstance(manual_policy, dict)
+        and manual_policy.get("allow_empty_product") is False
+        and "product" not in reasons
+    ):
+        reasons.append("product")
+
+    non_shoe_policy = policy.get("non_shoe")
+    sales_attr2 = compact_spaces(result.get("sales_attr2"))
+    if (
+        sales_attr2
+        and isinstance(non_shoe_policy, dict)
+        and non_shoe_policy.get("allow_non_numeric_sales_attr2") is False
+        and not re.fullmatch(r"\d+(?:\.\d+)?", sales_attr2)
+        and "sales_attr2_non_numeric" not in reasons
+    ):
+        reasons.append("sales_attr2_non_numeric")
+
+    result["review_reason"] = ",".join(reasons)
+    if result.get("status") != "special":
+        result["status"] = "needs_review" if reasons else "draft"
+    result["image_match_text"] = compact_spaces(
+        " ".join(
+            str(part)
+            for part in (
+                result.get("product"),
+                result.get("sales_attr1"),
+                result.get("sales_attr2"),
+                result.get("quantity") or "",
+                result.get("remark"),
+            )
+            if part
+        )
+    )
+    return result
+
+
 def parse_item_text(
     item_text: str,
     *,
@@ -870,13 +970,21 @@ def parse_item_text(
     if special_reason:
         return special_waybill_fields(original_text, special_reason)
 
+    def apply_policy(fields: dict[str, Any]) -> dict[str, Any]:
+        return apply_output_policy(
+            fields,
+            original_text=original_text,
+            fallback_quantity_text=fallback_quantity_text,
+            parser_policy=parser_policy,
+        )
+
     label_only_fields = parse_label_only_attr_text(
         parse_text,
         fallback_quantity_text=fallback_quantity_text,
         remark_text=remark_text,
     )
     if label_only_fields is not None:
-        return label_only_fields
+        return apply_policy(label_only_fields)
 
     two_line_fields = parse_two_line_waybill_text(
         parse_text,
@@ -884,7 +992,7 @@ def parse_item_text(
         remark_text=remark_text,
     )
     if two_line_fields is not None:
-        return two_line_fields
+        return apply_policy(two_line_fields)
 
     leading_attr_size_product_fields = parse_leading_attr_size_product_text(
         parse_text,
@@ -892,7 +1000,7 @@ def parse_item_text(
         remark_text=remark_text,
     )
     if leading_attr_size_product_fields is not None:
-        return leading_attr_size_product_fields
+        return apply_policy(leading_attr_size_product_fields)
 
     trailing_attr_size_product_fields = parse_trailing_attr_size_product_text(
         parse_text,
@@ -900,7 +1008,7 @@ def parse_item_text(
         remark_text=remark_text,
     )
     if trailing_attr_size_product_fields is not None:
-        return trailing_attr_size_product_fields
+        return apply_policy(trailing_attr_size_product_fields)
 
     product_suffix_attr_size_fields = parse_product_suffix_attr_size_text(
         parse_text,
@@ -908,7 +1016,7 @@ def parse_item_text(
         remark_text=remark_text,
     )
     if product_suffix_attr_size_fields is not None:
-        return product_suffix_attr_size_fields
+        return apply_policy(product_suffix_attr_size_fields)
 
     without_quantity, trailing_quantity_text = strip_order_quantity_suffix(original_text)
     quantity = quantity_from_text(trailing_quantity_text, fallback_quantity_text, original_text)
@@ -945,7 +1053,7 @@ def parse_item_text(
         status = "needs_review"
 
     image_match_text = compact_spaces(" ".join(str(part) for part in (product, sales_attr1, sales_attr2, quantity or "", remark) if part))
-    return {
+    return apply_policy({
         "product": product,
         "sales_attr1": sales_attr1,
         "sales_attr2": sales_attr2,
@@ -955,7 +1063,7 @@ def parse_item_text(
         "original_text": original_text,
         "status": status,
         "review_reason": ",".join(missing),
-    }
+    })
 
 
 def block_source_path(block: dict[str, Any]) -> str:

@@ -222,7 +222,7 @@ def test_waybill_parser_service_keeps_each_raw_document_as_one_parent_waybill() 
 def test_current_shoe_rule_pack_declares_structured_item_source() -> None:
     rule_pack = json.loads((REPO_ROOT / "rule-packs" / "current-user-shoes.v1.json").read_text(encoding="utf-8"))
 
-    assert rule_pack["pack"]["version"] == "1.1.0"
+    assert rule_pack["pack"]["version"] == "1.2.0"
     source = rule_pack["parser_policy"]["structured_item_sources"][0]
     assert source["items_path"] == "task.documents[].contents[].data.packageItemDetail[]"
 
@@ -269,10 +269,18 @@ def test_waybill_parser_service_explains_rule_pack_without_business_db() -> None
     assert body["business_db_access"] is False
 
 
-def test_waybill_parser_service_reports_policy_fields_that_are_not_applied() -> None:
+def test_waybill_parser_service_reports_editable_output_policies_as_applied() -> None:
     app = load_parser_service_app()
     rule_pack = structured_rule_pack_payload()
-    rule_pack["parser_policy"]["quantity"] = {"default": 1}
+    rule_pack["parser_policy"].update(
+        {
+            "quantity": {"default_if_missing": 1},
+            "label_cleanup": {"strip_prefixes": ["颜色"], "separator_chars": [":", "："]},
+            "size_normalization": {"enabled": True, "strip_purchase_hint": True},
+            "manual_label_only": {"allow_empty_product": True, "default_quantity_if_missing": 1},
+            "non_shoe": {"allow_non_numeric_sales_attr2": True},
+        }
+    )
     rule_pack["parser_policy"]["multi_item"] = {
         "split_parent_waybill": True,
         "preserve_parent_text": True,
@@ -287,25 +295,126 @@ def test_waybill_parser_service_reports_policy_fields_that_are_not_applied() -> 
         validation = client.post("/api/v1/rule-packs/validate", json={"rule_pack": rule_pack}).json()
         explanation = client.post("/api/v1/rule-packs/explain", json={"rule_pack": rule_pack}).json()
 
-    assert validation["warnings"] == [
-        {"code": "policy_field_not_applied", "field": "parser_policy.quantity"},
-    ]
+    assert validation["warnings"] == []
     assert explanation["policy_usage"] == {
         "selected": ["order_row_parser"],
         "applied": [
+            "label_cleanup",
+            "manual_label_only",
             "multi_item",
+            "non_shoe",
+            "quantity",
             "requires_active_rule_pack",
+            "size_normalization",
             "special_text_keywords",
             "structured_item_sources",
         ],
-        "configured_but_not_applied": [
-            "quantity",
-        ],
+        "configured_but_not_applied": [],
     }
     assert explanation["warnings"] == validation["warnings"]
     assert "special waybill policy" not in explanation["capabilities"]
     assert "special waybill keyword rules" in explanation["capabilities"]
-    assert "quantity normalization" not in explanation["capabilities"]
+    assert "quantity defaults" in explanation["capabilities"]
+
+
+def test_waybill_parser_service_applies_editable_output_policies() -> None:
+    app = load_parser_service_app()
+    rule_pack = valid_rule_pack_payload()
+    rule_pack["parser_policy"].update(
+        {
+            "quantity": {"default_if_missing": 2},
+            "label_cleanup": {
+                "strip_prefixes": ["色号"],
+                "separator_chars": [":", "："],
+                "keep_original_trace": True,
+            },
+            "size_normalization": {"enabled": True, "strip_purchase_hint": True},
+            "manual_label_only": {"allow_empty_product": False, "default_quantity_if_missing": 2},
+            "non_shoe": {"allow_non_numeric_sales_attr2": False},
+        }
+    )
+    samples = [
+        "范33，木村-3M反光，42.5",
+        "颜色：黑色 鞋码：42",
+        "收纳袋，蓝色，均码*1",
+        "范33，色号：黑色，42*1",
+        "范33，黑色，44(偏大一码)*1",
+    ]
+
+    preserve_hint_pack = valid_rule_pack_payload()
+    preserve_hint_pack["parser_policy"].update(
+        {
+            "quantity": {"default_if_missing": 1},
+            "size_normalization": {"enabled": True, "strip_purchase_hint": False},
+            "manual_label_only": {"allow_empty_product": True, "default_quantity_if_missing": 1},
+            "non_shoe": {"allow_non_numeric_sales_attr2": True},
+        }
+    )
+
+    with TestClient(app) as client:
+        parsed = client.post(
+            "/api/v1/parse/batch",
+            json={
+                "task_id": 1,
+                "rule_pack": rule_pack,
+                "waybill_samples": [
+                    {"raw_record_id": index, "parent_sequence": index, "sample_text": text}
+                    for index, text in enumerate(samples, start=1)
+                ],
+            },
+        ).json()
+        preserved = client.post(
+            "/api/v1/parse/batch",
+            json={
+                "task_id": 2,
+                "rule_pack": preserve_hint_pack,
+                "waybill_samples": [
+                    {
+                        "raw_record_id": 10,
+                        "parent_sequence": 1,
+                        "sample_text": "范33，黑色，44(偏大一码)*1",
+                    }
+                ],
+            },
+        ).json()
+
+    rows = parsed["rows"]
+    assert rows[0]["quantity"] == 2
+    assert rows[1]["status"] == "needs_review"
+    assert rows[1]["review_reason"] == "product"
+    assert rows[2]["status"] == "needs_review"
+    assert rows[2]["review_reason"] == "sales_attr2_non_numeric"
+    assert rows[3]["sales_attr1"] == "黑色"
+    assert rows[4]["sales_attr2"] == "44"
+    assert preserved["rows"][0]["sales_attr2"] == "44(偏大一码)"
+
+
+def test_waybill_parser_service_rejects_invalid_editable_output_policies() -> None:
+    app = load_parser_service_app()
+    rule_pack = valid_rule_pack_payload()
+    rule_pack["parser_policy"].update(
+        {
+            "quantity": {"default_if_missing": 0},
+            "label_cleanup": {"strip_prefixes": "颜色", "separator_chars": []},
+            "size_normalization": {"enabled": "yes", "strip_purchase_hint": None},
+            "manual_label_only": {"allow_empty_product": "yes", "default_quantity_if_missing": False},
+            "non_shoe": {"allow_non_numeric_sales_attr2": "yes"},
+        }
+    )
+
+    with TestClient(app) as client:
+        body = client.post("/api/v1/rule-packs/validate", json={"rule_pack": rule_pack}).json()
+
+    assert body["status"] == "invalid"
+    assert body["errors"] == [
+        "parser_policy.quantity.default_if_missing",
+        "parser_policy.label_cleanup.strip_prefixes",
+        "parser_policy.size_normalization.enabled",
+        "parser_policy.size_normalization.strip_purchase_hint",
+        "parser_policy.manual_label_only.allow_empty_product",
+        "parser_policy.manual_label_only.default_quantity_if_missing",
+        "parser_policy.non_shoe.allow_non_numeric_sales_attr2",
+    ]
 
 
 def test_waybill_parser_service_rejects_disabled_required_multi_item_contract() -> None:
