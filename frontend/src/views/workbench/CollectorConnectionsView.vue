@@ -115,6 +115,7 @@ function reconnectReasonLabel(value: unknown): string {
     auth: '采集器凭证失效',
     sqlite: '打印数据库暂时不可读',
     state_save: '本地采集状态保存失败',
+    unexpected: '采集轮询出现未分类异常，正在重试',
   }
   return labels[String(value ?? '')] ?? '无'
 }

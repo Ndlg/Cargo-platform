@@ -530,6 +530,32 @@ def test_collector_state_save_failure_records_reason(tmp_path, monkeypatch) -> N
     assert state.last_reconnect_reason == "state_save"
 
 
+def test_collector_unexpected_poll_error_stays_retryable(monkeypatch) -> None:
+    config = collector_client.CollectorConfig(token="token")
+    state = collector_client.CollectorState()
+    notice = collector_client.ReconnectNotice()
+    warnings: list[tuple[object, ...]] = []
+
+    def fail_poll(*_args, **_kwargs):
+        raise ValueError("bad payload")
+
+    monkeypatch.setattr(notice, "warning", lambda *args: warnings.append(args))
+
+    returned = collector_client.poll_collector_safely(
+        config,
+        state,
+        [],
+        1,
+        None,
+        notice,
+        poll_once=fail_poll,
+    )
+
+    assert returned is config
+    assert state.last_reconnect_reason == "unexpected"
+    assert warnings[0][0] == "unexpected"
+
+
 def test_raw_record_upload_keeps_records_inside_the_capture_task_window() -> None:
     def local_db_time(value: str, offset: timedelta = timedelta()) -> str:
         moment = datetime.fromisoformat(value.replace("Z", "+00:00")) + offset

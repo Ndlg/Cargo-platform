@@ -13,7 +13,7 @@ import socket
 import sqlite3
 import sys
 import time
-from typing import Any
+from typing import Any, Callable
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -593,6 +593,42 @@ def recover_from_http_error(
     return config
 
 
+def poll_collector_safely(
+    config: CollectorConfig,
+    state: CollectorState,
+    adapters: list[PrintDbAdapter],
+    sequence: int,
+    config_path: Path | None,
+    notice: ReconnectNotice,
+    *,
+    poll_once: Callable[..., CollectorConfig] = poll_collector_once,
+) -> CollectorConfig:
+    try:
+        config = poll_once(config, state, adapters, sequence, config_path)
+        notice.reset()
+    except urllib.error.HTTPError as exc:
+        state.last_reconnect_reason = reconnect_reason(exc)
+        config = recover_from_http_error(exc, config, config_path, notice)
+    except NETWORK_RETRY_EXCEPTIONS as exc:
+        state.last_reconnect_reason = reconnect_reason(exc)
+        notice.warning(
+            "network",
+            "collector network was interrupted; staying in background and retrying: %s",
+            exc,
+        )
+    except sqlite3.Error as exc:
+        state.last_reconnect_reason = reconnect_reason(exc)
+        LOGGER.error("collector sqlite error: %s", exc)
+    except Exception as exc:  # noqa: BLE001 - one malformed poll must not kill collection.
+        state.last_reconnect_reason = "unexpected"
+        notice.warning(
+            "unexpected",
+            "collector unexpected error; staying in background and retrying: %s",
+            exc,
+        )
+    return config
+
+
 def save_state_safely(state: CollectorState, state_path: Path, notice: ReconnectNotice) -> None:
     try:
         state.save(state_path)
@@ -938,21 +974,14 @@ def main() -> int:
     reconnect_notice = ReconnectNotice()
     while True:
         try:
-            config = poll_collector_once(config, state, adapters, sequence, config_path)
-            reconnect_notice.reset()
-        except urllib.error.HTTPError as exc:
-            state.last_reconnect_reason = reconnect_reason(exc)
-            config = recover_from_http_error(exc, config, config_path, reconnect_notice)
-        except NETWORK_RETRY_EXCEPTIONS as exc:
-            state.last_reconnect_reason = reconnect_reason(exc)
-            reconnect_notice.warning(
-                "network",
-                "collector network was interrupted; staying in background and retrying: %s",
-                exc,
+            config = poll_collector_safely(
+                config,
+                state,
+                adapters,
+                sequence,
+                config_path,
+                reconnect_notice,
             )
-        except sqlite3.Error as exc:
-            state.last_reconnect_reason = reconnect_reason(exc)
-            LOGGER.error("collector sqlite error: %s", exc)
         finally:
             save_state_safely(state, state_path, reconnect_notice)
 
