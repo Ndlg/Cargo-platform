@@ -5,9 +5,6 @@ import json
 from typing import Any
 
 
-TEXT_SEPARATORS = ("\n", "\t", "|", "/", "\\", ":", "：", ";", "；", ",", "，")
-
-
 def structure_signature(value: Any) -> Any:
     if isinstance(value, dict):
         return {
@@ -25,18 +22,11 @@ def structure_signature(value: Any) -> Any:
                 signatures.append(signature)
         return {"type": "list", "items": signatures}
     if isinstance(value, str):
-        return {
-            "type": "string",
-            "separators": [separator for separator in TEXT_SEPARATORS if separator in value],
-        }
+        return {"type": "scalar"}
     if value is None:
         return {"type": "null"}
-    if isinstance(value, bool):
-        return {"type": "boolean"}
-    if isinstance(value, int):
-        return {"type": "integer"}
-    if isinstance(value, float):
-        return {"type": "number"}
+    if isinstance(value, (bool, int, float)):
+        return {"type": "scalar"}
     return {"type": type(value).__name__}
 
 

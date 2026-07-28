@@ -6,8 +6,14 @@ import re
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
+from service_app.declarative_rules import (
+    parse_declarative_payload,
+    validate_format_profiles,
+)
 from service_app.order_row_engine import (
     ORDER_ROW_DRAFTS_CONTRACT_VERSION,
+    ParentWaybillDraft,
+    business_parent_label,
     draft_rows_from_payload,
     draft_rows_from_standard_detail_values,
     draft_rows_from_waybill_sample,
@@ -18,7 +24,7 @@ from service_app.order_row_engine import (
 app = FastAPI(title="Cargo Platform Waybill Parser", version="0.1.0")
 
 RECOGNITION_RULE_PACK_CONTRACT_VERSION = "recognition_rule_pack_v1"
-SUPPORTED_ORDER_ROW_PARSERS = {"shoe_waybill_v1"}
+SUPPORTED_ORDER_ROW_PARSERS = {"declarative_v1", "shoe_waybill_v1"}
 STRUCTURED_ITEM_FIELD_LISTS = ("product_fields", "spec_fields", "quantity_fields", "remark_fields")
 STRUCTURED_ITEM_PATH_PATTERN = re.compile(r"^[A-Za-z0-9_]+(?:\[\])?(?:\.[A-Za-z0-9_]+(?:\[\])?)*$")
 SELECTED_PARSER_POLICY_FIELDS = {"order_row_parser"}
@@ -31,6 +37,7 @@ APPLIED_PARSER_POLICY_FIELDS = {
     "requires_active_rule_pack",
     "size_normalization",
     "special_text_keywords",
+    "format_profiles",
     "structured_item_sources",
 }
 REQUIRED_MULTI_ITEM_FIELDS = (
@@ -104,6 +111,8 @@ def rule_pack_validation_errors(rule_pack: dict[str, Any] | None) -> list[str]:
         order_row_parser = str(parser_policy.get("order_row_parser") or "").strip()
         if not order_row_parser or order_row_parser not in SUPPORTED_ORDER_ROW_PARSERS:
             errors.append("parser_policy.order_row_parser")
+        if order_row_parser == "declarative_v1":
+            errors.extend(validate_format_profiles(parser_policy.get("format_profiles")))
         if (
             "requires_active_rule_pack" in parser_policy
             and parser_policy.get("requires_active_rule_pack") is not True
@@ -361,6 +370,110 @@ def parse_batch(payload: BatchParseRequest) -> dict[str, Any]:
         }
 
     parser_policy = payload.rule_pack.get("parser_policy")
+    if parser_policy.get("order_row_parser") == "declarative_v1":
+        parents = []
+        diagnostics: list[dict[str, Any]] = []
+        for detail in payload.standard_details:
+            parent_label = business_parent_label(
+                None,
+                detail.standard_detail_id,
+                parent_sequence=detail.parent_sequence,
+            )
+            parents.append(
+                ParentWaybillDraft(
+                    raw_record_id=detail.standard_detail_id,
+                    task_id=payload.task_id,
+                    parent_label=parent_label,
+                    source_component="standard_detail",
+                    source_index=str(detail.standard_detail_id),
+                    child_count=0,
+                    rows=[],
+                )
+            )
+            diagnostics.append(
+                {
+                    "raw_record_id": detail.standard_detail_id,
+                    "parent_label": parent_label,
+                    "fingerprint": "",
+                    "reason": "declarative_raw_payload_required",
+                }
+            )
+        for sample in payload.waybill_samples:
+            parent_label = business_parent_label(
+                sample.source_index,
+                sample.raw_record_id,
+                parent_sequence=sample.parent_sequence,
+            )
+            parents.append(
+                ParentWaybillDraft(
+                    raw_record_id=sample.raw_record_id,
+                    task_id=sample.task_id,
+                    parent_label=parent_label,
+                    source_component=str(sample.source_component or ""),
+                    source_index=str(sample.source_index or ""),
+                    child_count=0,
+                    rows=[],
+                )
+            )
+            diagnostics.append(
+                {
+                    "raw_record_id": sample.raw_record_id,
+                    "parent_label": parent_label,
+                    "fingerprint": "",
+                    "reason": "declarative_raw_payload_required",
+                }
+            )
+        next_parent_sequence = len(parents) + 1
+        profiles = parser_policy["format_profiles"]
+        for record in payload.raw_records:
+            task = record.payload.get("task") if isinstance(record.payload, dict) else None
+            documents = task.get("documents") if isinstance(task, dict) else None
+            document_payloads = []
+            if isinstance(documents, list) and documents:
+                for document in documents:
+                    if isinstance(document, dict):
+                        document_payloads.append(
+                            {
+                                **record.payload,
+                                "task": {**task, "documents": [document]},
+                            }
+                        )
+            if not document_payloads:
+                document_payloads = [record.payload]
+
+            first_parent_sequence = record.parent_sequence or next_parent_sequence
+            for document_offset, document_payload in enumerate(document_payloads):
+                parent, diagnostic = parse_declarative_payload(
+                    document_payload,
+                    profiles,
+                    raw_record_id=record.raw_record_id,
+                    task_id=record.task_id,
+                    source_component=record.source_component,
+                    source_index=record.source_index,
+                    parent_sequence=first_parent_sequence + document_offset,
+                )
+                parents.append(parent)
+                diagnostics.append(diagnostic)
+            next_parent_sequence = first_parent_sequence + len(document_payloads)
+
+        reasons = {diagnostic["reason"] for diagnostic in diagnostics if diagnostic["reason"]}
+        parse_status = (
+            "format_profile_missing"
+            if "format_profile_missing" in reasons
+            else "format_profile_incomplete"
+            if reasons
+            else "parsed"
+        )
+        return {
+            "contract_version": ORDER_ROW_DRAFTS_CONTRACT_VERSION,
+            "task_id": payload.task_id,
+            "status": parse_status,
+            "summary": order_row_draft_summary(parents),
+            "diagnostics": diagnostics,
+            "parents": [parent.as_dict() for parent in parents],
+            "rows": [row.as_dict() for parent in parents for row in parent.rows],
+        }
+
     parents = [
         draft_rows_from_standard_detail_values(
             detail.field_values,

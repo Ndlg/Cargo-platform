@@ -174,11 +174,13 @@ def test_fingerprint_is_value_stable_but_changes_with_structure(tmp_path: Path) 
     with TestClient(app) as client:
         first = client.post("/api/v1/recognize", json=raw_request("范74")).json()
         second = client.post("/api/v1/recognize", json=raw_request("秒45")).json()
+        punctuation_value = client.post("/api/v1/recognize", json=raw_request("范74/联名")).json()
         changed = raw_request()
         changed["payload"]["task"]["documents"][0]["contents"][0]["data"]["color"] = "白色"
         third = client.post("/api/v1/recognize", json=changed).json()
 
     assert first["fingerprint"] == second["fingerprint"]
+    assert first["fingerprint"] == punctuation_value["fingerprint"]
     assert first["fingerprint"] != third["fingerprint"]
 
 

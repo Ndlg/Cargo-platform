@@ -116,8 +116,8 @@ def create_app(
 
     @app.post("/api/v1/recognize")
     def recognize(request: RecognizeRequest) -> dict[str, Any]:
+        fingerprint = structural_fingerprint(request.payload, request.source_component)
         sanitized = sanitize_payload(request.payload)
-        fingerprint = structural_fingerprint(sanitized, request.source_component)
         payload_hash = sha256(
             json.dumps(sanitized, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
