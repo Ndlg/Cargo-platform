@@ -9,6 +9,7 @@ from app.api.routes.collector_runtime import (
     RECOGNITION_EXCEPTION_SHEET_TITLE,
     append_recognition_exception_sheet,
     append_xlsx_rows,
+    product_sku_linking_export_row,
     recognition_exception_export_rows,
     recognition_report_export_rows,
     recognition_report_headers,
@@ -18,6 +19,23 @@ from app.api.routes.collector_runtime import (
     recognition_rows_from_product_sku_linking_results,
     report_quantity_value,
 )
+
+
+def test_report_preview_keeps_matched_rule_id_for_exception_repair() -> None:
+    row = product_sku_linking_export_row(
+        {
+            "match_status": "sku_ambiguous",
+            "matched_rule": {"id": 35},
+            "standard_fields": {"product": "秒45 按跑", "sales_attr1": "Cloudmonster Void灰色"},
+        },
+        source_identifiers={"detail_id": None},
+        candidate_key_fallback="order-row:1",
+        detail_number=1,
+        item_index=1,
+        item_count=1,
+    )
+
+    assert row["rule_id"] == 35
 
 
 def test_export_contract_keeps_matched_rows_with_or_without_images() -> None:

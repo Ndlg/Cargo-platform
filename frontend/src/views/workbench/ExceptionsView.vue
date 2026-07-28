@@ -252,10 +252,10 @@ function repairQuery(row: RecognitionPreviewRow): Record<string, string> {
   const query: Record<string, string> = {
     from: 'exceptions',
     status: row.status,
-    detail_id: String(row.detail_id),
     source_label: row.source_label,
   }
 
+  if (row.detail_id) query.detail_id = String(row.detail_id)
   if (selectedTaskId.value) query.task_id = String(selectedTaskId.value)
   if (row.product_id) query.product_id = String(row.product_id)
   if (row.product_text) query.product_text = row.product_text

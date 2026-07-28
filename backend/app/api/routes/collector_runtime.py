@@ -1218,6 +1218,7 @@ def product_sku_linking_export_row(
         or text_value(payload.get("match_text"))
     )
     stall_payload = payload.get("stall") if isinstance(payload.get("stall"), dict) else {}
+    matched_rule = payload.get("matched_rule") if isinstance(payload.get("matched_rule"), dict) else {}
     stall_id = int_value(payload.get("stall_id")) or int_value(stall_payload.get("id"))
     stall_name = text_value(payload.get("stall_name")) or text_value(stall_payload.get("name"))
 
@@ -1240,6 +1241,7 @@ def product_sku_linking_export_row(
         "image_match_text": image_match_text,
         "product_name": product_name,
         "product_id": int_value(payload.get("product_id")),
+        "rule_id": int_value(matched_rule.get("id")),
         "stall_id": stall_id,
         "stall_name": stall_name,
         "sku_id": int_value(payload.get("sku_id")),
