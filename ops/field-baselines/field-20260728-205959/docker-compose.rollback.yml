@@ -1,0 +1,14 @@
+services:
+  backend:
+    image: cargo-platform-backend:field-pre-stage17-20260728-205959
+    build: !reset null
+    environment:
+      APP_VERSION: d131010
+
+  waybill-parser:
+    image: cargo-platform-waybill-parser:field-pre-stage17-20260728-205959
+    build: !reset null
+
+  tenant-ui:
+    image: cargo-platform-tenant-ui:field-pre-stage17-20260728-205959
+    build: !reset null

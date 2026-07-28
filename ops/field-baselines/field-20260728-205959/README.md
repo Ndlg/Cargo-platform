@@ -40,21 +40,8 @@
 
 ## 即时回退
 
-仅保留本次升级前的一套现场回退容器：
-
-- `cargo-platform-field-rollback-20260728-205959-ui`
-- `cargo-platform-field-rollback-20260728-205959-backend`
-- `cargo-platform-field-rollback-20260728-205959-parser`
-
-回退命令不会删除或重建 `cargo-platform-data`：
+升级前的三个镜像保留为固定标签，不保留停止状态的空壳容器。回退命令只重建三个应用容器，不删除或重建 `cargo-platform-data`：
 
 ```powershell
-docker stop cargo-platform-tenant-ui cargo-platform-backend cargo-platform-waybill-parser
-docker rename cargo-platform-tenant-ui cargo-platform-tenant-ui-rejected-field-20260728-205959
-docker rename cargo-platform-backend cargo-platform-backend-rejected-field-20260728-205959
-docker rename cargo-platform-waybill-parser cargo-platform-waybill-parser-rejected-field-20260728-205959
-docker rename cargo-platform-field-rollback-20260728-205959-ui cargo-platform-tenant-ui
-docker rename cargo-platform-field-rollback-20260728-205959-backend cargo-platform-backend
-docker rename cargo-platform-field-rollback-20260728-205959-parser cargo-platform-waybill-parser
-docker start cargo-platform-waybill-parser cargo-platform-backend cargo-platform-tenant-ui
+docker compose -f docker-compose.yml -f ops/field-baselines/field-20260728-205959/docker-compose.rollback.yml up -d --no-deps waybill-parser backend tenant-ui
 ```
