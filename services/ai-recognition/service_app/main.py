@@ -22,7 +22,7 @@ ApprovalSender = Callable[[dict[str, Any], str], dict[str, Any]]
 
 
 def default_approval_sender(platform_url: str) -> ApprovalSender:
-    endpoint = f"{platform_url.rstrip('/')}/api/internal/ai-recognition/approve"
+    endpoint = f"{platform_url.rstrip('/')}/internal/ai-recognition/approve"
 
     def send(payload: dict[str, Any], token: str) -> dict[str, Any]:
         response = httpx.post(

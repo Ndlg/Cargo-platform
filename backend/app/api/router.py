@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from app.api.routes import (
+    ai_recognition,
     auth,
     collector_runtime,
     export_fields,
@@ -16,6 +17,7 @@ from app.api.routes import (
 
 
 api_router = APIRouter()
+api_router.include_router(ai_recognition.router)
 api_router.include_router(health.router, tags=["health"])
 api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
 api_router.include_router(collector_runtime.router, tags=["collector-runtime"])

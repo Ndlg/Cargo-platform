@@ -27,6 +27,8 @@ class Settings(BaseModel):
     access_token_expire_minutes: int = 480
     auto_create_tables: bool = False
     waybill_parser_url: str = ""
+    ai_recognition_enabled: bool = False
+    ai_recognition_internal_token: str = ""
 
 
 def _split_csv(value: str) -> list[str]:
@@ -49,4 +51,6 @@ def get_settings() -> Settings:
         access_token_expire_minutes=int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "480")),
         auto_create_tables=os.getenv("AUTO_CREATE_TABLES", "false").lower() in {"1", "true", "yes"},
         waybill_parser_url=os.getenv("WAYBILL_PARSER_URL", "").strip().rstrip("/"),
+        ai_recognition_enabled=os.getenv("AI_RECOGNITION_ENABLED", "false").lower() in {"1", "true", "yes"},
+        ai_recognition_internal_token=os.getenv("AI_RECOGNITION_INTERNAL_TOKEN", "").strip(),
     )

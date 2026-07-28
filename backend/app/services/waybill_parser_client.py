@@ -70,15 +70,17 @@ def preview_order_row_drafts_with_service(
 
 def parse_order_row_drafts_with_service(
     *,
+    workspace_id: int | None = None,
     task_id: int,
     standard_details: list[dict[str, Any]],
     raw_records: list[dict[str, Any]],
     waybill_samples: list[dict[str, Any]] | None = None,
-    rule_pack: dict[str, Any],
+    rule_pack: dict[str, Any] | None,
 ) -> dict[str, Any]:
     payload = post_waybill_parser_service(
         "/api/v1/parse/batch",
         {
+            "workspace_id": workspace_id,
             "task_id": task_id,
             "standard_details": standard_details,
             "raw_records": raw_records,
