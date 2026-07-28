@@ -271,12 +271,7 @@ def test_product_matching_scoped_preview_requires_active_rule_pack() -> None:
             },
         )
 
-        assert apply_response.status_code == 200
-        apply_body = apply_response.json()
-        assert apply_body["status"] == "rule_pack_missing"
-        assert apply_body["rule_pack_required"] is True
-        assert apply_body["applied_item_count"] == 0
-        assert apply_body["summary"]["total"] == 0
+        assert apply_response.status_code == 404
 
 
 def test_product_matching_preview_requires_explicit_batch_or_rows() -> None:
@@ -496,7 +491,7 @@ def test_report_preview_consumes_clean_order_rows_not_stale_product_matching_pay
         assert row["quantity_text"] == "1"
 
 
-def test_product_matching_rule_preview_save_apply_and_disable() -> None:
+def test_product_matching_rule_preview_save_and_disable() -> None:
     with TestClient(app) as client:
         headers = _headers(client)
         product_id, sku_id, image_id, detail_id = _seed_assets_and_detail()
@@ -593,43 +588,10 @@ def test_product_matching_rule_preview_save_apply_and_disable() -> None:
         assert revise_response.status_code == 200
         assert revise_response.json()["rule"]["revision"] == saved_rule["revision"] + 1
 
-        empty_selected_apply = client.post(
-            "/api/v1/product-sku-linking/apply",
-            headers=headers,
-            json={
-                "scope": {"scope_type": "selected_records", "standard_detail_ids": [], "confirmed_by_user": True},
-                "include_enabled_rules": True,
-            },
-        )
-        assert empty_selected_apply.status_code == 200
-        empty_apply_body = empty_selected_apply.json()
-        assert empty_apply_body["summary"]["total"] == 0
-        assert empty_apply_body["applied_detail_count"] == 0
-        assert empty_apply_body["applied_item_count"] == 0
-
         with SessionLocal() as db:
             detail = db.get(StandardDetail, detail_id)
             assert detail is not None
             assert "product_sku_linking_results" not in detail.field_values
-
-        apply_response = client.post(
-            "/api/v1/product-sku-linking/apply",
-            headers=headers,
-            json={"scope": scope, "rule_ids": [saved_rule["id"]], "include_enabled_rules": True},
-        )
-        assert apply_response.status_code == 200
-        assert apply_response.json()["applied_detail_count"] == 1
-        assert apply_response.json()["summary"]["matched"] == 1
-
-        with SessionLocal() as db:
-            detail = db.get(StandardDetail, detail_id)
-            assert detail is not None
-            results = detail.field_values["product_sku_linking_results"]
-            assert results[0]["contract"] == "product-sku-linking-results-v1"
-            assert results[0]["product"] == "帆布鞋"
-            assert results[0]["sku"] == "黑色"
-            assert results[0]["image_asset_id"] == image_id
-            assert results[0]["match_status"] == "matched"
 
         disable_response = client.patch(
             f"/api/v1/product-sku-linking/rules/{saved_rule['id']}",
@@ -850,23 +812,10 @@ def test_product_matching_consumes_order_row_drafts_and_export_uses_clean_result
         assert saved_preview["summary"]["matched"] == 2
         assert saved_preview["samples"]["matched"][0]["matched_linking_rule"]["id"] == saved_rule_id
 
-        apply_response = client.post(
-            "/api/v1/product-sku-linking/apply",
-            headers=headers,
-            json={"scope": scope, "rule_ids": [saved_rule_id], "include_enabled_rules": True},
-        )
-        assert apply_response.status_code == 200
-        body = apply_response.json()
-        assert body["applied_standard_detail_count"] == 1
-        assert body["applied_item_count"] == 2
-
         with SessionLocal() as db:
             detail = db.get(StandardDetail, detail_id)
             assert detail is not None
-            payloads = detail.field_values["product_sku_linking_results"]
-            assert len(payloads) == 2
-            assert payloads[0]["standard_fields"]["sales_attr1"] == "低帮黑白"
-            assert payloads[1]["standard_fields"]["sales_attr2"] == "36"
+            assert "product_sku_linking_results" not in detail.field_values
 
         export_preview = client.get(f"/api/v1/collector-control/tasks/{task_id}/recognition-preview", headers=headers)
         assert export_preview.status_code == 200
