@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
@@ -29,8 +28,6 @@ from app.services.order_row_reader import (
 )
 from app.services.product_sku_linking import (
     PRODUCT_SKU_LINKING_FIELDS,
-    PRODUCT_SKU_LINKING_RESULTS_KEY,
-    exportable_product_sku_linking_result,
     int_value,
     normalize_five_fields,
     product_sku_linking_contract,
@@ -129,16 +126,6 @@ class ProductMatchingRuleUpdateRequest(BaseModel):
     revision_note: str | None = None
     priority: int | None = None
     is_enabled: bool | None = None
-
-
-class ProductSkuLinkingApplyRequest(BaseModel):
-    scope: ProductMatchingScope
-    rule_ids: list[int] = Field(default_factory=list)
-    include_enabled_rules: bool = True
-
-
-def utc_now_text() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def tenant_id_for_workspace(db: Session, workspace_id: int) -> int | None:
@@ -638,112 +625,3 @@ def delete_product_matching_rule(
     rule.is_enabled = False
     rule.updated_by = current_user.id
     db.commit()
-
-
-@router.post("/apply")
-def apply_product_sku_linking_results(
-    payload: ProductSkuLinkingApplyRequest,
-    db: Session = Depends(get_db),
-    current_user: CurrentUser = Depends(require_write),
-    workspace_id: int = Depends(get_workspace_id),
-) -> dict[str, Any]:
-    if active_recognition_rule_pack(db, workspace_id=workspace_id) is None:
-        response = product_matching_rule_pack_missing_response(scope=payload.scope)
-        response.update(
-            {
-                "applied_detail_count": 0,
-                "applied_standard_detail_count": 0,
-                "applied_item_count": 0,
-            }
-        )
-        return response
-    if payload.scope is None or payload.scope.scope_type == "global":
-        response = product_matching_scope_required_response(scope=payload.scope)
-        response.update(
-            {
-                "applied_detail_count": 0,
-                "applied_standard_detail_count": 0,
-                "applied_item_count": 0,
-            }
-        )
-        return response
-
-    rows, sources = rows_for_preview(
-        db,
-        workspace_id=workspace_id,
-        payload=ProductSkuLinkingPreviewRequest(scope=payload.scope),
-    )
-    rules = saved_rule_payloads(
-        db,
-        workspace_id=workspace_id,
-        rule_ids=payload.rule_ids,
-        include_disabled=not payload.include_enabled_rules,
-    )
-    if payload.include_enabled_rules and not payload.rule_ids:
-        rules = saved_rule_payloads(db, workspace_id=workspace_id)
-    preview = preview_with_rules(db, workspace_id=workspace_id, rows=rows, rules=rules)
-    rule_ids = [int(rule["id"]) for rule in rules if isinstance(rule.get("id"), int)]
-    applied_detail_count = 0
-    applied_item_count = 0
-    grouped_order_detail_results: dict[int, dict[str, Any]] = {}
-
-    for source, row in zip(sources, preview["rows"], strict=False):
-        payload_row = exportable_product_sku_linking_result(row)
-        payload_row["item_index"] = int(source.get("item_index") or 1)
-        payload_row["item_count"] = int(source.get("item_count") or 1)
-        payload_row["product_matching_rule_ids"] = rule_ids
-        payload_row["product_matching_applied_at"] = utc_now_text()
-
-        if source.get("source_type") == "standard_detail":
-            detail = source.get("detail")
-            if not isinstance(detail, StandardDetail):
-                continue
-            values = dict(detail.field_values or {})
-            values[PRODUCT_SKU_LINKING_RESULTS_KEY] = [payload_row]
-            values["product_matching_applied_at"] = payload_row["product_matching_applied_at"]
-            values["product_matching_rule_ids"] = rule_ids
-            detail.field_values = values
-            detail.updated_by = current_user.id
-            applied_detail_count += 1
-            applied_item_count += 1
-            continue
-
-        if source.get("source_type") == "order_row_draft":
-            detail = source.get("standard_detail")
-            if not isinstance(detail, StandardDetail):
-                applied_item_count += 1
-                continue
-            payload_row["standard_detail_id"] = detail.id
-            payload_row["raw_record_id"] = source.get("raw_record_id")
-            payload_row["source_label"] = source.get("child_label")
-            grouped = grouped_order_detail_results.setdefault(
-                detail.id,
-                {
-                    "detail": detail,
-                    "rows": [],
-                    "applied_at": payload_row["product_matching_applied_at"],
-                },
-            )
-            grouped["rows"].append(payload_row)
-            applied_item_count += 1
-            continue
-
-    for grouped in grouped_order_detail_results.values():
-        detail = grouped["detail"]
-        values = dict(detail.field_values or {})
-        values[PRODUCT_SKU_LINKING_RESULTS_KEY] = grouped["rows"]
-        values["product_matching_applied_at"] = grouped["applied_at"]
-        values["product_matching_rule_ids"] = rule_ids
-        detail.field_values = values
-        detail.updated_by = current_user.id
-        applied_detail_count += 1
-
-    db.commit()
-    return {
-        "contract": product_sku_linking_contract(),
-        "applied_detail_count": applied_detail_count,
-        "applied_standard_detail_count": applied_detail_count,
-        "applied_item_count": applied_item_count,
-        "summary": preview["summary"],
-        "samples": preview["samples"],
-    }

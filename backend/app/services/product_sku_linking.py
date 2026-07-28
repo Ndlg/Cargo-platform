@@ -712,7 +712,6 @@ def product_sku_linking_contract() -> dict[str, Any]:
             "PATCH /product-sku-linking/rules/{rule_id}",
             "DELETE /product-sku-linking/rules/{rule_id}",
             "POST /product-sku-linking/preview",
-            "POST /product-sku-linking/apply",
         ],
         "forbidden_inputs": [
             "raw_capture_record",

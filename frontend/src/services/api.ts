@@ -242,14 +242,6 @@ export interface ProductMatchingPreviewResponse extends ApiRecord {
   }
 }
 
-export interface ProductMatchingApplyResponse extends ApiRecord {
-  applied_detail_count: number
-  applied_standard_detail_count?: number
-  applied_item_count?: number
-  summary: Record<string, number>
-  samples: Record<string, ProductMatchingPreviewRow[]>
-}
-
 export interface WaybillTextBlock {
   block_id: string
   text: string
@@ -688,17 +680,6 @@ export function updateProductMatchingRule(
 
 export function deleteProductMatchingRule(ruleId: number): Promise<void> {
   return deleteRecord(`/product-sku-linking/rules/${ruleId}`)
-}
-
-export function applyProductMatching(payload: {
-  scope: ProductMatchingScope
-  rule_ids?: number[]
-  include_enabled_rules?: boolean
-}): Promise<ProductMatchingApplyResponse> {
-  return request<ProductMatchingApplyResponse>('/product-sku-linking/apply', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  })
 }
 
 export function getCaptureTaskRecognitionPreview(taskId: number): Promise<RecognitionPreviewResponse> {

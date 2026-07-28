@@ -472,6 +472,7 @@ def test_product_sku_linking_contract_excludes_waybill_internals() -> None:
     assert "source_five_field_samples" in contract["rule_requirements"]
     assert "preview_match_counts" in contract["rule_requirements"]
     assert "can_disable_or_revise" in contract["rule_requirements"]
+    assert "POST /product-sku-linking/apply" not in contract["minimal_endpoints"]
     assert "raw_capture_record" in contract["forbidden_inputs"]
     assert "waybill_similarity" in contract["forbidden_inputs"]
     assert "same_or_similar_waybill_auto_grouping" in contract["forbidden_methods"]
