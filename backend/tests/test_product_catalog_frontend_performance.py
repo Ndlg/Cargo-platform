@@ -61,6 +61,22 @@ def test_product_matching_page_does_not_duplicate_the_exception_checklist() -> N
     assert "v-if=\"inboundFromExceptions\"" in source
 
 
+def test_exception_actions_have_explicit_status_routes_without_default_jump() -> None:
+    source = EXCEPTIONS_VIEW.read_text(encoding="utf-8")
+    matching_source = PRODUCT_MATCHING_VIEW.read_text(encoding="utf-8")
+
+    assert "sku_ambiguous" in source
+    assert "指定 SKU 匹配" in source
+    assert "暂无处理入口" in source
+    assert "return '查看识别结果'" not in source
+    assert "path: '/admin/product-matching'" in source
+    assert "path: '/admin/products'" in source
+    assert "path: '/waybill-batches'" in source
+    assert "route.query.rule_id" in matching_source
+    assert "route.query.focus" in matching_source
+    assert "sku-section" in matching_source
+
+
 def test_collector_connection_ui_hides_raw_rowid_label() -> None:
     source = COLLECTOR_CONNECTIONS_VIEW.read_text(encoding="utf-8")
     template = source.split("<template>", 1)[1]
@@ -97,6 +113,6 @@ def test_matching_repairs_route_to_the_responsible_screen_without_heavy_task_cou
 
     assert "应用规则到本轮" not in matching_source
     assert "path: '/admin/products'" in exceptions_source
-    assert "if (row.status === 'sku_unmatched') return '维护 SKU'" in exceptions_source
+    assert "actionLabel: '维护 SKU'" in exceptions_source
     for view in (PRODUCT_MATCHING_VIEW, EXCEPTIONS_VIEW, EXPORT_CENTER_VIEW, EXPORT_HEADER_VIEW):
         assert "include_waybill_counts=false" in view.read_text(encoding="utf-8")

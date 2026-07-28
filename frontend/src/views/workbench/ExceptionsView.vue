@@ -15,11 +15,82 @@ import { useSessionStore } from '../../stores/session'
 type ExceptionStatus =
   | 'product_unmatched'
   | 'sku_unmatched'
+  | 'sku_ambiguous'
   | 'image_unmatched'
   | 'conflict'
   | 'pending'
   | 'unmatched'
   | 'special'
+
+type RepairTarget = 'product-matching' | 'product-assets' | 'order-rows' | null
+
+type ExceptionDefinition = {
+  label: string
+  advice: string
+  actionLabel: string
+  target: RepairTarget
+}
+
+const exceptionDefinitions: Record<ExceptionStatus, ExceptionDefinition> = {
+  product_unmatched: {
+    label: '商品未命中',
+    advice: '补商品关键词或商品匹配规则',
+    actionLabel: '补商品规则',
+    target: 'product-matching',
+  },
+  sku_unmatched: {
+    label: 'SKU未命中',
+    advice: '维护当前商品的 SKU 关键词、绑定和规格字段',
+    actionLabel: '维护 SKU',
+    target: 'product-assets',
+  },
+  sku_ambiguous: {
+    label: 'SKU多候选',
+    advice: '为当前商品行指定可复用的 SKU 匹配规则',
+    actionLabel: '指定 SKU 匹配',
+    target: 'product-matching',
+  },
+  image_unmatched: {
+    label: '图片未命中',
+    advice: '为当前商品或 SKU 补图片',
+    actionLabel: '补 SKU 图片',
+    target: 'product-assets',
+  },
+  conflict: {
+    label: '冲突',
+    advice: '检查并修订同时命中的匹配规则',
+    actionLabel: '检查冲突规则',
+    target: 'product-matching',
+  },
+  pending: {
+    label: '待处理',
+    advice: '检查当前采集轮次的面单解析结果',
+    actionLabel: '检查解析结果',
+    target: 'order-rows',
+  },
+  unmatched: {
+    label: '未匹配',
+    advice: '补当前商品行的商品匹配规则',
+    actionLabel: '补商品规则',
+    target: 'product-matching',
+  },
+  special: {
+    label: '特殊单',
+    advice: '特殊单无需处理',
+    actionLabel: '',
+    target: null,
+  },
+}
+
+const exceptionFilterStatuses: ExceptionStatus[] = [
+  'product_unmatched',
+  'sku_unmatched',
+  'sku_ambiguous',
+  'image_unmatched',
+  'conflict',
+  'pending',
+  'unmatched',
+]
 
 const router = useRouter()
 const route = useRoute()
@@ -52,44 +123,12 @@ const visibleExceptionRows = computed(() => {
   if (statusFilter.value === 'all') return exceptionRows.value
   return exceptionRows.value.filter((row) => row.status === statusFilter.value)
 })
-const exceptionTypes = computed(() => [
-  {
-    key: 'product_unmatched' as ExceptionStatus,
-    label: '商品未命中',
-    count: exceptionCountByStatus('product_unmatched'),
-    action: '让管理员补商品规则或确认商品库关键词',
-  },
-  {
-    key: 'sku_unmatched' as ExceptionStatus,
-    label: 'SKU未命中',
-    count: exceptionCountByStatus('sku_unmatched'),
-    action: '补 SKU 关键词、SKU 绑定或规格匹配字段',
-  },
-  {
-    key: 'image_unmatched' as ExceptionStatus,
-    label: '图片未命中',
-    count: exceptionCountByStatus('image_unmatched'),
-    action: '补 SKU 图片或图片资产绑定',
-  },
-  {
-    key: 'conflict' as ExceptionStatus,
-    label: '冲突',
-    count: exceptionCountByStatus('conflict'),
-    action: '让管理员检查同时命中的商品规则或 SKU',
-  },
-  {
-    key: 'pending' as ExceptionStatus,
-    label: '待处理',
-    count: exceptionCountByStatus('pending'),
-    action: '回面单解析查看规则包解析结果，必要时更新识别规则包',
-  },
-  {
-    key: 'unmatched' as ExceptionStatus,
-    label: '未匹配',
-    count: exceptionCountByStatus('unmatched'),
-    action: '让管理员检查商品规则覆盖',
-  },
-])
+const exceptionTypes = computed(() => exceptionFilterStatuses.map((status) => ({
+  key: status,
+  label: exceptionDefinitions[status].label,
+  count: exceptionCountByStatus(status),
+  action: exceptionDefinitions[status].advice,
+})))
 
 function formatTaskTime(value?: string | null): string {
   if (!value) return '-'
@@ -168,22 +207,20 @@ function exceptionCountByStatus(status: ExceptionStatus): number {
 }
 
 function statusLabel(status: string): string {
-  if (status === 'product_unmatched') return '商品未命中'
-  if (status === 'sku_unmatched') return 'SKU未命中'
-  if (status === 'image_unmatched') return '图片未命中'
-  if (status === 'conflict') return '冲突'
-  if (status === 'pending') return '待处理'
-  if (status === 'unmatched') return '未匹配'
-  if (status === 'special') return '特殊单'
   if (status === 'matched') return '已匹配'
-  return status || '-'
+  return (exceptionDefinition(status)?.label ?? status) || '-'
 }
 
 function statusTag(status: string): 'success' | 'warning' | 'danger' | 'info' {
   if (status === 'matched') return 'success'
   if (status === 'conflict') return 'danger'
   if (status === 'special') return 'info'
-  if (status === 'product_unmatched' || status === 'sku_unmatched' || status === 'image_unmatched') return 'warning'
+  if (
+    status === 'product_unmatched'
+    || status === 'sku_unmatched'
+    || status === 'sku_ambiguous'
+    || status === 'image_unmatched'
+  ) return 'warning'
   return 'info'
 }
 
@@ -200,24 +237,15 @@ function valueText(value: unknown, fallback = '-'): string {
 }
 
 function exceptionAdvice(row: RecognitionPreviewRow): string {
-  if (row.status === 'product_unmatched') return '让管理员补商品资产关键词或学习记录'
-  if (row.status === 'sku_unmatched') return '补 SKU 关键词、SKU 绑定或规格匹配字段'
-  if (row.status === 'image_unmatched') return '补 SKU 图片或图片资产绑定'
-  if (row.status === 'conflict') return '检查同时命中的商品资产、SKU 或学习记录'
-  if (row.status === 'pending') return '回面单解析查看规则包解析结果'
-  if (row.status === 'unmatched') return '让管理员检查商品规则覆盖'
-  if (row.status === 'special') return '特殊单不参与商品、SKU、图片匹配'
-  return '查看订单行和匹配结果'
+  return exceptionDefinition(row.status)?.advice ?? '暂无处理入口'
 }
 
 function repairTarget(row: RecognitionPreviewRow): string {
-  if (row.status === 'product_unmatched') return '补商品匹配'
-  if (row.status === 'sku_unmatched') return '维护 SKU'
-  if (row.status === 'image_unmatched') return '维护 SKU 图片'
-  if (row.status === 'conflict') return '处理匹配冲突'
-  if (row.status === 'pending') return '查看订单行'
-  if (row.status === 'special') return '无需处理'
-  return '查看识别结果'
+  return exceptionDefinition(row.status)?.actionLabel ?? ''
+}
+
+function exceptionDefinition(status: string): ExceptionDefinition | null {
+  return exceptionDefinitions[status as ExceptionStatus] ?? null
 }
 
 function repairQuery(row: RecognitionPreviewRow): Record<string, string> {
@@ -237,43 +265,43 @@ function repairQuery(row: RecognitionPreviewRow): Record<string, string> {
   if (row.remark_text) query.remark = row.remark_text
   if (row.image_match_text) query.image_match_text = row.image_match_text
   if (row.reason) query.reason = row.reason
+  if (row.rule_id) query.rule_id = String(row.rule_id)
+  if (row.status === 'sku_ambiguous') query.focus = 'sku'
   return query
 }
 
 function repairRoute(row: RecognitionPreviewRow) {
-  if (row.status === 'pending') {
+  const definition = exceptionDefinition(row.status)
+  if (!definition?.target) return null
+
+  if (definition.target === 'order-rows') {
     return {
       path: '/waybill-batches',
       query: selectedTaskId.value ? { task_id: String(selectedTaskId.value) } : {},
     }
   }
 
-  if (
-    (row.status === 'sku_unmatched' || row.status === 'image_unmatched')
-    && row.product_id
-  ) {
+  if (definition.target === 'product-assets') {
+    if (!row.product_id) return null
     return {
       path: '/admin/products',
       query: { product_id: String(row.product_id) },
     }
   }
 
-  if (
-    row.status === 'product_unmatched'
-    || row.status === 'sku_unmatched'
-    || row.status === 'image_unmatched'
-    || row.status === 'conflict'
-  ) {
+  if (definition.target === 'product-matching') {
     return {
       path: '/admin/product-matching',
       query: repairQuery(row),
     }
   }
 
-  return {
-    path: '/admin/product-matching',
-    query: repairQuery(row),
-  }
+  return null
+}
+
+function goToRepair(row: RecognitionPreviewRow) {
+  const target = repairRoute(row)
+  if (target) void router.push(target)
 }
 
 async function loadRecognitionPreview() {
@@ -503,9 +531,10 @@ onMounted(load)
       </el-table-column>
       <el-table-column label="处理" width="160" fixed="right">
         <template #default="{ row }">
-          <el-button size="small" type="primary" plain @click="router.push(repairRoute(row))">
+          <el-button v-if="repairRoute(row)" size="small" type="primary" plain @click="goToRepair(row)">
             {{ repairTarget(row) }}
           </el-button>
+          <span v-else class="muted-line">暂无处理入口</span>
         </template>
       </el-table-column>
     </el-table>

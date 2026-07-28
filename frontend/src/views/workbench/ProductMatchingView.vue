@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { Check, Delete, Edit, Refresh } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -131,6 +131,7 @@ const imagesLoaded = ref(false)
 const error = ref('')
 const selectedTaskId = ref<number | null>(null)
 const editingRuleId = ref<number | null>(null)
+const skuSection = ref<HTMLElement | null>(null)
 const draftSourceSamples = ref<Partial<Record<StandardWaybillFieldCode, string>>[] | null>(null)
 const ruleSearch = ref('')
 const ruleStatusFilter = ref<'all' | 'enabled' | 'disabled'>('all')
@@ -329,6 +330,19 @@ function applyInboundQueryContext() {
   }
 }
 
+function applyInboundRuleContext() {
+  const ruleId = queryPositiveInt(route.query.rule_id)
+  if (!ruleId) return
+  const rule = rules.value.find((item) => item.id === ruleId)
+  if (rule) editRule(rule)
+}
+
+async function focusInboundSection() {
+  if (queryText(route.query.focus) !== 'sku') return
+  await nextTick()
+  skuSection.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
 function normalizeInboundPreviewRow(
   row: Partial<Record<StandardWaybillFieldCode, string>>,
 ): Partial<Record<StandardWaybillFieldCode, string>> {
@@ -471,10 +485,12 @@ async function load() {
     ])
     captureTasks.value = taskRecords as CaptureTaskRecord[]
     rules.value = ruleResponse.rules
+    applyInboundRuleContext()
     applyInboundQueryContext()
     await loadProducts(productSearchKeyword.value)
     if (!selectedTaskId.value && sortedCaptureTasks.value[0]) selectedTaskId.value = sortedCaptureTasks.value[0].id
     if (form.product_id) await loadSelectedProductSkus(form.product_id)
+    await focusInboundSection()
   } catch (err) {
     error.value = err instanceof Error ? err.message : '商品匹配配置加载失败'
   } finally {
@@ -682,8 +698,10 @@ watch(
 
 watch(
   () => route.query,
-  () => {
+  async () => {
+    applyInboundRuleContext()
     applyInboundQueryContext()
+    await focusInboundSection()
   },
 )
 
@@ -796,7 +814,7 @@ onMounted(load)
           </el-radio-group>
         </section>
 
-        <section class="form-section">
+        <section ref="skuSection" class="form-section sku-section">
           <h2>4. 关联 SKU（可选）</h2>
           <p>不选具体 SKU 时，会按下方 SKU 匹配字段自动匹配商品下的 SKU。</p>
           <el-select
