@@ -47,6 +47,7 @@ storage/sku-import-preview/
 storage/*-review.zip
 storage/workspaces/*
 !storage/workspaces/.gitkeep
+ops/validation-stages/*/runtime/
 
 # OS
 .DS_Store
