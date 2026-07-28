@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>本地 AI 面单识别会话</title>
+    <style>
+      body { margin: 0; color: #1f2937; background: #f3f4f6; font: 14px/1.5 system-ui, sans-serif; }
+      main { max-width: 1200px; margin: 32px auto; padding: 0 20px; }
+      header, article { background: white; border: 1px solid #e5e7eb; border-radius: 10px; padding: 20px; margin-bottom: 16px; }
+      h1, h2 { margin: 0 0 12px; }
+      button { padding: 8px 14px; margin-right: 8px; border: 1px solid #2563eb; border-radius: 6px; background: white; color: #2563eb; cursor: pointer; }
+      button.primary { color: white; background: #2563eb; }
+      textarea { box-sizing: border-box; width: 100%; min-height: 80px; padding: 8px; border: 1px solid #d1d5db; border-radius: 6px; }
+      pre { overflow: auto; padding: 12px; background: #f8fafc; white-space: pre-wrap; }
+      .muted { color: #6b7280; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>本地 AI 面单识别会话</h1>
+        <p class="muted">这里只确认陌生面单格式和候选解析规则，不维护商品、SKU、图片或档口。</p>
+      </header>
+      <section id="sessions"></section>
+    </main>
+    <script>
+      const params = new URLSearchParams(location.search);
+      const selected = params.get("session");
+      const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
+      async function post(url, body) {
+        const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+        if (!response.ok) throw new Error(await response.text());
+        await load();
+      }
+      async function load() {
+        const url = selected ? `/api/v1/sessions/${encodeURIComponent(selected)}` : "/api/v1/sessions";
+        const response = await fetch(url);
+        const payload = await response.json();
+        const rows = Array.isArray(payload) ? payload : [payload];
+        document.querySelector("#sessions").innerHTML = rows.map((row) => `
+          <article>
+            <h2>${escapeHtml(row.source_component)} · ${escapeHtml(row.status)}</h2>
+            <p>格式指纹：${escapeHtml(row.fingerprint)}</p>
+            <p>确定性规则失败原因：${escapeHtml(row.deterministic_failure_reason || "-")}</p>
+            <h3>候选订单行与规则</h3>
+            <pre>${escapeHtml(JSON.stringify(row.candidate, null, 2))}</pre>
+            <textarea id="feedback-${row.session_id}" placeholder="指出错误字段，模型会重新生成候选"></textarea>
+            <p>
+              <button onclick="sendFeedback('${row.session_id}')">发送反馈并重新识别</button>
+              <button class="primary" onclick="post('/api/v1/sessions/${row.session_id}/approve')">确认并生成规则版本</button>
+              <button onclick="post('/api/v1/sessions/${row.session_id}/reject')">拒绝候选</button>
+            </p>
+          </article>
+        `).join("");
+      }
+      function sendFeedback(id) {
+        const message = document.querySelector(`#feedback-${id}`).value.trim();
+        if (message) post(`/api/v1/sessions/${id}/feedback`, { message });
+      }
+      load().catch((error) => { document.querySelector("#sessions").textContent = error.message; });
+    </script>
+  </body>
+</html>
