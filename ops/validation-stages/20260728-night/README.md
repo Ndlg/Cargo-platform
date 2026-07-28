@@ -18,7 +18,9 @@
 | 12 | `validation-stage-12-faster-navigation` | `e42781c` | 页面只查询实际需要的采集轮次，避免全历史计数 | 已随最终阶段验证 |
 | 13 | `validation-stage-13-rule-pack-subrules` | `e777a2d` | 现有五类识别子规则真实参与解析并可在页面维护 | 已随最终阶段验证 |
 | 14 | `validation-stage-14-collector-resilience` | `66d2959` | 未分类轮询异常记录原因并继续后台重试 | 已保留即时回退 |
-| 15 | `validation-stage-15-remove-duplicate-checklist` | `148b892` | 商品匹配页删除与异常页重复的问题清单和自动整轮预览 | 当前 6173 |
+| 15 | `validation-stage-15-remove-duplicate-checklist` | `148b892` | 商品匹配页删除与异常页重复的问题清单和自动整轮预览 | 已保留即时回退 |
+| 16 | `validation-stage-16-exception-actions` | `c376a0b` | 异常类型、处理按钮和目标页面一一对应，未知类型不再默认跳转 | 已保留即时回退 |
+| 17 | `validation-stage-17-exception-rule-context` | `7bd0d9f` | SKU 多候选携带原匹配规则并直达 SKU 修订区域 | 当前 6173 |
 
 ## 固定验证资源
 
@@ -41,8 +43,8 @@
 
 ## 当前 6173 镜像
 
-- 页面：`cargo-platform-validation-ui:stage-15-148b892`
-- 后端：`cargo-platform-validation-backend:stage-14-66d2959`
+- 页面：`cargo-platform-validation-ui:stage-17-7bd0d9f`
+- 后端：`cargo-platform-validation-backend:stage-17-7bd0d9f`
 - 解析服务：`cargo-platform-validation-parser:stage-14-66d2959`
 - 启用规则包：`current-user-shoes-v1` `1.2.0`
 - 采集器下载包 SHA-256：`B0C9AD3F7843DF361D6C9D75B98B4D4BFCB191A45226BBEAA01AF9F17712879D`
@@ -62,6 +64,9 @@
 - stage 08 解析服务：`cargo-platform-validation-parser-rollback-stage08-before-stage14`
 - stage 14 上一数据副本后端：`cargo-platform-validation-backend-rollback-stage14-data-20260728-165426`
 - stage 14 页面：`cargo-platform-validation-ui-rollback-stage14-before-stage15`
+- stage 15 页面：`cargo-platform-validation-ui-rollback-stage15-before-stage16`
+- stage 16 页面：`cargo-platform-validation-ui-rollback-stage16-before-stage17`
+- stage 16 后端：`cargo-platform-validation-backend-rollback-stage16-before-stage17`
 
 这些容器均已停止但未删除。每个回退后端保留创建时的数据卷挂载；回退时只改容器名称并启动，不复制、不删除数据。
 
@@ -122,6 +127,30 @@ docker rename cargo-platform-validation-ui-rollback-stage14-before-stage15 cargo
 docker start cargo-platform-validation-ui
 ```
 
+## 阶段 16 立即回退
+
+只回退 6173 页面，后端、解析服务和数据副本不动：
+
+```powershell
+docker stop cargo-platform-validation-ui
+docker rename cargo-platform-validation-ui cargo-platform-validation-ui-rejected-stage16
+docker rename cargo-platform-validation-ui-rollback-stage15-before-stage16 cargo-platform-validation-ui
+docker start cargo-platform-validation-ui
+```
+
+## 阶段 17 立即回退
+
+回退 6173 页面和验证后端，解析服务和数据副本不动：
+
+```powershell
+docker stop cargo-platform-validation-ui cargo-platform-validation-backend
+docker rename cargo-platform-validation-ui cargo-platform-validation-ui-rejected-stage17
+docker rename cargo-platform-validation-backend cargo-platform-validation-backend-rejected-stage17
+docker rename cargo-platform-validation-ui-rollback-stage16-before-stage17 cargo-platform-validation-ui
+docker rename cargo-platform-validation-backend-rollback-stage16-before-stage17 cargo-platform-validation-backend
+docker start cargo-platform-validation-backend cargo-platform-validation-ui
+```
+
 ## 明早逐级判断
 
 从当前 `14` 开始验证。若不通过：
@@ -137,7 +166,7 @@ docker start cargo-platform-validation-ui
 
 ## 当前验收结果
 
-- 后端：179 项测试通过。
+- 后端：182 项测试通过。
 - 前端：类型检查和生产构建通过。
 - 历史副本：59 个已完成轮次、1979 张父面单全部覆盖，2240 个商品结果，正常 1545、异常 695，硬失败 0。
 - 保守口径：任务 41 的 1 条重复子行不去重；任务 57 的 1 张高子行面单仅提示、不丢弃。
@@ -146,5 +175,6 @@ docker start cargo-platform-validation-ui
 - 导出：任务 62 报货预览为 164 张面单、212 个商品结果；Excel 接口返回 200，文件大小 1,217,855 字节。
 - 性能：页面不再查询无用的全历史轮次计数；规则包页面直达加载在本次浏览器复测中小于 1 秒。
 - 商品匹配：不再重复展示整轮问题清单，也不再进入页面自动执行整轮匹配预览；异常页带入的当前商品行上下文仍正常显示。
+- 异常按钮：当前真实数据中的“补商品规则”“维护 SKU”“指定 SKU 匹配”均已点击验证；SKU 多候选会打开原学习记录的修订状态并定位 SKU 区域，未知异常不再显示默认跳转按钮。
 - 日志：验证页面、后端、解析服务未发现 5xx、异常堆栈。
 - 现场：`5173`、现场后端、现场解析服务容器 ID 和启动时间未变化。
