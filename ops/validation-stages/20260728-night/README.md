@@ -24,10 +24,11 @@
 - 页面：`http://127.0.0.1:6173`
 - 后端：`http://127.0.0.1:18000`
 - 解析服务：`http://127.0.0.1:18010`
-- 数据副本卷：`cargo-platform-validation-data-20260727-014134`
+- 当前数据副本卷：`cargo-platform-validation-data-20260728-165426-latest`
+- 上一数据副本卷：`cargo-platform-validation-data-20260727-014134`
 - 独立网络：`cargo-platform-validation-20260727-014134`
 
-不得删除或重新创建数据副本卷。阶段切换只替换验证容器镜像。
+不得删除或重新创建上述两个数据副本卷。阶段切换只替换验证容器镜像或后端挂载卷。
 
 ## 切换原则
 
@@ -58,8 +59,34 @@
 - stage 09 页面：`cargo-platform-validation-ui-rollback-stage09-before-stage14`
 - stage 09 后端：`cargo-platform-validation-backend-rollback-stage09-before-stage14`
 - stage 08 解析服务：`cargo-platform-validation-parser-rollback-stage08-before-stage14`
+- stage 14 上一数据副本后端：`cargo-platform-validation-backend-rollback-stage14-data-20260728-165426`
 
-这些容器均已停止但未删除。切换时继续使用同一个验证数据副本卷，不复制、不删除数据。
+这些容器均已停止但未删除。每个回退后端保留创建时的数据卷挂载；回退时只改容器名称并启动，不复制、不删除数据。
+
+## 最近一次已完成采集副本
+
+- 创建时间：`2026-07-28 16:54:26 +08:00`
+- 页面业务标签：`最近一轮：07/27 14:48 已完成`
+- 可见采集轮次：1
+- 正在采集轮次：0
+- 原始采集记录：39
+- 父面单：118
+- 商品结果：121
+- 正常导出：112
+- 异常导出：9
+- SQLite `integrity_check`：`ok`
+- 规则包：`current-user-shoes-v1` `1.2.0`
+
+现场库当时仍有一轮正在采集。新副本通过 SQLite 在线备份生成，只在副本内隐藏其他轮次；现场数据库和正在采集轮次没有停止或修改。
+
+只回退本次数据副本（保留阶段 14 代码）：
+
+```powershell
+docker stop cargo-platform-validation-backend
+docker rename cargo-platform-validation-backend cargo-platform-validation-backend-rejected-latest-data
+docker rename cargo-platform-validation-backend-rollback-stage14-data-20260728-165426 cargo-platform-validation-backend
+docker start cargo-platform-validation-backend
+```
 
 ## 阶段 14 立即回退
 
