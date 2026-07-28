@@ -17,7 +17,8 @@
 | 11 | `validation-stage-11-export-matched-rows` | `63260c7` | 已匹配商品行即进入正常表，缺少可选属性不降级为异常 | 已随最终阶段验证 |
 | 12 | `validation-stage-12-faster-navigation` | `e42781c` | 页面只查询实际需要的采集轮次，避免全历史计数 | 已随最终阶段验证 |
 | 13 | `validation-stage-13-rule-pack-subrules` | `e777a2d` | 现有五类识别子规则真实参与解析并可在页面维护 | 已随最终阶段验证 |
-| 14 | `validation-stage-14-collector-resilience` | `66d2959` | 未分类轮询异常记录原因并继续后台重试 | 当前 6173 |
+| 14 | `validation-stage-14-collector-resilience` | `66d2959` | 未分类轮询异常记录原因并继续后台重试 | 已保留即时回退 |
+| 15 | `validation-stage-15-remove-duplicate-checklist` | `148b892` | 商品匹配页删除与异常页重复的问题清单和自动整轮预览 | 当前 6173 |
 
 ## 固定验证资源
 
@@ -40,7 +41,7 @@
 
 ## 当前 6173 镜像
 
-- 页面：`cargo-platform-validation-ui:stage-14-66d2959`
+- 页面：`cargo-platform-validation-ui:stage-15-148b892`
 - 后端：`cargo-platform-validation-backend:stage-14-66d2959`
 - 解析服务：`cargo-platform-validation-parser:stage-14-66d2959`
 - 启用规则包：`current-user-shoes-v1` `1.2.0`
@@ -60,6 +61,7 @@
 - stage 09 后端：`cargo-platform-validation-backend-rollback-stage09-before-stage14`
 - stage 08 解析服务：`cargo-platform-validation-parser-rollback-stage08-before-stage14`
 - stage 14 上一数据副本后端：`cargo-platform-validation-backend-rollback-stage14-data-20260728-165426`
+- stage 14 页面：`cargo-platform-validation-ui-rollback-stage14-before-stage15`
 
 这些容器均已停止但未删除。每个回退后端保留创建时的数据卷挂载；回退时只改容器名称并启动，不复制、不删除数据。
 
@@ -109,6 +111,17 @@ docker start cargo-platform-validation-parser cargo-platform-validation-backend 
 
 该文件是部署前正在启用的 `1.1.0` 完整 payload。不要删除或重建数据卷。
 
+## 阶段 15 立即回退
+
+只回退 6173 页面，后端、解析服务和数据副本不动：
+
+```powershell
+docker stop cargo-platform-validation-ui
+docker rename cargo-platform-validation-ui cargo-platform-validation-ui-rejected-stage15
+docker rename cargo-platform-validation-ui-rollback-stage14-before-stage15 cargo-platform-validation-ui
+docker start cargo-platform-validation-ui
+```
+
 ## 明早逐级判断
 
 从当前 `14` 开始验证。若不通过：
@@ -132,5 +145,6 @@ docker start cargo-platform-validation-parser cargo-platform-validation-backend 
 - 交互：任务 62 的“维护 SKU”直达 `/admin/products?product_id=18`；无效的“应用规则到本轮”不存在。
 - 导出：任务 62 报货预览为 164 张面单、212 个商品结果；Excel 接口返回 200，文件大小 1,217,855 字节。
 - 性能：页面不再查询无用的全历史轮次计数；规则包页面直达加载在本次浏览器复测中小于 1 秒。
+- 商品匹配：不再重复展示整轮问题清单，也不再进入页面自动执行整轮匹配预览；异常页带入的当前商品行上下文仍正常显示。
 - 日志：验证页面、后端、解析服务未发现 5xx、异常堆栈。
 - 现场：`5173`、现场后端、现场解析服务容器 ID 和启动时间未变化。
