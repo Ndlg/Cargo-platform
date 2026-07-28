@@ -6,6 +6,11 @@ import re
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
+from service_app.ai_client import (
+    AiRecognitionUnavailable,
+    ai_recognition_enabled,
+    recognize_with_ai,
+)
 from service_app.declarative_rules import (
     parse_declarative_payload,
     validate_format_profiles,
@@ -77,6 +82,7 @@ class WaybillSampleParseInput(BaseModel):
 
 
 class BatchParseRequest(BaseModel):
+    workspace_id: int | None = None
     task_id: int | None = None
     standard_details: list[StandardDetailParseInput] = Field(default_factory=list)
     raw_records: list[RawRecordParseInput] = Field(default_factory=list)
@@ -260,6 +266,164 @@ def empty_parse_summary(input_count: int) -> dict[str, int]:
     }
 
 
+def raw_record_document_payloads(record: RawRecordParseInput) -> list[dict[str, Any]]:
+    task = record.payload.get("task") if isinstance(record.payload, dict) else None
+    documents = task.get("documents") if isinstance(task, dict) else None
+    document_payloads: list[dict[str, Any]] = []
+    if isinstance(documents, list) and documents:
+        for document in documents:
+            if isinstance(document, dict):
+                document_payloads.append(
+                    {
+                        **record.payload,
+                        "task": {**task, "documents": [document]},
+                    }
+                )
+    return document_payloads or [record.payload]
+
+
+def empty_parent(
+    *,
+    raw_record_id: int,
+    task_id: int | None,
+    source_component: str | None,
+    source_index: str | None,
+    parent_sequence: int,
+) -> ParentWaybillDraft:
+    parent_label = business_parent_label(
+        source_index,
+        raw_record_id,
+        parent_sequence=parent_sequence,
+    )
+    return ParentWaybillDraft(
+        raw_record_id=raw_record_id,
+        task_id=task_id,
+        parent_label=parent_label,
+        source_component=str(source_component or ""),
+        source_index=str(source_index or ""),
+        child_count=0,
+        rows=[],
+    )
+
+
+def safe_ai_session(result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "session_id": str(result.get("session_id") or ""),
+        "status": str(result.get("status") or ""),
+        "fingerprint": str(result.get("fingerprint") or ""),
+        "console_url": str(result.get("console_url") or ""),
+        "error": str(result.get("error") or ""),
+    }
+
+
+def ai_diagnostic(
+    *,
+    workspace_id: int,
+    task_id: int,
+    record: RawRecordParseInput,
+    document_payload: dict[str, Any],
+    parent: ParentWaybillDraft,
+    deterministic_reason: str,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    try:
+        result = recognize_with_ai(
+            workspace_id=workspace_id,
+            task_id=task_id,
+            raw_record_id=record.raw_record_id,
+            source_component=str(record.source_component or ""),
+            deterministic_failure_reason=deterministic_reason,
+            payload=document_payload,
+        )
+        session = safe_ai_session(result)
+        return {
+            "raw_record_id": record.raw_record_id,
+            "parent_label": parent.parent_label,
+            "fingerprint": session["fingerprint"],
+            "reason": session["status"],
+            "deterministic_reason": deterministic_reason,
+            "session_id": session["session_id"],
+            "console_url": session["console_url"],
+            "error": session["error"],
+        }, session
+    except AiRecognitionUnavailable as exc:
+        return {
+            "raw_record_id": record.raw_record_id,
+            "parent_label": parent.parent_label,
+            "fingerprint": "",
+            "reason": "ai_unavailable",
+            "deterministic_reason": deterministic_reason,
+            "error": str(exc)[:2000],
+        }, None
+    except (ValueError, TypeError, KeyError) as exc:
+        return {
+            "raw_record_id": record.raw_record_id,
+            "parent_label": parent.parent_label,
+            "fingerprint": "",
+            "reason": "ai_parse_failed",
+            "deterministic_reason": deterministic_reason,
+            "error": str(exc)[:2000],
+        }, None
+
+
+def overall_ai_status(diagnostics: list[dict[str, Any]]) -> str:
+    reasons = {str(diagnostic.get("reason") or "") for diagnostic in diagnostics}
+    if "ai_unavailable" in reasons:
+        return "ai_unavailable"
+    if "ai_parse_failed" in reasons:
+        return "ai_parse_failed"
+    return "ai_rule_pending"
+
+
+def ai_fallback_response(payload: BatchParseRequest, deterministic_reason: str) -> dict[str, Any]:
+    parents: list[ParentWaybillDraft] = []
+    diagnostics: list[dict[str, Any]] = []
+    sessions: list[dict[str, Any]] = []
+    next_parent_sequence = 1
+    for record in payload.raw_records:
+        document_payloads = raw_record_document_payloads(record)
+        first_parent_sequence = record.parent_sequence or next_parent_sequence
+        for document_offset, document_payload in enumerate(document_payloads):
+            parent = empty_parent(
+                raw_record_id=record.raw_record_id,
+                task_id=record.task_id,
+                source_component=record.source_component,
+                source_index=record.source_index,
+                parent_sequence=first_parent_sequence + document_offset,
+            )
+            diagnostic, session = ai_diagnostic(
+                workspace_id=int(payload.workspace_id),
+                task_id=int(payload.task_id),
+                record=record,
+                document_payload=document_payload,
+                parent=parent,
+                deterministic_reason=deterministic_reason,
+            )
+            parents.append(parent)
+            diagnostics.append(diagnostic)
+            if session is not None:
+                sessions.append(session)
+        next_parent_sequence = first_parent_sequence + len(document_payloads)
+
+    summary = order_row_draft_summary(parents)
+    summary["needs_review_count"] = len(parents)
+    summary["pending_rule_pack_count"] = sum(
+        diagnostic["reason"] == "ai_rule_pending" for diagnostic in diagnostics
+    )
+    return {
+        "contract_version": ORDER_ROW_DRAFTS_CONTRACT_VERSION,
+        "task_id": payload.task_id,
+        "status": overall_ai_status(diagnostics),
+        "rule_pack_required": deterministic_reason == "rule_pack_missing",
+        "message": "AI recognition requires administrator confirmation before these rows can be used.",
+        "summary": summary,
+        "recognition_rule_pack": None,
+        "diagnostics": diagnostics,
+        "ai_sessions": sessions,
+        "parents": [parent.as_dict() for parent in parents],
+        "rows": [],
+    }
+
+
 @app.get("/health")
 @app.get("/api/v1/health")
 def health() -> dict[str, str]:
@@ -290,11 +454,13 @@ def explain_rule_pack(payload: RulePackRequest) -> dict[str, Any]:
     order_row_parser = (
         str(parser_policy.get("order_row_parser") or "").strip() if isinstance(parser_policy, dict) else ""
     )
+    parser_capability = {
+        "shoe_waybill_v1": "shoe waybill order-row parser",
+        "declarative_v1": "declarative format profile parser",
+    }.get(order_row_parser, "no order-row parser configured")
     capabilities = [
         "requires active rule pack",
-        "shoe waybill order-row parser"
-        if order_row_parser == "shoe_waybill_v1"
-        else "no order-row parser configured",
+        parser_capability,
         "structured item source rules"
         if "structured_item_sources" in usage["applied"]
         else "no structured item source rules",
@@ -342,6 +508,13 @@ def parse_preview(payload: BatchParseRequest) -> dict[str, Any]:
 def parse_batch(payload: BatchParseRequest) -> dict[str, Any]:
     input_count = len(payload.standard_details) + len(payload.waybill_samples) + len(payload.raw_records)
     if not payload.rule_pack:
+        if (
+            ai_recognition_enabled()
+            and payload.workspace_id is not None
+            and payload.task_id is not None
+            and payload.raw_records
+        ):
+            return ai_fallback_response(payload, "rule_pack_missing")
         return {
             "contract_version": ORDER_ROW_DRAFTS_CONTRACT_VERSION,
             "task_id": payload.task_id,
@@ -425,21 +598,10 @@ def parse_batch(payload: BatchParseRequest) -> dict[str, Any]:
             )
         next_parent_sequence = len(parents) + 1
         profiles = parser_policy["format_profiles"]
+        ai_sessions: list[dict[str, Any]] = []
+        ai_replaced_parent_count = 0
         for record in payload.raw_records:
-            task = record.payload.get("task") if isinstance(record.payload, dict) else None
-            documents = task.get("documents") if isinstance(task, dict) else None
-            document_payloads = []
-            if isinstance(documents, list) and documents:
-                for document in documents:
-                    if isinstance(document, dict):
-                        document_payloads.append(
-                            {
-                                **record.payload,
-                                "task": {**task, "documents": [document]},
-                            }
-                        )
-            if not document_payloads:
-                document_payloads = [record.payload]
+            document_payloads = raw_record_document_payloads(record)
 
             first_parent_sequence = record.parent_sequence or next_parent_sequence
             for document_offset, document_payload in enumerate(document_payloads):
@@ -452,24 +614,59 @@ def parse_batch(payload: BatchParseRequest) -> dict[str, Any]:
                     source_index=record.source_index,
                     parent_sequence=first_parent_sequence + document_offset,
                 )
+                if (
+                    diagnostic["reason"]
+                    and ai_recognition_enabled()
+                    and payload.workspace_id is not None
+                    and payload.task_id is not None
+                ):
+                    deterministic_reason = str(diagnostic["reason"])
+                    diagnostic, session = ai_diagnostic(
+                        workspace_id=int(payload.workspace_id),
+                        task_id=int(payload.task_id),
+                        record=record,
+                        document_payload=document_payload,
+                        parent=parent,
+                        deterministic_reason=deterministic_reason,
+                    )
+                    parent = empty_parent(
+                        raw_record_id=record.raw_record_id,
+                        task_id=record.task_id,
+                        source_component=record.source_component,
+                        source_index=record.source_index,
+                        parent_sequence=first_parent_sequence + document_offset,
+                    )
+                    ai_replaced_parent_count += 1
+                    if session is not None:
+                        ai_sessions.append(session)
                 parents.append(parent)
                 diagnostics.append(diagnostic)
             next_parent_sequence = first_parent_sequence + len(document_payloads)
 
         reasons = {diagnostic["reason"] for diagnostic in diagnostics if diagnostic["reason"]}
-        parse_status = (
-            "format_profile_missing"
-            if "format_profile_missing" in reasons
-            else "format_profile_incomplete"
-            if reasons
-            else "parsed"
+        ai_reasons = reasons & {"ai_rule_pending", "ai_unavailable", "ai_parse_failed"}
+        if ai_reasons:
+            parse_status = overall_ai_status(diagnostics)
+        else:
+            parse_status = (
+                "format_profile_missing"
+                if "format_profile_missing" in reasons
+                else "format_profile_incomplete"
+                if reasons
+                else "parsed"
+            )
+        summary = order_row_draft_summary(parents)
+        summary["needs_review_count"] += ai_replaced_parent_count
+        summary["pending_rule_pack_count"] = sum(
+            diagnostic["reason"] == "ai_rule_pending" for diagnostic in diagnostics
         )
         return {
             "contract_version": ORDER_ROW_DRAFTS_CONTRACT_VERSION,
             "task_id": payload.task_id,
             "status": parse_status,
-            "summary": order_row_draft_summary(parents),
+            "summary": summary,
             "diagnostics": diagnostics,
+            "ai_sessions": ai_sessions,
             "parents": [parent.as_dict() for parent in parents],
             "rows": [row.as_dict() for parent in parents for row in parent.rows],
         }
@@ -493,21 +690,7 @@ def parse_batch(payload: BatchParseRequest) -> dict[str, Any]:
     )
     next_parent_sequence = len(parents) + 1
     for record in payload.raw_records:
-        task = record.payload.get("task") if isinstance(record.payload, dict) else None
-        documents = task.get("documents") if isinstance(task, dict) else None
-        document_payloads = []
-        if isinstance(documents, list) and documents:
-            for document in documents:
-                if not isinstance(document, dict):
-                    continue
-                document_payloads.append(
-                    {
-                        **record.payload,
-                        "task": {**task, "documents": [document]},
-                    }
-                )
-        if not document_payloads:
-            document_payloads = [record.payload]
+        document_payloads = raw_record_document_payloads(record)
 
         first_parent_sequence = record.parent_sequence or next_parent_sequence
         for document_offset, document_payload in enumerate(document_payloads):

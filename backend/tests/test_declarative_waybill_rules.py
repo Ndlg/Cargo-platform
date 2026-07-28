@@ -274,6 +274,16 @@ def test_rule_pack_validation_rejects_regex_script_and_unbounded_paths() -> None
     assert any("format_profiles[0]" in error for error in body["errors"])
 
 
+def test_rule_pack_explain_identifies_declarative_parser() -> None:
+    app, rules = load_parser()
+    rule_pack = declarative_pack([structured_profile(rules, one_document())])
+
+    with TestClient(app) as client:
+        response = client.post("/api/v1/rule-packs/explain", json={"rule_pack": rule_pack})
+
+    assert "declarative format profile parser" in response.json()["capabilities"]
+
+
 def test_structured_profile_requires_quantity_path_or_positive_default() -> None:
     app, _rules = load_parser()
     profile = {
