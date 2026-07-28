@@ -199,7 +199,7 @@ async function load() {
   try {
     const [status, tasks] = await Promise.all([
       getCollectorControlStatus(),
-      getRecords('/capture-tasks?limit=2000'),
+      getRecords('/capture-tasks?limit=6&include_waybill_counts=false'),
     ])
     collectors.value = status.collectors
     activeTask.value = status.active_task

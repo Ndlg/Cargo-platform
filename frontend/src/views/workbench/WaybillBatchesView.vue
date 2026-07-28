@@ -190,7 +190,7 @@ function emptyText(value: string | number | null | undefined): string {
 }
 
 async function loadTasks() {
-  const records = await getRecords('/capture-tasks?limit=2000')
+  const records = await getRecords('/capture-tasks?limit=2000&include_waybill_counts=false')
   captureTasks.value = records as CaptureTaskRecord[]
   const taskIds = new Set(captureTasks.value.map((task) => task.id))
   const routeTaskId = queryPositiveInt(route.query.task_id)

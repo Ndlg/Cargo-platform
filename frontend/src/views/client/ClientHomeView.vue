@@ -107,7 +107,7 @@ async function loadHomeSummary() {
   loading.value = true
   error.value = ''
   try {
-    const tasks = await getRecords('/capture-tasks?limit=2000')
+    const tasks = await getRecords('/capture-tasks?limit=1')
     captureTasks.value = tasks as CaptureTaskRecord[]
     const task = latestTask.value
     latestDrafts.value = task ? await getOrderRowDrafts(task.id, { limit: 5000 }) : null
