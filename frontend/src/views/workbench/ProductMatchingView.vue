@@ -9,13 +9,10 @@ import {
   getProductMatchingRules,
   getRecord,
   getRecords,
-  previewProductMatching,
   saveProductMatchingRule,
   updateProductMatchingRule,
   type ApiRecord,
   type CaptureTaskRecord,
-  type ProductMatchingPreviewResponse,
-  type ProductMatchingPreviewRow,
   type ProductMatchingRuleRecord,
   type ProductMatchingScope,
   type StandardWaybillFieldCode,
@@ -39,21 +36,6 @@ type ImageAssetRecord = ApiRecord & {
   id: number
   name: string
   file_path?: string | null
-}
-
-type ProductMatchingExceptionGroup = {
-  key: string
-  status: string
-  productText: string
-  salesAttr1Text: string
-  salesAttr2Text: string
-  reasonText: string
-  actionText: string
-  count: number
-  conflictRules: Array<ProductMatchingRuleRecord | ApiRecord>
-  conflictRuleIds: number[]
-  skuCandidates: Array<ApiRecord & { id?: number; name?: string; product_id?: number }>
-  firstRow: ProductMatchingPreviewRow
 }
 
 const productFieldOptions: Array<{
@@ -140,9 +122,7 @@ const products = ref<ProductRecord[]>([])
 const skus = ref<ProductSkuRecord[]>([])
 const images = ref<ImageAssetRecord[]>([])
 const rules = ref<ProductMatchingRuleRecord[]>([])
-const preview = ref<ProductMatchingPreviewResponse | null>(null)
 const loading = ref(false)
-const previewing = ref(false)
 const saving = ref(false)
 const productLoading = ref(false)
 const skuLoading = ref(false)
@@ -156,7 +136,6 @@ const ruleSearch = ref('')
 const ruleStatusFilter = ref<'all' | 'enabled' | 'disabled'>('all')
 const ruleProductFilter = ref<number | 'all'>('all')
 const ruleFieldFilter = ref<StandardWaybillFieldCode | 'all'>('all')
-const ruleFocusIds = ref<number[]>([])
 const productSearchKeyword = ref('')
 const skuSearchKeyword = ref('')
 const imageSearchKeyword = ref('')
@@ -195,24 +174,6 @@ const sortedCaptureTasks = computed(() =>
 )
 const selectedProductSkus = computed(() => (form.product_id ? skus.value : []))
 const editorModeText = computed(() => (editingRuleId.value ? '修订匹配记录' : '创建匹配记录'))
-const previewSummaryRows = computed(() => {
-  const summary = preview.value?.summary ?? {}
-  return [
-    { key: 'matched', label: '已匹配', value: summary.matched ?? 0 },
-    { key: 'product_unmatched', label: '商品未命中', value: summary.product_unmatched ?? 0 },
-    { key: 'sku_unmatched', label: 'SKU 未命中', value: summary.sku_unmatched ?? 0 },
-    { key: 'sku_ambiguous', label: 'SKU 多候选', value: summary.sku_ambiguous ?? 0 },
-    { key: 'image_unmatched', label: '图片未命中', value: summary.image_unmatched ?? 0 },
-    { key: 'conflict', label: '冲突', value: summary.conflict ?? 0 },
-    { key: 'special', label: '特殊单', value: summary.special ?? 0 },
-  ]
-})
-const previewCoverage = computed(() => preview.value?.coverage ?? null)
-const previewHasRun = computed(() => Boolean(preview.value))
-const showBatchCoverage = computed(
-  () => Boolean(previewCoverage.value?.total_waybill_count),
-)
-const missingOrderRowCount = computed(() => previewCoverage.value?.missing_order_row_count ?? 0)
 const enabledRuleCount = computed(() => rules.value.filter((rule) => rule.is_enabled).length)
 const ruleProductOptions = computed(() => {
   const ids = new Set<number>()
@@ -229,7 +190,6 @@ const ruleProductOptions = computed(() => {
 const filteredRules = computed(() => {
   const keyword = normalizeRuleSearch(ruleSearch.value)
   return rules.value.filter((rule) => {
-    if (ruleFocusIds.value.length && !ruleFocusIds.value.includes(rule.id)) return false
     if (ruleStatusFilter.value === 'enabled' && !rule.is_enabled) return false
     if (ruleStatusFilter.value === 'disabled' && rule.is_enabled) return false
     if (ruleProductFilter.value !== 'all' && rule.product_id !== ruleProductFilter.value) return false
@@ -246,16 +206,7 @@ const filteredRules = computed(() => {
 const ruleFilterSummary = computed(() => {
   const total = rules.value.length
   const disabled = rules.value.filter((rule) => !rule.is_enabled).length
-  const focusText = ruleFocusIds.value.length ? `，正在看 ${ruleFocusIds.value.length} 条冲突规则` : ''
-  return `共 ${total} 条，启用 ${enabledRuleCount.value} 条，停用 ${disabled} 条，当前显示 ${filteredRules.value.length} 条${focusText}`
-})
-const coverageSummaryText = computed(() => {
-  const coverage = previewCoverage.value
-  if (!coverage) return ''
-  if (showBatchCoverage.value) {
-    return `本轮 ${coverage.total_waybill_count ?? 0} 张面单，已生成商品行 ${coverage.order_row_waybill_count ?? 0} 张，未生成商品行 ${coverage.missing_order_row_count ?? 0} 张。商品匹配只处理已生成商品行的 ${coverage.standard_row_count ?? 0} 行。`
-  }
-  return `当前预览包含 ${coverage.standard_row_count ?? 0} 行五字段结果。`
+  return `共 ${total} 条，启用 ${enabledRuleCount.value} 条，停用 ${disabled} 条，当前显示 ${filteredRules.value.length} 条`
 })
 const inboundFromExceptions = computed(() => queryText(route.query.from) === 'exceptions')
 const inboundStatusLabel = computed(() => exceptionStatusLabels[queryText(route.query.status)] ?? '异常订单行')
@@ -327,15 +278,6 @@ function fieldSummary(fields?: StandardWaybillFieldCode[]): string {
   return fields.map((fieldCode) => fieldLabels[fieldCode] ?? fieldCode).join('、')
 }
 
-function numberValue(value: unknown): number | null {
-  const parsed = Number(value)
-  return Number.isFinite(parsed) ? parsed : null
-}
-
-function textValue(value: unknown): string {
-  return value === undefined || value === null ? '' : String(value)
-}
-
 function normalizeRuleSearch(value: string): string {
   return value.trim().toLocaleLowerCase()
 }
@@ -363,162 +305,6 @@ function clearRuleFilters() {
   ruleStatusFilter.value = 'all'
   ruleProductFilter.value = 'all'
   ruleFieldFilter.value = 'all'
-  ruleFocusIds.value = []
-}
-
-function ruleIdFromRecord(rule: ProductMatchingRuleRecord | ApiRecord): number | null {
-  return numberValue(rule.id)
-}
-
-function ruleFieldsFromRecord(rule: ProductMatchingRuleRecord | ApiRecord, key: 'product_match_fields' | 'sku_match_fields'): StandardWaybillFieldCode[] {
-  const fields = rule[key]
-  if (!Array.isArray(fields)) return []
-  return fields.filter((field): field is StandardWaybillFieldCode => fieldCodes.includes(field as StandardWaybillFieldCode))
-}
-
-function conflictRuleName(rule: ProductMatchingRuleRecord | ApiRecord): string {
-  const ruleId = ruleIdFromRecord(rule)
-  return textValue(rule.name) || (ruleId ? ruleCode(ruleId) : '未命名规则')
-}
-
-function conflictRuleSummary(rule: ProductMatchingRuleRecord | ApiRecord): string {
-  const productId = numberValue(rule.product_id)
-  const keyword = textValue(rule.product_keyword) || '-'
-  const productFields = fieldSummary(ruleFieldsFromRecord(rule, 'product_match_fields'))
-  const skuFields = fieldSummary(ruleFieldsFromRecord(rule, 'sku_match_fields'))
-  return `${productName(productId)} / ${keyword} / 商品字段：${productFields} / SKU字段：${skuFields}`
-}
-
-function conflictRulesFromRow(row: ProductMatchingPreviewRow): Array<ProductMatchingRuleRecord | ApiRecord> {
-  const conflictRules = Array.isArray(row.conflict_linking_rules) ? row.conflict_linking_rules : []
-  if (conflictRules.length) return conflictRules
-  return []
-}
-
-function skuCandidatesFromRow(row: ProductMatchingPreviewRow): Array<ApiRecord & { id?: number; name?: string; product_id?: number }> {
-  return Array.isArray(row.sku_candidates) ? row.sku_candidates : []
-}
-
-function skuCandidateName(candidate: ApiRecord & { id?: number; name?: string }): string {
-  return textValue(candidate.name) || '未命名 SKU'
-}
-
-function mergeSkuCandidates(
-  left: Array<ApiRecord & { id?: number; name?: string; product_id?: number }>,
-  right: Array<ApiRecord & { id?: number; name?: string; product_id?: number }>,
-): Array<ApiRecord & { id?: number; name?: string; product_id?: number }> {
-  const seen = new Set<string>()
-  const merged: Array<ApiRecord & { id?: number; name?: string; product_id?: number }> = []
-  for (const candidate of [...left, ...right]) {
-    const id = numberValue(candidate.id)
-    const key = id ? `id:${id}` : skuCandidateName(candidate)
-    if (seen.has(key)) continue
-    seen.add(key)
-    merged.push(candidate)
-  }
-  return merged
-}
-
-function mergeConflictRules(
-  left: Array<ProductMatchingRuleRecord | ApiRecord>,
-  right: Array<ProductMatchingRuleRecord | ApiRecord>,
-): Array<ProductMatchingRuleRecord | ApiRecord> {
-  const seen = new Set<string>()
-  const merged: Array<ProductMatchingRuleRecord | ApiRecord> = []
-  for (const rule of [...left, ...right]) {
-    const id = ruleIdFromRecord(rule)
-    const key = id ? `id:${id}` : `${conflictRuleName(rule)}:${conflictRuleSummary(rule)}`
-    if (seen.has(key)) continue
-    seen.add(key)
-    merged.push(rule)
-  }
-  return merged
-}
-
-function conflictRuleIds(rulesToInspect: Array<ProductMatchingRuleRecord | ApiRecord>): number[] {
-  return rulesToInspect
-    .map((rule) => ruleIdFromRecord(rule))
-    .filter((ruleId): ruleId is number => Boolean(ruleId))
-}
-
-function focusConflictRules(group: ProductMatchingExceptionGroup) {
-  if (!group.conflictRuleIds.length) {
-    ElMessage.warning('这条冲突没有返回可定位的规则编号，请重新检查本轮采集。')
-    return
-  }
-  ruleFocusIds.value = group.conflictRuleIds
-  ruleSearch.value = ''
-  ruleStatusFilter.value = 'all'
-  ruleProductFilter.value = 'all'
-  ruleFieldFilter.value = 'all'
-  ElMessage.info(`已筛出 ${group.conflictRuleIds.length} 条冲突规则，可在下方停用或修订。`)
-}
-
-function exceptionActionText(status: string): string {
-  if (status === 'product_unmatched') return '补商品匹配记录'
-  if (status === 'sku_unmatched') return '补 SKU 关键词或绑定'
-  if (status === 'sku_ambiguous') return '绑定具体 SKU'
-  if (status === 'image_unmatched') return '补图片或 SKU 图片'
-  if (status === 'conflict') return '修订记录或检查冲突'
-  if (status === 'pending') return '回面单解析处理'
-  return '带入复核'
-}
-
-function exceptionOperationText(group: ProductMatchingExceptionGroup): string {
-  if (group.status === 'sku_ambiguous') return '绑定 SKU'
-  if (group.status === 'conflict') return group.conflictRuleIds.length ? '查看规则' : '修订记录'
-  return '补规则'
-}
-
-const sampleRows = computed(() => {
-  const samples = preview.value?.samples ?? {}
-  return Object.entries(samples).flatMap(([status, rows]) =>
-    (rows ?? []).map((row) => ({ ...row, status })),
-  )
-})
-
-const exceptionGroups = computed<ProductMatchingExceptionGroup[]>(() => {
-  const groups = new Map<string, ProductMatchingExceptionGroup>()
-  for (const row of preview.value?.rows ?? []) {
-    if (row.match_status === 'matched' || row.match_status === 'special') continue
-    const productText = row.input?.product || '-'
-    const salesAttr1Text = row.input?.sales_attr1 || '-'
-    const salesAttr2Text = row.input?.sales_attr2 || '-'
-    const reasonText = row.exception_reason || '-'
-    const rowConflictRules = conflictRulesFromRow(row)
-    const rowConflictRuleIds = conflictRuleIds(rowConflictRules)
-    const rowSkuCandidates = skuCandidatesFromRow(row)
-    const rowSkuCandidateKey = rowSkuCandidates.map((candidate) => numberValue(candidate.id) ?? skuCandidateName(candidate)).join(',')
-    const key = `${row.match_status}\u0000${productText}\u0000${salesAttr1Text}\u0000${salesAttr2Text}\u0000${reasonText}\u0000${rowConflictRuleIds.join(',')}\u0000${rowSkuCandidateKey}`
-    const existing = groups.get(key)
-    if (existing) {
-      existing.count += 1
-      existing.conflictRules = mergeConflictRules(existing.conflictRules, rowConflictRules)
-      existing.conflictRuleIds = conflictRuleIds(existing.conflictRules)
-      existing.skuCandidates = mergeSkuCandidates(existing.skuCandidates, rowSkuCandidates)
-      continue
-    }
-    groups.set(key, {
-      key,
-      status: row.match_status,
-      productText,
-      salesAttr1Text,
-      salesAttr2Text,
-      reasonText,
-      actionText: exceptionActionText(row.match_status),
-      count: 1,
-      conflictRules: rowConflictRules,
-      conflictRuleIds: rowConflictRuleIds,
-      skuCandidates: rowSkuCandidates,
-      firstRow: row,
-    })
-  }
-  return [...groups.values()].sort((left, right) => right.count - left.count)
-})
-
-function firstFilledField(input: Partial<Record<StandardWaybillFieldCode, string>> | undefined, candidates: StandardWaybillFieldCode[]): StandardWaybillFieldCode | null {
-  if (!input) return null
-  return candidates.find((fieldCode) => Boolean(input[fieldCode])) ?? null
 }
 
 function applyInboundQueryContext() {
@@ -551,25 +337,12 @@ function normalizeInboundPreviewRow(
   ) as Partial<Record<StandardWaybillFieldCode, string>>
 }
 
-const previewScopeIncomplete = computed(() => {
-  return !selectedTaskId.value
-})
-
 function buildGlobalRuleScope(): ProductMatchingScope {
   return {
     scope_type: 'current_batch',
     task_id: selectedTaskId.value,
     confirmed_by_user: true,
     preview_impact_count: null,
-  }
-}
-
-function buildPreviewScope(): ProductMatchingScope {
-  return {
-    scope_type: 'current_batch',
-    task_id: selectedTaskId.value,
-    confirmed_by_user: true,
-    preview_impact_count: preview.value?.summary?.total ?? null,
   }
 }
 
@@ -585,9 +358,9 @@ function draftRule() {
     sku_match_fields: form.sku_match_fields,
     sku_id: form.sku_id || null,
     image_asset_id: form.image_asset_id || null,
-    source_samples: draftSourceSamples.value ?? sampleRows.value.slice(0, 5).map((row) => row.input),
+    source_samples: draftSourceSamples.value ?? [],
     field_sources: Object.fromEntries(fieldCodes.map((fieldCode) => [fieldCode, `面单解析后的五字段.${fieldCode}`])),
-    preview_summary: preview.value?.summary ?? {},
+    preview_summary: {},
     revision_note: form.revision_note.trim() || null,
     is_enabled: true,
   }
@@ -632,25 +405,6 @@ function toggleSkuField(fieldCode: StandardWaybillFieldCode) {
     return
   }
   form.sku_match_fields = [...form.sku_match_fields, fieldCode]
-}
-
-function usePreviewRowAsDraft(row: ProductMatchingPreviewRow & { status?: string }) {
-  const input = row.input ?? {}
-  const productField = firstFilledField(input, ['product', 'sales_attr1', 'sales_attr2', 'remark'])
-  const skuField = firstFilledField(input, ['sales_attr1', 'sales_attr2', 'remark'])
-
-  editingRuleId.value = null
-  form.name = `异常样本规则 ${row.row_index ? `行 ${row.row_index}` : ''}`.trim()
-  if (row.product?.id) form.product_id = row.product.id
-  form.product_match_fields = productField ? [productField] : ['product']
-  form.product_keyword = productField ? String(input[productField] ?? '').trim() : ''
-  form.product_match_type = 'contains'
-  form.sku_match_fields = skuField ? [skuField] : ['sales_attr1']
-  form.sku_id = row.sku?.id ?? null
-  form.image_asset_id = row.image?.id ?? null
-  form.revision_note = `由${row.match_status || row.status || '异常'}样本带入，等待用户确认。`
-  draftSourceSamples.value = [input]
-  ElMessage.info('已带入五字段样本，请确认商品、SKU、图片和关键词后保存规则。')
 }
 
 function requiredProductIds(): number[] {
@@ -721,7 +475,6 @@ async function load() {
     await loadProducts(productSearchKeyword.value)
     if (!selectedTaskId.value && sortedCaptureTasks.value[0]) selectedTaskId.value = sortedCaptureTasks.value[0].id
     if (form.product_id) await loadSelectedProductSkus(form.product_id)
-    if (!previewScopeIncomplete.value) await runSavedRulesPreview()
   } catch (err) {
     error.value = err instanceof Error ? err.message : '商品匹配配置加载失败'
   } finally {
@@ -824,25 +577,6 @@ function searchImageAssets(keyword: string) {
   void loadImageAssets(keyword)
 }
 
-async function runSavedRulesPreview() {
-  if (previewScopeIncomplete.value) {
-    error.value = '请先选择要检查的采集轮次。'
-    return
-  }
-  previewing.value = true
-  error.value = ''
-  try {
-    preview.value = await previewProductMatching({
-      scope: buildPreviewScope(),
-      include_saved_rules: true,
-    })
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : '已保存规则检查失败'
-  } finally {
-    previewing.value = false
-  }
-}
-
 async function saveRule() {
   const rule = requireDraft()
   if (!rule) return
@@ -878,7 +612,6 @@ function resetEditor() {
   form.revision_note = ''
   skuSearchKeyword.value = ''
   imageSearchKeyword.value = ''
-  preview.value = null
   draftSourceSamples.value = null
 }
 
@@ -951,9 +684,6 @@ watch(
   () => route.query,
   () => {
     applyInboundQueryContext()
-    if (inboundFromExceptions.value && !previewScopeIncomplete.value) {
-      void runSavedRulesPreview()
-    }
   },
 )
 
@@ -1144,124 +874,6 @@ onMounted(load)
       </div>
 
       <aside class="side-column">
-        <section class="preview-panel">
-          <div class="panel-heading">
-            <div>
-              <h2>商品/SKU 问题清单</h2>
-              <p>读取面单解析后的订单行，检查哪些已可导出，哪些还需要补商品、SKU 或图片。</p>
-            </div>
-          </div>
-          <div class="batch-scope-bar">
-            <span>当前采集轮次</span>
-            <el-select
-              v-model="selectedTaskId"
-              class="full-control"
-              filterable
-              placeholder="选择采集轮次"
-            >
-            <el-option
-              v-for="(task, index) in sortedCaptureTasks"
-              :key="task.id"
-              :label="`${index === 0 ? '最近一轮' : `上一轮 ${index}`}：${task.name}`"
-              :value="task.id"
-            />
-            </el-select>
-          </div>
-          <el-alert
-            v-if="previewScopeIncomplete"
-            class="coverage-alert"
-            type="warning"
-            :closable="false"
-            show-icon
-            title="请先选择当前采集轮次，右侧会显示已保存学习记录的匹配结果。"
-          />
-          <el-alert
-            v-if="coverageSummaryText"
-            class="coverage-alert"
-            :type="missingOrderRowCount > 0 ? 'warning' : 'success'"
-            :closable="false"
-            show-icon
-          >
-            <template #title>
-              <span>{{ coverageSummaryText }}</span>
-            </template>
-            <template v-if="missingOrderRowCount > 0" #default>
-              <span>这些未生成订单行的面单还不能进入商品匹配，需要先到面单解析检查规则包解析结果。</span>
-            </template>
-          </el-alert>
-          <el-alert
-            v-if="!previewHasRun && !previewing"
-            class="coverage-alert"
-            type="info"
-            :closable="false"
-            show-icon
-            title="进入页面会自动读取当前采集轮次，并按已保存的学习记录重新计算匹配结果。"
-          />
-          <div v-if="previewHasRun" class="summary-grid">
-            <div v-for="row in previewSummaryRows" :key="row.key" class="summary-item">
-              <strong>{{ row.value }}</strong>
-              <span>{{ row.label }}</span>
-            </div>
-          </div>
-          <el-table v-if="exceptionGroups.length" :data="exceptionGroups" size="small" border height="260" class="exception-group-table">
-            <el-table-column label="问题" width="126">
-              <template #default="{ row }">
-                <el-tag size="small" :type="row.status === 'conflict' ? 'danger' : 'warning'">
-                  {{ exceptionStatusLabels[row.status] ?? row.status }}
-                </el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column prop="productText" label="商品文字" min-width="180" show-overflow-tooltip />
-            <el-table-column prop="salesAttr1Text" label="销售属性1" min-width="160" show-overflow-tooltip />
-            <el-table-column prop="salesAttr2Text" label="销售属性2" min-width="120" show-overflow-tooltip />
-            <el-table-column label="相关规则 / 候选 SKU" min-width="280">
-              <template #default="{ row }">
-                <div v-if="row.status === 'conflict' && row.conflictRules.length" class="conflict-rule-list">
-                  <el-tooltip
-                    v-for="rule in row.conflictRules"
-                    :key="ruleIdFromRecord(rule) ?? conflictRuleSummary(rule)"
-                    placement="top"
-                    :content="conflictRuleSummary(rule)"
-                  >
-                    <el-tag size="small" type="danger" effect="plain">
-                      {{ conflictRuleName(rule) }}
-                    </el-tag>
-                  </el-tooltip>
-                </div>
-                <div v-else-if="row.status === 'sku_ambiguous' && row.skuCandidates.length" class="conflict-rule-list">
-                  <el-tag
-                    v-for="candidate in row.skuCandidates"
-                    :key="numberValue(candidate.id) ?? skuCandidateName(candidate)"
-                    size="small"
-                    type="warning"
-                    effect="plain"
-                  >
-                    {{ skuCandidateName(candidate) }}
-                  </el-tag>
-                </div>
-                <span v-else class="muted">-</span>
-              </template>
-            </el-table-column>
-            <el-table-column prop="actionText" label="建议处理" min-width="132" />
-            <el-table-column prop="count" label="行数" width="72" />
-            <el-table-column label="操作" width="112">
-              <template #default="{ row }">
-                <el-button
-                  v-if="row.status === 'conflict' && row.conflictRuleIds.length"
-                  link
-                  type="primary"
-                  @click="focusConflictRules(row)"
-                >
-                  查看规则
-                </el-button>
-                <el-button v-else link type="primary" @click="usePreviewRowAsDraft(row.firstRow)">
-                  {{ exceptionOperationText(row) }}
-                </el-button>
-              </template>
-            </el-table-column>
-          </el-table>
-        </section>
-
         <section class="rules-panel">
           <div class="panel-heading">
             <div>
@@ -1302,14 +914,6 @@ onMounted(load)
             </el-select>
             <el-button @click="clearRuleFilters">清空筛选</el-button>
           </div>
-          <el-alert
-            v-if="ruleFocusIds.length"
-            class="rule-focus-alert"
-            type="warning"
-            :closable="false"
-            show-icon
-            title="当前只显示冲突命中的学习记录；处理完可点“清空筛选”恢复全部规则。"
-          />
           <el-empty v-if="!filteredRules.length" description="没有符合筛选条件的学习记录" />
           <el-table v-else :data="filteredRules" size="small" border height="360" class="rules-table">
             <el-table-column label="规则" min-width="190">
@@ -1422,7 +1026,6 @@ onMounted(load)
 }
 
 .rule-editor,
-.preview-panel,
 .rules-panel {
   border: 1px solid #d8dee8;
   border-radius: 8px;
@@ -1435,7 +1038,6 @@ onMounted(load)
   padding: 16px 18px;
 }
 
-.preview-panel,
 .rules-panel {
   padding: 16px;
 }
@@ -1493,8 +1095,7 @@ onMounted(load)
 
 .full-control,
 .field-card-list,
-.match-type,
-.summary-grid {
+.match-type {
   margin-top: 12px;
   width: 100%;
 }
@@ -1619,18 +1220,8 @@ onMounted(load)
   width: 100%;
 }
 
-.rule-focus-alert {
-  margin-bottom: 10px;
-}
-
 .rules-table {
   width: 100%;
-}
-
-.conflict-rule-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
 }
 
 .rule-condition {
@@ -1650,48 +1241,6 @@ onMounted(load)
   white-space: nowrap;
 }
 
-.batch-scope-bar {
-  display: grid;
-  grid-template-columns: auto minmax(240px, 1fr);
-  align-items: center;
-  gap: 10px;
-  margin-top: 12px;
-}
-
-.batch-scope-bar span {
-  color: #475467;
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.coverage-alert {
-  margin: 12px 0;
-}
-
-.summary-grid {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(78px, 1fr));
-  gap: 8px;
-  margin-bottom: 12px;
-}
-
-.summary-item {
-  border: 1px solid #d8dee8;
-  border-radius: 6px;
-  padding: 10px;
-  background: #f8fafc;
-}
-
-.summary-item strong,
-.summary-item span {
-  display: block;
-}
-
-.summary-item strong {
-  font-size: 22px;
-}
-
-.summary-item span,
 .muted {
   color: #667085;
   font-size: 12px;

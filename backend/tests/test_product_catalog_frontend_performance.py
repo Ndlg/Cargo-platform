@@ -53,6 +53,14 @@ def test_product_matching_rule_editor_does_not_load_all_images() -> None:
     assert "imageSearchKeyword" in source
 
 
+def test_product_matching_page_does_not_duplicate_the_exception_checklist() -> None:
+    source = PRODUCT_MATCHING_VIEW.read_text(encoding="utf-8")
+
+    assert "商品/SKU 问题清单" not in source
+    assert "runSavedRulesPreview" not in source
+    assert "v-if=\"inboundFromExceptions\"" in source
+
+
 def test_collector_connection_ui_hides_raw_rowid_label() -> None:
     source = COLLECTOR_CONNECTIONS_VIEW.read_text(encoding="utf-8")
     template = source.split("<template>", 1)[1]
