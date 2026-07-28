@@ -49,26 +49,12 @@
 - 启用规则包：`current-user-shoes-v1` `1.2.0`
 - 采集器下载包 SHA-256：`B0C9AD3F7843DF361D6C9D75B98B4D4BFCB191A45226BBEAA01AF9F17712879D`
 
-## 已保留的立即回退容器
+## 旧验证回退清理
 
-- stage 03 页面：`cargo-platform-validation-ui-rollback-f96497a-night`
-- stage 03 后端：`cargo-platform-validation-backend-rollback-f96497a-night`
-- stage 03 解析服务：`cargo-platform-validation-parser-rollback-special-r2-night`
-- stage 02 解析服务：`cargo-platform-validation-parser-rollback-policy-audit-20260728`
-- stage 01 解析服务：`cargo-platform-validation-parser-rollback-20260728-005134`
-- stage 07 页面：`cargo-platform-validation-ui-rollback-stage08-7f89d21`
-- stage 08 页面：`cargo-platform-validation-ui-rollback-stage08-before-stage09`
-- stage 08 后端：`cargo-platform-validation-backend-rollback-stage08-before-stage09`
-- stage 09 页面：`cargo-platform-validation-ui-rollback-stage09-before-stage14`
-- stage 09 后端：`cargo-platform-validation-backend-rollback-stage09-before-stage14`
-- stage 08 解析服务：`cargo-platform-validation-parser-rollback-stage08-before-stage14`
-- stage 14 上一数据副本后端：`cargo-platform-validation-backend-rollback-stage14-data-20260728-165426`
-- stage 14 页面：`cargo-platform-validation-ui-rollback-stage14-before-stage15`
-- stage 15 页面：`cargo-platform-validation-ui-rollback-stage15-before-stage16`
-- stage 16 页面：`cargo-platform-validation-ui-rollback-stage16-before-stage17`
-- stage 16 后端：`cargo-platform-validation-backend-rollback-stage16-before-stage17`
+2026-07-28 部署 5173 后，19 个已停止的 `cargo-platform-validation-*rollback*`
+容器已删除。当前只保留 6173 的 UI、后端、解析器和 Redis 四个运行容器。
 
-这些容器均已停止但未删除。每个回退后端保留创建时的数据卷挂载；回退时只改容器名称并启动，不复制、不删除数据。
+两个验证数据卷和全部 Git 阶段标签仍保留；没有删除或重建数据。
 
 ## 最近一次已完成采集副本
 
@@ -86,83 +72,14 @@
 
 现场库当时仍有一轮正在采集。新副本通过 SQLite 在线备份生成，只在副本内隐藏其他轮次；现场数据库和正在采集轮次没有停止或修改。
 
-只回退本次数据副本（保留阶段 14 代码）：
+## 历史阶段恢复
 
-```powershell
-docker stop cargo-platform-validation-backend
-docker rename cargo-platform-validation-backend cargo-platform-validation-backend-rejected-latest-data
-docker rename cargo-platform-validation-backend-rollback-stage14-data-20260728-165426 cargo-platform-validation-backend
-docker start cargo-platform-validation-backend
-```
+旧验证回退容器已经清理。如需恢复某个历史验证阶段，按顶部表格中的 Git 标签
+重新构建对应验证镜像；不得删除两个验证数据卷。
 
-## 阶段 14 立即回退
+5173 的当前现场版本和即时回退方式见：
 
-容器级回退（只操作 6173）：
-
-```powershell
-docker stop cargo-platform-validation-ui cargo-platform-validation-backend cargo-platform-validation-parser
-docker rename cargo-platform-validation-ui cargo-platform-validation-ui-rejected-stage14
-docker rename cargo-platform-validation-backend cargo-platform-validation-backend-rejected-stage14
-docker rename cargo-platform-validation-parser cargo-platform-validation-parser-rejected-stage14
-docker rename cargo-platform-validation-ui-rollback-stage09-before-stage14 cargo-platform-validation-ui
-docker rename cargo-platform-validation-backend-rollback-stage09-before-stage14 cargo-platform-validation-backend
-docker rename cargo-platform-validation-parser-rollback-stage08-before-stage14 cargo-platform-validation-parser
-docker start cargo-platform-validation-parser cargo-platform-validation-backend cargo-platform-validation-ui
-```
-
-只回退规则包时，向 6173 的“识别规则包”页面导入并启用：
-
-`ops/validation-stages/20260728-night/active-rule-pack-before-stage14.json`
-
-该文件是部署前正在启用的 `1.1.0` 完整 payload。不要删除或重建数据卷。
-
-## 阶段 15 立即回退
-
-只回退 6173 页面，后端、解析服务和数据副本不动：
-
-```powershell
-docker stop cargo-platform-validation-ui
-docker rename cargo-platform-validation-ui cargo-platform-validation-ui-rejected-stage15
-docker rename cargo-platform-validation-ui-rollback-stage14-before-stage15 cargo-platform-validation-ui
-docker start cargo-platform-validation-ui
-```
-
-## 阶段 16 立即回退
-
-只回退 6173 页面，后端、解析服务和数据副本不动：
-
-```powershell
-docker stop cargo-platform-validation-ui
-docker rename cargo-platform-validation-ui cargo-platform-validation-ui-rejected-stage16
-docker rename cargo-platform-validation-ui-rollback-stage15-before-stage16 cargo-platform-validation-ui
-docker start cargo-platform-validation-ui
-```
-
-## 阶段 17 立即回退
-
-回退 6173 页面和验证后端，解析服务和数据副本不动：
-
-```powershell
-docker stop cargo-platform-validation-ui cargo-platform-validation-backend
-docker rename cargo-platform-validation-ui cargo-platform-validation-ui-rejected-stage17
-docker rename cargo-platform-validation-backend cargo-platform-validation-backend-rejected-stage17
-docker rename cargo-platform-validation-ui-rollback-stage16-before-stage17 cargo-platform-validation-ui
-docker rename cargo-platform-validation-backend-rollback-stage16-before-stage17 cargo-platform-validation-backend
-docker start cargo-platform-validation-backend cargo-platform-validation-ui
-```
-
-## 明早逐级判断
-
-从当前 `14` 开始验证。若不通过：
-
-1. 先按上面的命令恢复 stage 09 页面、后端和 stage 08 解析服务。
-2. 若需要定位本轮具体阶段，按标签依次构建并切换 `13`、`12`、`11`、`10`；每次只切一个标签。
-3. 再切页面到保留的 stage 07 页面，判断是否只是最后一轮文字收口问题。
-4. 再按 Git 标签依次构建并切换 `06`、`05`、`04`；每次只切一个标签。
-5. 若仍不通过，直接恢复三个 stage 03 保留容器。
-6. stage 03 以下只需要替换解析服务，即可依次判断特殊单规则、规则审计、原始基线。
-
-所有 Git 标签都是独立固定点。阶段 04 至 06 若需要运行，使用对应标签重新构建验证镜像；不切换 `main`，不操作 `5173`。
+`ops/field-baselines/field-20260728-205959/README.md`
 
 ## 当前验收结果
 
