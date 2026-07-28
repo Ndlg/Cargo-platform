@@ -43,7 +43,7 @@ services:
     volumes:
       - validation-data:/data
     ports:
-      - "127.0.0.1:18000:8000"
+      - "127.0.0.1:18001:8000"
     networks:
       validation:
         aliases:
