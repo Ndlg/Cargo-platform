@@ -28,7 +28,7 @@ services:
     environment:
       APP_NAME: Cargo Platform Validation
       DEFAULT_WORKSPACE_ID: "1"
-      APP_VERSION: 66d2959
+      APP_VERSION: 7bd0d9f
       CORS_ORIGINS: http://127.0.0.1:6173,http://localhost:6173
       ACCESS_TOKEN_EXPIRE_MINUTES: "480"
       LANG: C.UTF-8
