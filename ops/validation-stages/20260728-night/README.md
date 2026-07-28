@@ -81,6 +81,14 @@
 
 `ops/field-baselines/field-20260728-205959/README.md`
 
+## 验证环境容器
+
+6173 的四个组件统一由本目录的 `docker-compose.yml` 管理，在 Docker Desktop 中显示为 `cargo-platform-validation` 分组：
+
+```powershell
+docker compose -f ops/validation-stages/20260728-night/docker-compose.yml up -d
+```
+
 ## 当前验收结果
 
 - 后端：182 项测试通过。
