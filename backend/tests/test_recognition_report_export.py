@@ -120,7 +120,7 @@ def test_export_routes_non_matched_and_special_rows_to_exception_sheet() -> None
     ]
 
 
-def test_export_routes_matched_rows_with_missing_sales_attrs_to_exception_sheet() -> None:
+def test_export_keeps_matched_rows_with_missing_sales_attrs_in_normal_sheet() -> None:
     details = [
         SimpleNamespace(
             id=103,
@@ -144,8 +144,10 @@ def test_export_routes_matched_rows_with_missing_sales_attrs_to_exception_sheet(
 
     rows = recognition_rows_from_product_sku_linking_results(details)
 
-    assert recognition_report_export_rows(rows) == []
-    assert recognition_exception_export_rows(rows) == [["鞋款A 5.0二代灰色"]]
+    assert recognition_report_export_rows(rows) == [
+        ["鞋款A", "5.0二代灰色", "", "-", 1, "", "鞋款A 5.0二代灰色"],
+    ]
+    assert recognition_exception_export_rows(rows) == []
 
 
 def test_recognition_report_export_respects_sales_attr1_stack_layout() -> None:

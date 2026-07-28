@@ -874,18 +874,8 @@ def expanded_sales_attr2_values(row: dict[str, Any]) -> list[str]:
     return [tokens[0] or "-"] * quantity
 
 
-def recognition_report_required_value(value: Any) -> str:
-    text = text_value(value)
-    return "" if text in {"", "-"} else text
-
-
 def recognition_report_row_is_exportable(row: dict[str, Any]) -> bool:
-    if row.get("status") != "matched":
-        return False
-    return bool(
-        recognition_report_required_value(row.get("sales_attr1_text"))
-        and recognition_report_required_value(row.get("sales_attr2_text"))
-    )
+    return row.get("status") == "matched"
 
 
 def recognition_report_base_line_item(row: dict[str, Any]) -> dict[str, Any]:
