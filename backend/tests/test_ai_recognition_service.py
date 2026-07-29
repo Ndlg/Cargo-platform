@@ -251,6 +251,45 @@ def test_recognize_sanitizes_pii_and_reuses_identical_session(tmp_path: Path) ->
     assert "<layout>" not in sent
 
 
+def test_recognize_sends_only_tenant_selected_fingerprint_fields_to_model(tmp_path: Path) -> None:
+    module = load_ai_service(tmp_path / "import-default.db")
+    model = FakeModel()
+    app = module.create_app(model_client=model, db_path=tmp_path / "sessions.db")
+    request = raw_request()
+    request["payload"] = {
+        "contents": [
+            {
+                "data": {
+                    "productInfo": "范74 5代白金 45 1件",
+                    "productShortInfo": "范74",
+                    "sPInfo": "5代白金 45",
+                    "remark": "不要传给模型",
+                    "buyerRemark": "也不要传给模型",
+                    "productCount": "1件",
+                }
+            }
+        ]
+    }
+    request["field_selections"] = {
+        "CLOUD-PRODUCT-INFO": ["product_info", "product_count"],
+    }
+
+    with TestClient(app) as client:
+        response = client.post("/api/v1/recognize", json=request)
+        wait_for_session(client, response.json()["session_id"], "ai_rule_pending")
+
+    assert model.calls[0]["payload"] == {
+        "contents": [
+            {
+                "data": {
+                    "productInfo": "范74 5代白金 45 1件",
+                    "productCount": "1件",
+                }
+            }
+        ]
+    }
+
+
 def test_rejected_identical_request_starts_a_new_session(tmp_path: Path) -> None:
     module = load_ai_service(tmp_path / "import-default.db")
     model = FakeModel()

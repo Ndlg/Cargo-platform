@@ -98,7 +98,13 @@ def item_container_key(value: object) -> bool:
     return any(part in normalized for part in ITEM_CONTAINER_KEY_PARTS)
 
 
-def sanitize_payload(value: Any, *, depth: int = 0, item_context: bool = False) -> Any:
+def sanitize_payload(
+    value: Any,
+    *,
+    depth: int = 0,
+    item_context: bool = False,
+    allowed_source_keys: set[str] | None = None,
+) -> Any:
     if depth > 12:
         return "[depth-limit]"
     if isinstance(value, dict):
@@ -106,29 +112,47 @@ def sanitize_payload(value: Any, *, depth: int = 0, item_context: bool = False) 
         for index, (key, item) in enumerate(value.items()):
             if index >= 200:
                 break
+            selected_key = allowed_source_keys is not None and str(key) in allowed_source_keys
             if normalized_key(key) == "printxml" and isinstance(item, str):
-                if text := _print_text({"printXML": item}):
+                if (allowed_source_keys is None or selected_key) and (
+                    text := _print_text({"printXML": item})
+                ):
                     sanitized[str(key)[:256]] = text
                 continue
-            if sensitive_key(key):
+            if sensitive_key(key) and not selected_key:
                 continue
             child_context = item_context or item_container_key(key)
-            child = sanitize_payload(item, depth=depth + 1, item_context=child_context)
+            child = sanitize_payload(
+                item,
+                depth=depth + 1,
+                item_context=child_context,
+                allowed_source_keys=allowed_source_keys,
+            )
             if isinstance(item, (dict, list)):
                 if child:
                     sanitized[str(key)[:256]] = child
-            elif business_key(key, item_context=item_context):
+            elif selected_key or (
+                allowed_source_keys is None and business_key(key, item_context=item_context)
+            ):
                 sanitized[str(key)[:256]] = sanitize_payload(
                     item,
                     depth=depth + 1,
                     item_context=True,
+                    allowed_source_keys=allowed_source_keys,
                 )
         return sanitized
     if isinstance(value, list):
         return [
             sanitized
             for item in value[:100]
-            if (sanitized := sanitize_payload(item, depth=depth + 1, item_context=item_context))
+            if (
+                sanitized := sanitize_payload(
+                    item,
+                    depth=depth + 1,
+                    item_context=item_context,
+                    allowed_source_keys=allowed_source_keys,
+                )
+            )
             not in ({}, [], "", None)
         ]
     if isinstance(value, str):

@@ -54,6 +54,7 @@ class RecognizeRequest(BaseModel):
     source_component: str = Field(min_length=1, max_length=128)
     deterministic_failure_reason: str = Field(default="", max_length=512)
     payload: dict[str, Any]
+    field_selections: dict[str, list[str]] = Field(default_factory=dict)
 
     @field_validator("payload")
     @classmethod

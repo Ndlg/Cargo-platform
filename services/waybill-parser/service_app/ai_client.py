@@ -29,6 +29,7 @@ def recognize_with_ai(
     source_component: str,
     deterministic_failure_reason: str,
     payload: dict[str, Any],
+    field_selections: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
     base_url = ai_recognition_url()
     if not base_url:
@@ -43,6 +44,7 @@ def recognize_with_ai(
                 "source_component": source_component or "unknown",
                 "deterministic_failure_reason": deterministic_failure_reason,
                 "payload": payload,
+                "field_selections": field_selections or {},
             },
             timeout=35,
         )

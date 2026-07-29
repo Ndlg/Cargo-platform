@@ -66,6 +66,7 @@ class RawRecordParseInput(BaseModel):
     source_component: str | None = None
     source_index: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
+    ai_field_selections: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class WaybillSampleParseInput(BaseModel):
@@ -334,6 +335,7 @@ def ai_diagnostic(
             source_component=str(record.source_component or ""),
             deterministic_failure_reason=deterministic_reason,
             payload=document_payload,
+            field_selections=record.ai_field_selections,
         )
         session = safe_ai_session(result)
         return {

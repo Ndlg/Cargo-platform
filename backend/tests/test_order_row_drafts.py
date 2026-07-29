@@ -22,7 +22,12 @@ from fastapi.testclient import TestClient  # noqa: E402
 from app.api.routes import order_row_drafts as order_row_drafts_route  # noqa: E402
 from app.core.database import SessionLocal  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models import RawCaptureRecord, RecognitionRulePack, StandardDetail  # noqa: E402
+from app.models import (  # noqa: E402
+    RawCaptureRecord,
+    RecognitionRulePack,
+    StandardDetail,
+    TenantFingerprintConfig,
+)
 from app.services import order_row_reader as order_row_reader_service  # noqa: E402
 from service_app.order_row_engine import (  # noqa: E402
     draft_rows_from_payload,
@@ -61,6 +66,22 @@ def test_manual_ai_start_isolates_exactly_one_selected_waybill(monkeypatch) -> N
                 status="pending",
             )
         )
+        config = db.query(TenantFingerprintConfig).filter(
+            TenantFingerprintConfig.tenant_id == 1,
+            TenantFingerprintConfig.fingerprint_code == "CLOUD-PRODUCT-INFO",
+        ).first()
+        if config is None:
+            db.add(
+                TenantFingerprintConfig(
+                    tenant_id=1,
+                    fingerprint_code="CLOUD-PRODUCT-INFO",
+                    is_enabled=True,
+                    selected_fields=["product_info", "product_count"],
+                )
+            )
+        else:
+            config.is_enabled = True
+            config.selected_fields = ["product_info", "product_count"]
         db.commit()
 
     calls: list[dict] = []
@@ -124,6 +145,10 @@ def test_manual_ai_start_isolates_exactly_one_selected_waybill(monkeypatch) -> N
     assert calls[0]["allow_ai"] is True
     assert calls[0]["workspace_id"] == 1
     assert calls[0]["raw_records"][0]["parent_sequence"] == 2
+    assert calls[0]["raw_records"][0]["ai_field_selections"]["CLOUD-PRODUCT-INFO"] == [
+        "product_info",
+        "product_count",
+    ]
     documents = calls[0]["raw_records"][0]["payload"]["task"]["documents"]
     assert [document["documentID"] for document in documents] == ["SECOND"]
 

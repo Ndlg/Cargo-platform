@@ -273,7 +273,19 @@ def create_app(
     @app.post("/api/v1/recognize")
     def recognize(request: RecognizeRequest) -> dict[str, Any]:
         fingerprint = structural_fingerprint(request.payload, request.source_component)
-        sanitized = sanitize_payload(request.payload)
+        inspected = inspect_fingerprint(request.payload, request.source_component)
+        allowed_source_keys = None
+        if inspected and inspected["fingerprint_code"] in request.field_selections:
+            selected_fields = set(request.field_selections[inspected["fingerprint_code"]])
+            allowed_source_keys = {
+                str(field["path"]).rsplit(".", 1)[-1].split("//", 1)[0]
+                for field in inspected["fields"]
+                if field["key"] in selected_fields
+            }
+        sanitized = sanitize_payload(
+            request.payload,
+            allowed_source_keys=allowed_source_keys,
+        )
         payload_hash = sha256(
             json.dumps(sanitized, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()

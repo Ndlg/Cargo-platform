@@ -185,6 +185,45 @@ def test_manual_single_waybill_parse_creates_one_ai_session(monkeypatch) -> None
     assert requests[0]["deterministic_failure_reason"] == "rule_pack_missing"
 
 
+def test_manual_parse_forwards_tenant_fingerprint_field_selection(monkeypatch) -> None:
+    app, _rules = load_parser()
+    record = raw_record(
+        {
+            "contents": [
+                {
+                    "data": {
+                        "productInfo": "范74 5代白金 45 1件",
+                        "productShortInfo": "范74",
+                        "remark": "不要传给模型",
+                        "productCount": "1件",
+                    }
+                }
+            ]
+        }
+    )
+    record["ai_field_selections"] = {
+        "CLOUD-PRODUCT-INFO": ["product_info", "product_count"],
+    }
+    with fake_ai() as (url, requests):
+        monkeypatch.setenv("AI_RECOGNITION_URL", url)
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/v1/parse/batch",
+                json={
+                    "workspace_id": 1,
+                    "task_id": 61,
+                    "raw_records": [record],
+                    "rule_pack": None,
+                    "allow_ai": True,
+                },
+            )
+
+    assert response.status_code == 200
+    assert requests[0]["field_selections"] == {
+        "CLOUD-PRODUCT-INFO": ["product_info", "product_count"],
+    }
+
+
 def test_manual_parse_keeps_invalid_ai_result_editable(monkeypatch) -> None:
     app, _rules = load_parser()
     with fake_ai("ai_result_invalid") as (url, _requests):
