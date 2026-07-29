@@ -499,6 +499,7 @@ def test_ollama_client_requests_schema_constrained_non_thinking_json(tmp_path: P
     assert "不得包含字段名称" in request["messages"][0]["content"]
     assert "corrected_rows" in request["messages"][0]["content"]
     assert "printXML 是文本字段，只能使用 text_pipeline_v1" in request["messages"][0]["content"]
+    assert "编号 商品，,属性，尺码*数量" in request["messages"][0]["content"]
     assert request["format"]["required"] == ["parents", "candidate_rule"]
     assert request["format"]["properties"]["parents"]["maxItems"] == 1
     row_schema = request["format"]["properties"]["parents"]["items"]["properties"]["rows"]["items"]
