@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timezone
-import re
 from typing import Any
 
 from sqlalchemy import select
@@ -15,7 +14,8 @@ from app.services.order_row_contract import ORDER_ROW_DRAFTS_CONTRACT_VERSION
 RECOGNITION_RULE_PACK_CONTRACT_VERSION = "recognition_rule_pack_v1"
 RULE_PACK_MISSING_STATUS = "rule_pack_missing"
 SUPPORTED_ORDER_ROW_PARSERS = {"declarative_v1", "shoe_waybill_v1"}
-AI_REVISION_CODE_PATTERN = re.compile(r"^ai-cold-start-r(\d{4})$")
+AI_RULE_PACK_CODE = "ai-recognition-main"
+AI_RULE_PACK_NAME = "AI识别规则包"
 
 
 def utc_now_iso() -> str:
@@ -168,7 +168,7 @@ def activate_recognition_rule_pack(
     return pack
 
 
-def create_ai_rule_pack_revision(
+def save_ai_rule_profile(
     db: Session,
     *,
     tenant_id: int | None,
@@ -176,49 +176,53 @@ def create_ai_rule_pack_revision(
     session_id: str,
     profile: dict[str, Any],
     validate: Any,
+    learning_record: dict[str, Any] | None = None,
 ) -> RecognitionRulePack:
     fingerprint = text_value(profile.get("fingerprint"))
     if not fingerprint:
         raise ValueError("AI candidate rule requires a format fingerprint.")
 
-    active_pack = active_recognition_rule_pack(db, workspace_id=workspace_id)
-    profiles: list[dict[str, Any]] = []
-    if active_pack is not None:
-        parser_policy = object_value(active_pack.payload.get("parser_policy"))
-        if parser_policy.get("order_row_parser") == "declarative_v1":
-            profiles = [
-                deepcopy(item)
-                for item in list_value(parser_policy.get("format_profiles"))
-                if isinstance(item, dict) and text_value(item.get("fingerprint")) != fingerprint
-            ]
+    pack = db.scalar(
+        select(RecognitionRulePack).where(
+            RecognitionRulePack.workspace_id == workspace_id,
+            RecognitionRulePack.code == AI_RULE_PACK_CODE,
+        )
+    )
+    current_payload = (
+        deepcopy(pack.payload)
+        if pack is not None and not pack.is_deleted and isinstance(pack.payload, dict)
+        else {}
+    )
+    parser_policy = object_value(current_payload.get("parser_policy"))
+    profiles = [
+        deepcopy(item)
+        for item in list_value(parser_policy.get("format_profiles"))
+        if isinstance(item, dict) and text_value(item.get("fingerprint")) != fingerprint
+    ]
     profiles.append(deepcopy(profile))
-
-    revision = max(
-        (
-            int(match.group(1))
-            for code in db.scalars(
-                select(RecognitionRulePack.code).where(
-                    RecognitionRulePack.workspace_id == workspace_id,
-                    RecognitionRulePack.is_deleted.is_(False),
-                )
-            )
-            if (match := AI_REVISION_CODE_PATTERN.fullmatch(code or ""))
-        ),
-        default=0,
-    ) + 1
-    code = f"ai-cold-start-r{revision:04d}"
+    learning_records = [
+        deepcopy(item)
+        for item in list_value(current_payload.get("ai_learning_records"))
+        if isinstance(item, dict) and text_value(item.get("fingerprint")) != fingerprint
+    ]
+    if learning_record is not None:
+        learning_records.append({**deepcopy(learning_record), "fingerprint": fingerprint})
     payload = normalize_rule_pack_payload(
         {
+            **current_payload,
             "contract_version": RECOGNITION_RULE_PACK_CONTRACT_VERSION,
             "pack": {
-                "code": code,
-                "name": "AI 冷启动识别规则",
-                "version": f"1.0.{revision}",
+                **object_value(current_payload.get("pack")),
+                "code": AI_RULE_PACK_CODE,
+                "name": AI_RULE_PACK_NAME,
+                "version": "1.0.0",
             },
             "parser_policy": {
+                **parser_policy,
                 "order_row_parser": "declarative_v1",
                 "format_profiles": profiles,
             },
+            "ai_learning_records": learning_records,
         }
     )
     validation = validate(payload)
@@ -226,18 +230,24 @@ def create_ai_rule_pack_revision(
         errors = validation.get("errors")
         raise ValueError(f"AI candidate rule is invalid: {errors or 'unknown validation error'}")
 
-    pack = RecognitionRulePack(
-        tenant_id=tenant_id,
-        workspace_id=workspace_id,
-        name="AI 冷启动识别规则",
-        code=code,
-        version=f"1.0.{revision}",
-        description=f"管理员确认 AI 会话 {session_id} 后生成。",
-        payload=payload,
-        status="draft",
-        is_enabled=False,
-    )
-    db.add(pack)
+    if pack is None:
+        pack = RecognitionRulePack(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            name=AI_RULE_PACK_NAME,
+            code=AI_RULE_PACK_CODE,
+            version="1.0.0",
+            payload=payload,
+            status="draft",
+            is_enabled=False,
+        )
+        db.add(pack)
+    else:
+        pack.is_deleted = False
+        pack.name = AI_RULE_PACK_NAME
+        pack.version = "1.0.0"
+        pack.payload = payload
+    pack.description = f"管理员最后确认 AI 会话 {session_id} 后更新。"
     activate_recognition_rule_pack(db, workspace_id=workspace_id, pack=pack)
     return pack
 

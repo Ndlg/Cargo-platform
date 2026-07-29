@@ -5,7 +5,7 @@ from app.api.routes import ai_recognition as ai_route
 from app.api.routes.ai_recognition import AiRuleApprovalRequest
 from app.models import Base, RawCaptureRecord, RecognitionRulePack, Workspace
 from app.services import order_row_reader
-from app.services.recognition_rule_packs import create_ai_rule_pack_revision
+from app.services.recognition_rule_packs import save_ai_rule_profile
 
 
 def candidate_profile(fingerprint: str, *, product_path: str = "name") -> dict:
@@ -17,14 +17,14 @@ def candidate_profile(fingerprint: str, *, product_path: str = "name") -> dict:
     }
 
 
-def test_ai_approval_creates_immutable_rule_pack_revisions() -> None:
+def test_ai_approval_updates_one_rule_pack_in_place() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
     first_fingerprint = f"sha256:{'1' * 64}"
     second_fingerprint = f"sha256:{'2' * 64}"
 
     with Session(engine) as db:
-        first = create_ai_rule_pack_revision(
+        first = save_ai_rule_profile(
             db,
             tenant_id=1,
             workspace_id=1,
@@ -35,7 +35,7 @@ def test_ai_approval_creates_immutable_rule_pack_revisions() -> None:
         db.commit()
         first_payload = first.payload
 
-        second = create_ai_rule_pack_revision(
+        second = save_ai_rule_profile(
             db,
             tenant_id=1,
             workspace_id=1,
@@ -49,17 +49,48 @@ def test_ai_approval_creates_immutable_rule_pack_revisions() -> None:
             select(RecognitionRulePack).order_by(RecognitionRulePack.id)
         ).all()
 
-    assert [pack.code for pack in packs] == ["ai-cold-start-r0001", "ai-cold-start-r0002"]
-    assert packs[0].status == "inactive"
-    assert packs[0].is_enabled is False
-    assert packs[0].payload == first_payload
-    assert len(packs[0].payload["parser_policy"]["format_profiles"]) == 1
-    assert packs[1].status == "active"
-    assert packs[1].is_enabled is True
+    assert [pack.code for pack in packs] == ["ai-recognition-main"]
+    assert first.id == second.id == packs[0].id
+    assert packs[0].status == "active"
+    assert packs[0].is_enabled is True
+    assert packs[0].payload != first_payload
     assert {
         profile["fingerprint"]
-        for profile in packs[1].payload["parser_policy"]["format_profiles"]
+        for profile in packs[0].payload["parser_policy"]["format_profiles"]
     } == {first_fingerprint, second_fingerprint}
+
+
+def test_ai_approval_replaces_existing_fingerprint() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    fingerprint = f"sha256:{'1' * 64}"
+
+    with Session(engine) as db:
+        first = save_ai_rule_profile(
+            db,
+            tenant_id=1,
+            workspace_id=1,
+            session_id="session-1",
+            profile=candidate_profile(fingerprint, product_path="old"),
+            validate=lambda payload: {"status": "valid", "errors": []},
+        )
+        db.commit()
+        second = save_ai_rule_profile(
+            db,
+            tenant_id=1,
+            workspace_id=1,
+            session_id="session-2",
+            profile=candidate_profile(fingerprint, product_path="new"),
+            validate=lambda payload: {"status": "valid", "errors": []},
+        )
+        db.commit()
+        packs = db.scalars(select(RecognitionRulePack)).all()
+
+    assert first.id == second.id
+    assert len(packs) == 1
+    profiles = packs[0].payload["parser_policy"]["format_profiles"]
+    assert len(profiles) == 1
+    assert profiles[0]["fields"]["product"] == "new"
 
 
 def test_ai_approval_rejects_invalid_candidate_without_creating_pack() -> None:
@@ -68,7 +99,7 @@ def test_ai_approval_rejects_invalid_candidate_without_creating_pack() -> None:
 
     with Session(engine) as db:
         try:
-            create_ai_rule_pack_revision(
+            save_ai_rule_profile(
                 db,
                 tenant_id=1,
                 workspace_id=1,
@@ -169,8 +200,29 @@ def test_internal_approval_activates_validated_revision(monkeypatch) -> None:
 
     ai_route.get_settings.cache_clear()
     assert response["status"] == "activated"
-    assert response["rule_pack"]["code"] == "ai-cold-start-r0001"
+    assert response["rule_pack"]["code"] == "ai-recognition-main"
     assert response["rerun_task_id"] == 61
+    learning_records = db.scalar(select(RecognitionRulePack)).payload["ai_learning_records"]
+    assert learning_records == [
+        {
+            "fingerprint": f"sha256:{'4' * 64}",
+            "session_id": "session-api",
+            "task_id": 61,
+            "raw_record_id": 100,
+            "source_component": "test",
+            "sample_payload": {"items": [{"name": "shoe", "quantity": 1}]},
+            "confirmed_rows": [
+                {
+                    "product": "shoe",
+                    "sales_attr1": "",
+                    "sales_attr2": "",
+                    "quantity": 1,
+                    "remark": "",
+                }
+            ],
+            "rule_evidence": [],
+        }
+    ]
 
 
 def test_internal_approval_rejects_rule_that_cannot_reproduce_candidate(monkeypatch) -> None:

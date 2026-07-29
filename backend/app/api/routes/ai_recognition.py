@@ -13,8 +13,8 @@ from app.core.database import get_db
 from app.models import RawCaptureRecord, Workspace
 from app.services.order_row_reader import parser_raw_record_inputs
 from app.services.recognition_rule_packs import (
-    create_ai_rule_pack_revision,
     recognition_rule_pack_summary,
+    save_ai_rule_profile,
 )
 from app.services.waybill_parser_client import (
     preview_order_row_drafts_with_service,
@@ -105,13 +105,22 @@ def approve_ai_rule(
 
     profile = {**request.candidate_rule, "fingerprint": request.format_fingerprint}
     try:
-        pack = create_ai_rule_pack_revision(
+        pack = save_ai_rule_profile(
             db,
             tenant_id=workspace.tenant_id,
             workspace_id=workspace.id,
             session_id=request.session_id,
             profile=profile,
             validate=lambda payload: validate_rule_pack_with_service(rule_pack=payload),
+            learning_record={
+                "session_id": request.session_id,
+                "task_id": request.task_id,
+                "raw_record_id": request.raw_record_id,
+                "source_component": record.source_component,
+                "sample_payload": evidence_payload,
+                "confirmed_rows": expected_rows,
+                "rule_evidence": request.rule_evidence,
+            },
         )
         parser_input = parser_raw_record_inputs([record])[0]
         replay = preview_order_row_drafts_with_service(
