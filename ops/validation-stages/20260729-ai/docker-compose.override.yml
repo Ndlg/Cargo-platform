@@ -51,7 +51,7 @@ services:
       AI_RECOGNITION_INTERNAL_TOKEN: ${AI_RECOGNITION_INTERNAL_TOKEN:?set AI_RECOGNITION_INTERNAL_TOKEN}
 
   ui:
-    image: cargo-platform-validation-ui:tenant-fingerprints-46ad128
+    image: cargo-platform-validation-ui:raw-field-names-b7c7f1d
 
 volumes:
   validation-data:
