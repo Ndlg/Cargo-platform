@@ -415,7 +415,13 @@ def create_app(
                 session_id,
                 "rejected",
                 generation=session["generation"],
-                expected_status=session["status"],
+                expected_statuses=(
+                    "model_running",
+                    "ai_rule_pending",
+                    "ai_rule_invalid",
+                    "ai_result_invalid",
+                    "ai_parse_failed",
+                ),
             )
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc

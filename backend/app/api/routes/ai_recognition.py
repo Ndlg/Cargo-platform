@@ -65,6 +65,24 @@ def comparable_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def valid_business_rows(rows: list[dict[str, Any]]) -> bool:
+    return bool(rows) and all(
+        isinstance(row["product"], str)
+        and bool(row["product"].strip())
+        and len(row["product"]) <= 512
+        and isinstance(row["sales_attr1"], str)
+        and len(row["sales_attr1"]) <= 512
+        and isinstance(row["sales_attr2"], str)
+        and len(row["sales_attr2"]) <= 512
+        and isinstance(row["remark"], str)
+        and len(row["remark"]) <= 1000
+        and isinstance(row["quantity"], int)
+        and not isinstance(row["quantity"], bool)
+        and 1 <= row["quantity"] <= 100_000
+        for row in rows
+    )
+
+
 def rows_cover_expected(actual: list[dict[str, Any]], expected: list[dict[str, Any]]) -> bool:
     if len(actual) != len(expected):
         return False
@@ -135,7 +153,7 @@ def approve_ai_rule(
     source = first_parent.get("source") if isinstance(first_parent, dict) else None
     evidence_payload = source.get("sanitized_payload") if isinstance(source, dict) else None
     expected_rows = comparable_rows(request.candidate_output)
-    if not isinstance(evidence_payload, dict) or not expected_rows:
+    if not isinstance(evidence_payload, dict) or not valid_business_rows(expected_rows):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="AI 候选缺少可重放的面单证据或订单行，未同步规则。",
@@ -178,7 +196,7 @@ def approve_ai_rule(
                 or not isinstance(document_sequence, int)
                 or isinstance(document_sequence, bool)
                 or document_sequence < 1
-                or not confirmed_rows
+                or not valid_business_rows(confirmed_rows)
             ):
                 raise ValueError("同类型面单的历史确认样本信息不完整，未保存新规则。")
             replay_record = db.scalar(

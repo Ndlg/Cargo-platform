@@ -239,6 +239,7 @@ class SessionStore:
         error: str | None = None,
         generation: int | None = None,
         expected_status: str | None = None,
+        expected_statuses: tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
         with closing(self.connect()) as db:
             conditions = ["session_id = ?"]
@@ -257,6 +258,9 @@ class SessionStore:
             if expected_status is not None:
                 conditions.append("status = ?")
                 parameters.append(expected_status)
+            if expected_statuses:
+                conditions.append(f"status IN ({','.join('?' for _ in expected_statuses)})")
+                parameters.extend(expected_statuses)
             cursor = db.execute(
                 f"""
                 UPDATE recognition_sessions
