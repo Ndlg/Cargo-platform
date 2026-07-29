@@ -11,7 +11,7 @@ services:
           - local-model
 
   ai-recognition:
-    image: cargo-platform-ai-recognition:manual-ai-1d11168
+    image: cargo-platform-ai-recognition:ai-session-a31a1dd
     container_name: cargo-platform-validation-ai-recognition
     depends_on:
       - local-model
@@ -50,7 +50,7 @@ services:
       AI_RECOGNITION_INTERNAL_TOKEN: ${AI_RECOGNITION_INTERNAL_TOKEN:?set AI_RECOGNITION_INTERNAL_TOKEN}
 
   ui:
-    image: cargo-platform-validation-ui:single-ai-pack-9ae024b
+    image: cargo-platform-validation-ui:ai-session-b72ee71
 
 volumes:
   validation-data:

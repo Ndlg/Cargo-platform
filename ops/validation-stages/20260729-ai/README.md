@@ -88,8 +88,8 @@ docker compose -f ops/validation-stages/20260728-night/docker-compose.yml up -d
 
 - backend：`cargo-platform-validation-backend:single-ai-pack-0a1a18d`
 - parser：`cargo-platform-validation-parser:manual-ai-0a7b184`
-- UI：`cargo-platform-validation-ui:single-ai-pack-9ae024b`
-- AI 识别：`cargo-platform-ai-recognition:manual-ai-1d11168`
+- UI：`cargo-platform-validation-ui:ai-session-b72ee71`
+- AI 识别：`cargo-platform-ai-recognition:ai-session-a31a1dd`
 - 本地模型：`qwen3.5:4b-q4_K_M`
 
 ## 阶段 3（历史，已被阶段 4 替代）：管理员手动单张学习
@@ -164,6 +164,15 @@ docker compose `
 - 6173 实机完成“删除 → 同名重建 → 再删除”，最终保持 `0` 个规则包，
   供管理员从第一张陌生面单重新学习。
 - 仅重建 6173 backend 和 UI；parser、AI、本地模型与 5173 均未调整。
+
+## 阶段 5：顶部 AI 会话窗口
+
+- “AI 面单解析”页顶部常驻会话窗口，不再把解析过程放在全部待学习面单之后。
+- 点击面单后立即显示“正在创建会话”，随后在页面内展示本地 AI 控制台。
+- 最近一次会话入口按工作空间和采集轮次保留，刷新页面后仍可继续查看。
+- 启动失败直接在会话窗口显示中文原因；模型候选仍需管理员确认。
+- 已拒绝、已批准或解析失败的旧会话不会阻塞重新识别；再次点击会创建新会话。
+- 只替换 6173 UI 和 AI 镜像；backend、parser、本地模型和 5173 均不调整。
 
 ## 验收结果
 
