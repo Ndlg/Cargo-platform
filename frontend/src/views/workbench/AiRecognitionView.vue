@@ -6,16 +6,30 @@ import {
   getOrderRowDrafts,
   getRecords,
   getWaybillReadingSamples,
+  listTenantFingerprintConfigs,
   startManualAiRecognition,
   type CaptureTaskRecord,
   type OrderRowDraftsResponse,
+  type TenantFingerprintConfig,
   type WaybillReadingSample,
 } from '../../services/api'
 import { useSessionStore } from '../../stores/session'
 
+type FingerprintPresentation = {
+  code: string
+  name: string
+  fields: Array<{
+    key: string
+    label: string
+    rawName: string
+    values: string[]
+  }>
+}
+
 type QueueItem = WaybillReadingSample & {
   parentSequence: number
   reason: string
+  presentation: FingerprintPresentation | null
 }
 
 const session = useSessionStore()
@@ -23,6 +37,7 @@ const tasks = ref<CaptureTaskRecord[]>([])
 const selectedTaskId = ref<number | null>(null)
 const samples = ref<WaybillReadingSample[]>([])
 const drafts = ref<OrderRowDraftsResponse | null>(null)
+const fingerprintConfigs = ref<TenantFingerprintConfig[]>([])
 const loading = ref(false)
 const startingSampleId = ref('')
 const error = ref('')
@@ -75,6 +90,50 @@ const taskOptions = computed(() =>
     })),
 )
 
+function rawFieldName(path: string): string {
+  const rawPath = path.split('//')[0]
+  return rawPath.split('.').pop()?.replace(/\[\]$/, '') || path
+}
+
+function pathContainsField(path: string | null | undefined, fieldName: string): boolean {
+  return Boolean(path && path.split(/[.[\]]+/).includes(fieldName))
+}
+
+function fingerprintPresentation(sample: WaybillReadingSample): FingerprintPresentation | null {
+  const blocks = sample.text_blocks.filter(
+    (block) => block.block_kind === 'original' && block.source_path,
+  )
+  const matched = fingerprintConfigs.value
+    .map((config) => ({
+      config,
+      score: config.candidate_fields.filter((field) =>
+        blocks.some((block) => pathContainsField(block.source_path, rawFieldName(field.path))),
+      ).length,
+    }))
+    .sort((a, b) => b.score - a.score)[0]
+  if (!matched?.score) return null
+
+  return {
+    code: matched.config.code,
+    name: matched.config.name,
+    fields: matched.config.selected_fields
+      .map((key) => matched.config.candidate_fields.find((field) => field.key === key))
+      .filter((field) => field !== undefined)
+      .map((field) => {
+        const rawName = rawFieldName(field.path)
+        return {
+          key: field.key,
+          label: field.label,
+          rawName,
+          values: blocks
+            .filter((block) => pathContainsField(block.source_path, rawName))
+            .map((block) => block.text.trim())
+            .filter(Boolean),
+        }
+      }),
+  }
+}
+
 const queue = computed<QueueItem[]>(() => {
   const diagnostics = drafts.value?.diagnostics ?? []
   return samples.value
@@ -85,6 +144,7 @@ const queue = computed<QueueItem[]>(() => {
         drafts.value?.status === 'rule_pack_missing'
           ? 'rule_pack_missing'
           : diagnostics[index]?.reason ?? '',
+      presentation: fingerprintPresentation(sample),
     }))
     .filter((item) => item.reason)
 })
@@ -136,12 +196,14 @@ async function loadQueue() {
   loading.value = true
   error.value = ''
   try {
-    const [reading, parsed] = await Promise.all([
+    const [reading, parsed, fingerprintSettings] = await Promise.all([
       getWaybillReadingSamples({ task_id: selectedTaskId.value, limit: 200 }),
       getOrderRowDrafts(selectedTaskId.value, { limit: 5000 }),
+      listTenantFingerprintConfigs(),
     ])
     samples.value = reading.samples
     drafts.value = parsed
+    fingerprintConfigs.value = fingerprintSettings.fingerprints
   } catch (err) {
     error.value = err instanceof Error ? err.message : '待学习面单读取失败'
   } finally {
@@ -295,7 +357,21 @@ onBeforeUnmount(() => window.removeEventListener('message', handleConsoleMessage
             <strong>面单 {{ item.parentSequence }}</strong>
             <el-tag type="warning">{{ reasonLabel(item.reason) }}</el-tag>
           </div>
-          <p>{{ item.sample_text || '这张面单没有可展示的原文' }}</p>
+          <div v-if="item.presentation" class="fingerprint-preview">
+            <el-tag effect="plain">
+              {{ item.presentation.code }} · {{ item.presentation.name }}
+            </el-tag>
+            <div
+              v-for="field in item.presentation.fields"
+              :key="field.key"
+              class="fingerprint-field"
+            >
+              <span>{{ field.label }} <code>{{ field.rawName }}</code></span>
+              <p v-if="field.values.length">{{ field.values.join('\n') }}</p>
+              <p v-else class="empty-value">空</p>
+            </div>
+          </div>
+          <p v-else>{{ item.sample_text || '这张面单没有可展示的原文' }}</p>
           <small>{{ item.source_component || '未知打印平台' }}</small>
         </div>
         <el-button
@@ -355,6 +431,30 @@ onBeforeUnmount(() => window.removeEventListener('message', handleConsoleMessage
   margin: 8px 0;
   color: #303133;
   white-space: pre-wrap;
+}
+
+.fingerprint-preview {
+  display: grid;
+  gap: 10px;
+  margin: 10px 0;
+}
+
+.fingerprint-field > span {
+  color: #606266;
+  font-size: 13px;
+}
+
+.fingerprint-field code {
+  margin-left: 4px;
+  color: #909399;
+}
+
+.fingerprint-field p {
+  margin: 3px 0 0;
+}
+
+.fingerprint-field .empty-value {
+  color: #c0c4cc;
 }
 
 .queue-card small {

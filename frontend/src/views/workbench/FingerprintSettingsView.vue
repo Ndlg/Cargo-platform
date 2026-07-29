@@ -64,7 +64,7 @@ onMounted(loadConfigs)
     </header>
 
     <el-alert
-      title="配置独立保存，不会修改现有识别规则；本阶段尚未接入 AI 解析输入。"
+      title="配置会同步到 AI 面单解析页的字段展示，不会修改现有识别规则；模型输入尚未接入。"
       type="info"
       :closable="false"
       show-icon
