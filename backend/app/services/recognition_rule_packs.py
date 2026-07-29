@@ -118,7 +118,6 @@ def upsert_recognition_rule_pack(
         select(RecognitionRulePack).where(
             RecognitionRulePack.workspace_id == workspace_id,
             RecognitionRulePack.code == code,
-            RecognitionRulePack.is_deleted.is_(False),
         )
     )
     if pack is None:
@@ -135,6 +134,7 @@ def upsert_recognition_rule_pack(
         )
         db.add(pack)
     else:
+        pack.is_deleted = False
         pack.name = text_value(pack_meta.get("name"))
         pack.version = text_value(pack_meta.get("version")) or pack.version
         pack.description = description or text_value(pack_meta.get("description")) or pack.description
