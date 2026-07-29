@@ -62,6 +62,10 @@ function recordValue(value: unknown): Record<string, unknown> {
     : {}
 }
 
+function jsonCopy<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T
+}
+
 async function loadPacks() {
   loading.value = true
   error.value = ''
@@ -243,10 +247,10 @@ async function editPackRules(pack: RecognitionRulePackSummary) {
         ))
       : []
     editingPack.value = pack
-    editingPayload.value = structuredClone(payload)
-    formatProfiles.value = structuredClone(profiles)
+    editingPayload.value = jsonCopy(payload)
+    formatProfiles.value = jsonCopy(profiles)
     learningRecords.value = Array.isArray(payload.ai_learning_records)
-      ? structuredClone(payload.ai_learning_records)
+      ? jsonCopy(payload.ai_learning_records)
       : []
     selectedFingerprint.value = formatProfiles.value[0]?.fingerprint ?? ''
     ruleEditorVisible.value = true
@@ -301,9 +305,9 @@ async function savePackRules() {
     parser_policy: {
       ...currentPolicy,
       order_row_parser: 'declarative_v1',
-      format_profiles: structuredClone(formatProfiles.value),
+      format_profiles: jsonCopy(formatProfiles.value),
     },
-    ai_learning_records: structuredClone(learningRecords.value),
+    ai_learning_records: jsonCopy(learningRecords.value),
   }
 
   savingRules.value = true
