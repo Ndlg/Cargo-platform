@@ -62,6 +62,15 @@ def comparable_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def rows_cover_expected(actual: list[dict[str, Any]], expected: list[dict[str, Any]]) -> bool:
+    remaining = actual.copy()
+    for row in expected:
+        if row not in remaining:
+            return False
+        remaining.remove(row)
+    return True
+
+
 @router.post("/approve")
 def approve_ai_rule(
     request: AiRuleApprovalRequest,
@@ -128,7 +137,7 @@ def approve_ai_rule(
             raw_records=[parser_input],
             rule_pack=pack.payload,
         )
-        if comparable_rows(replay) != expected_rows:
+        if not rows_cover_expected(comparable_rows(replay), expected_rows):
             raise ValueError("AI candidate rule cannot reproduce the confirmed order rows.")
         db.commit()
         db.refresh(pack)

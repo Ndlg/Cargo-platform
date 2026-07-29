@@ -135,6 +135,14 @@ def test_internal_approval_activates_validated_revision(monkeypatch) -> None:
             "contract_version": "order_row_drafts_v1",
             "rows": [
                 {
+                    "product": "sibling shoe",
+                    "sales_attr1": "",
+                    "sales_attr2": "",
+                    "quantity": 1,
+                    "remark": "",
+                    "image_match_text": "sibling shoe",
+                },
+                {
                     "product": "shoe",
                     "sales_attr1": "",
                     "sales_attr2": "",
