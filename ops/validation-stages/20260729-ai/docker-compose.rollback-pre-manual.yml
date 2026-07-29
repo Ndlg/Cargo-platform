@@ -1,0 +1,14 @@
+services:
+  ai-recognition:
+    image: cargo-platform-ai-recognition:ai-98ebbd8
+
+  waybill-parser:
+    image: cargo-platform-validation-parser:ai-1cb51cc
+
+  backend:
+    image: cargo-platform-validation-backend:ai-5d5ec7b
+    environment:
+      APP_VERSION: ai-5d5ec7b
+
+  ui:
+    image: cargo-platform-validation-ui:ai-51ec600

@@ -11,7 +11,7 @@ services:
           - local-model
 
   ai-recognition:
-    image: cargo-platform-ai-recognition:ai-98ebbd8
+    image: cargo-platform-ai-recognition:manual-ai-1d11168
     container_name: cargo-platform-validation-ai-recognition
     depends_on:
       - local-model
@@ -32,25 +32,25 @@ services:
           - ai-recognition
 
   waybill-parser:
-    image: cargo-platform-validation-parser:ai-1cb51cc
+    image: cargo-platform-validation-parser:manual-ai-0a7b184
     depends_on:
       - ai-recognition
     environment:
       AI_RECOGNITION_URL: http://ai-recognition:8011
 
   backend:
-    image: cargo-platform-validation-backend:ai-5d5ec7b
+    image: cargo-platform-validation-backend:manual-ai-ad6f1c5
     depends_on:
       - redis
       - waybill-parser
       - ai-recognition
     environment:
-      APP_VERSION: ai-5d5ec7b
+      APP_VERSION: manual-ai-ad6f1c5
       AI_RECOGNITION_ENABLED: "true"
       AI_RECOGNITION_INTERNAL_TOKEN: ${AI_RECOGNITION_INTERNAL_TOKEN:?set AI_RECOGNITION_INTERNAL_TOKEN}
 
   ui:
-    image: cargo-platform-validation-ui:ai-51ec600
+    image: cargo-platform-validation-ui:manual-ai-0a7b184
 
 volumes:
   validation-data:

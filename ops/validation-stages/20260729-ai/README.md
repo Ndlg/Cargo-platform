@@ -86,11 +86,61 @@ docker compose -f ops/validation-stages/20260728-night/docker-compose.yml up -d
 
 ## 当前 6173 镜像
 
-- backend：`cargo-platform-validation-backend:ai-5d5ec7b`
-- parser：`cargo-platform-validation-parser:ai-1cb51cc`
-- UI：`cargo-platform-validation-ui:ai-51ec600`
-- AI 识别：`cargo-platform-ai-recognition:ai-98ebbd8`
+- backend：`cargo-platform-validation-backend:manual-ai-ad6f1c5`
+- parser：`cargo-platform-validation-parser:manual-ai-0a7b184`
+- UI：`cargo-platform-validation-ui:manual-ai-0a7b184`
+- AI 识别：`cargo-platform-ai-recognition:manual-ai-1d11168`
 - 本地模型：`qwen3.5:4b-q4_K_M`
+
+## 阶段 3：管理员手动单张学习
+
+业务页面不再触发 AI。管理员在
+`http://127.0.0.1:6173/admin/ai-recognition` 手动选择一张陌生面单：
+
+1. AI 异步生成候选订单行和声明式规则，接口立即返回 `model_running`。
+2. 不合格候选可反馈重生成或拒绝，未确认候选不进入正常订单行。
+3. 确认前，后端用原始面单重放候选规则，并严格比对商品、销售属性 1、
+   销售属性 2、数量和备注。
+4. 重放一致才生成不可变规则版本并激活；`图片匹配文本` 继续由商品/SKU
+   匹配模块生成，不由 AI 审批决定。
+
+2026-07-29 真实任务 `64` 验证：
+
+- 最近一轮 `94` 张面单，未学习时业务查询约 `85ms`，AI 会话 `0 -> 0`。
+- 页面显示 `94` 个独立的“手动开始解析这一张”按钮；一次点击只新增一个 AI 会话。
+- 特殊“补差价”样本被数量校验拒绝，没有生成规则。
+- 正常 ITEM_INFO 样本经管理员反馈修正后，候选规则重放通过并生成
+  `ai-cold-start-r0001`。
+- 激活后同格式 `7` 张自动解析，待学习数 `94 -> 87`；正常业务刷新时
+  AI 会话仍为 `4`，没有新增模型调用。
+- 数量闭环：父面单 `94 = 正常解析 7 + 明确异常 87`，无静默丢单。
+
+本阶段完整回归：后端 `222 passed`，前端 `vue-tsc --noEmit` 通过；
+6173 的 UI、backend、parser、AI 健康检查均为 `200`，容器重启次数均为 `0`。
+
+### 本阶段回退
+
+部署前数据库备份位于
+`runtime/manual-ai-20260729-143519/`：
+
+- `validation-predeploy.db`
+  SHA-256 `1C4F8129864DEBD209EF26C17C24C98B61B4F95A2E764F3788E51F0F6C1EBCC1`
+- `ai-sessions-predeploy.db`
+  SHA-256 `7C69FBCBD90B958F197BEFC3077F128DD25CC1799033D6DD972B8BF39D122B04`
+
+仅回退代码镜像时，保留当前数据卷并叠加回退文件：
+
+```powershell
+docker compose `
+  -f ops/validation-stages/20260728-night/docker-compose.yml `
+  -f ops/validation-stages/20260729-ai/docker-compose.override.yml `
+  -f ops/validation-stages/20260729-ai/docker-compose.rollback-pre-manual.yml `
+  up -d --force-recreate
+```
+
+需要连数据一起回退时，先停止 6173 的 UI、backend、parser、AI，再把上述两个
+备份分别恢复到验证数据卷和 AI 会话卷；不得操作 `cargo-platform-data` 或任何
+5173 容器。
 
 ## 验收结果
 
