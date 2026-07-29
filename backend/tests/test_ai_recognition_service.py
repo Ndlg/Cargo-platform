@@ -228,6 +228,11 @@ def test_recognize_sanitizes_pii_and_reuses_identical_session(tmp_path: Path) ->
     assert first.json()["session_id"] == second.json()["session_id"]
     assert first.json()["console_url"].startswith("http://127.0.0.1:6183/console?session=")
     assert stored["candidate"]
+    assert stored["model_input"] == {
+        "fingerprint": stored["fingerprint"],
+        "sanitized_payload": model.calls[0]["payload"],
+        "administrator_feedback": [],
+    }
     assert len(model.calls) == 1
     sent = json.dumps(model.calls[0]["payload"], ensure_ascii=False)
     assert "张三" not in sent
@@ -571,9 +576,11 @@ def test_health_console_and_session_list_are_available(tmp_path: Path) -> None:
     assert "按修改结果重新生成规则" in console.text
     assert "ai_rule_invalid" in console.text
     assert "ai_result_invalid" in console.text
+    assert "本次传给 AI 的字段" in console.text
+    assert "字段路径（原始英文名）" in console.text
+    assert "modelInput(row)" in console.text
     assert "row.error" in console.text
     assert "window.alert(error?.detail" not in console.text
-    assert "格式指纹" not in console.text
     assert "确定性规则失败原因" not in console.text
     assert "JSON.stringify(row.candidate" not in console.text
     assert sessions.json() == []

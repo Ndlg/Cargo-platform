@@ -148,10 +148,14 @@ def create_app(
         lambda: model_executor.shutdown(wait=False, cancel_futures=True),
     )
 
-    def response_payload(session: dict[str, Any]) -> dict[str, Any]:
+    def response_payload(
+        session: dict[str, Any],
+        *,
+        include_model_input: bool = False,
+    ) -> dict[str, Any]:
         session_id = session["session_id"]
         console_url = f"{console_base}/console?session={session_id}" if console_base else f"/console?session={session_id}"
-        return {
+        payload = {
             "session_id": session_id,
             "status": session["status"],
             "fingerprint": session["fingerprint"],
@@ -169,6 +173,13 @@ def create_app(
             "updated_at": session["updated_at"],
             "console_url": console_url,
         }
+        if include_model_input:
+            payload["model_input"] = {
+                "fingerprint": session["fingerprint"],
+                "sanitized_payload": session["sanitized_payload"],
+                "administrator_feedback": session["feedback"],
+            }
+        return payload
 
     def run_model(session: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -299,7 +310,7 @@ def create_app(
         session = store.get(session_id)
         if session is None:
             raise HTTPException(status_code=404, detail="Recognition session not found.")
-        return response_payload(session)
+        return response_payload(session, include_model_input=True)
 
     @app.post("/api/v1/sessions/{session_id}/feedback")
     def add_feedback(session_id: str, request: FeedbackRequest) -> dict[str, Any]:
