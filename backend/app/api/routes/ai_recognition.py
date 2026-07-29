@@ -5,16 +5,21 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.database import get_db
-from app.models import Workspace
+from app.models import RawCaptureRecord, Workspace
+from app.services.order_row_reader import parser_raw_record_inputs
 from app.services.recognition_rule_packs import (
     create_ai_rule_pack_revision,
     recognition_rule_pack_summary,
 )
-from app.services.waybill_parser_client import validate_rule_pack_with_service
+from app.services.waybill_parser_client import (
+    preview_order_row_drafts_with_service,
+    validate_rule_pack_with_service,
+)
 
 
 router = APIRouter(prefix="/internal/ai-recognition", tags=["ai-recognition-internal"])
@@ -29,6 +34,33 @@ class AiRuleApprovalRequest(BaseModel):
     candidate_rule: dict[str, Any]
     rule_evidence: list[str] = Field(default_factory=list)
     candidate_output: dict[str, Any] = Field(default_factory=dict)
+
+
+BUSINESS_ROW_FIELDS = (
+    "product",
+    "sales_attr1",
+    "sales_attr2",
+    "quantity",
+    "remark",
+    "image_match_text",
+)
+
+
+def comparable_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = payload.get("rows")
+    if not isinstance(rows, list):
+        rows = [
+            row
+            for parent in payload.get("parents") or []
+            if isinstance(parent, dict)
+            for row in parent.get("rows") or []
+            if isinstance(row, dict)
+        ]
+    return [
+        {field: row.get(field, "") for field in BUSINESS_ROW_FIELDS}
+        for row in rows
+        if isinstance(row, dict)
+    ]
 
 
 @router.post("/approve")
@@ -49,6 +81,29 @@ def approve_ai_rule(
     if workspace is None or workspace.is_deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found.")
 
+    record = db.scalar(
+        select(RawCaptureRecord).where(
+            RawCaptureRecord.id == request.raw_record_id,
+            RawCaptureRecord.workspace_id == request.workspace_id,
+            RawCaptureRecord.task_id == request.task_id,
+            RawCaptureRecord.is_deleted.is_(False),
+            RawCaptureRecord.archived_at.is_(None),
+        )
+    )
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Raw waybill not found.")
+
+    parents = request.candidate_output.get("parents")
+    first_parent = parents[0] if isinstance(parents, list) and parents else None
+    source = first_parent.get("source") if isinstance(first_parent, dict) else None
+    evidence_payload = source.get("sanitized_payload") if isinstance(source, dict) else None
+    expected_rows = comparable_rows(request.candidate_output)
+    if not isinstance(evidence_payload, dict) or not expected_rows:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="AI 候选缺少可重放的面单证据或订单行，未同步规则。",
+        )
+
     profile = {**request.candidate_rule, "fingerprint": request.format_fingerprint}
     try:
         pack = create_ai_rule_pack_revision(
@@ -59,6 +114,15 @@ def approve_ai_rule(
             profile=profile,
             validate=lambda payload: validate_rule_pack_with_service(rule_pack=payload),
         )
+        parser_input = parser_raw_record_inputs([record])[0]
+        parser_input["payload"] = evidence_payload
+        replay = preview_order_row_drafts_with_service(
+            task_id=request.task_id,
+            raw_records=[parser_input],
+            rule_pack=pack.payload,
+        )
+        if comparable_rows(replay) != expected_rows:
+            raise ValueError("AI candidate rule cannot reproduce the confirmed order rows.")
         db.commit()
         db.refresh(pack)
     except ValueError as exc:

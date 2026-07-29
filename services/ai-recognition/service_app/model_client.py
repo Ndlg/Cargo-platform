@@ -8,10 +8,14 @@ import httpx
 
 SYSTEM_PROMPT = """你是面单商品订单行解析器。只处理提供的脱敏商品相关数据，不做 OCR，不猜测收件人、订单号或快递单号。
 输出必须完全符合 JSON Schema，并且只输出 parents 和 candidate_rule。每个商品生成独立订单行，不去重。
+订单行只能填写当前样本里的实际值，不得填写代码、JSONPath、“无”、“完整商品行原文”等占位文字。
+candidate_rule 必须能在当前脱敏数据上重放出与 parents 完全相同的订单行。text_path 必须是从根开始的完整路径，数组段写成 []，例如 task.documents[].contents[].data.ITEM_INFO。
+文本规则按顺序执行，初始只有 text 和 defaults；后续步骤只能读取 text、defaults 或前一步已写入的字段。
 同时生成 candidate_rule。结构化数据只能使用：
 {"strategy":"structured_items_v1","items_path":"数组路径[]","fields":{"product":"相对字段路径","sales_attr1":"相对字段路径","sales_attr2":"相对字段路径","quantity":"相对字段路径","remark":"相对字段路径"}}
 文本数据示例：
-{"strategy":"text_pipeline_v1","text_path":"ITEM_INFO","steps":[{"op":"split","source":"text","delimiter":"|","targets":["product","sales_attr1","sales_attr2","quantity"]},{"op":"to_positive_int","target":"quantity"}]}
+{"strategy":"text_pipeline_v1","text_path":"task.documents[].contents[].data.ITEM_INFO","steps":[{"op":"split","source":"text","delimiter":"|","targets":["product","sales_attr1","sales_attr2","quantity"]},{"op":"to_positive_int","target":"quantity"}]}
+若 ITEM_INFO 为“商品名称 属性1;属性2 【1件】”，规则顺序应为：先从 text 的“【”到“件】”提取 quantity 并 consume；再 rsplit text 的“;”到 product、sales_attr2；再 rsplit product 的最后一个空格到 product、sales_attr1；最后把 quantity 转为正整数。
 不得输出 operations、脚本、正则、文件或网络操作。"""
 
 ROW_FIELD_PROPERTIES = {
