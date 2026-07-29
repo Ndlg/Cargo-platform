@@ -10,7 +10,10 @@ from .contracts import AiCandidate
 
 SYSTEM_PROMPT = """你是面单商品订单行解析器。只处理提供的脱敏商品相关数据，不做 OCR，不猜测收件人、订单号或快递单号。
 输出必须完全符合 JSON Schema。每个父面单保留来源，每个商品生成独立订单行，不去重。
-同时生成一个只使用允许的声明式操作的 candidate_rule；不得输出脚本、正则、文件或网络操作。"""
+同时生成 candidate_rule。结构化数据只能使用：
+{"strategy":"structured_items_v1","items_path":"数组路径[]","fields":{"product":"相对字段路径","sales_attr1":"相对字段路径","sales_attr2":"相对字段路径","quantity":"相对字段路径","remark":"相对字段路径"}}
+文本数据只能使用 strategy=text_pipeline_v1、text_path、可选 item_split、steps 和 defaults。
+不得输出 operations、脚本、正则、文件或网络操作。"""
 
 OLLAMA_GRAMMAR_UNSUPPORTED = {
     "exclusiveMaximum",
@@ -23,9 +26,37 @@ OLLAMA_GRAMMAR_UNSUPPORTED = {
     "minimum",
 }
 
+CANDIDATE_RULE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["strategy"],
+    "properties": {
+        "strategy": {
+            "type": "string",
+            "enum": ["structured_items_v1", "text_pipeline_v1"],
+        },
+        "name": {"type": "string"},
+        "description": {"type": "string"},
+        "items_path": {"type": "string"},
+        "fields": {
+            "type": "object",
+            "additionalProperties": {"type": "string"},
+        },
+        "defaults": {"type": "object"},
+        "text_path": {"type": "string"},
+        "item_split": {"type": "string"},
+        "steps": {
+            "type": "array",
+            "items": {"type": "object"},
+        },
+    },
+}
+
 
 def ollama_json_schema(value: Any | None = None) -> Any:
-    value = AiCandidate.model_json_schema() if value is None else value
+    if value is None:
+        value = AiCandidate.model_json_schema()
+        value["properties"]["candidate_rule"] = CANDIDATE_RULE_SCHEMA
     if isinstance(value, dict):
         return {
             key: ollama_json_schema(item)

@@ -283,6 +283,12 @@ def test_ollama_client_requests_schema_constrained_non_thinking_json(tmp_path: P
     assert request["options"]["temperature"] == 0
     assert request["options"]["num_ctx"] == 4096
     assert request["format"]["properties"]["parents"]
+    candidate_rule_schema = request["format"]["properties"]["candidate_rule"]
+    assert candidate_rule_schema["properties"]["strategy"]["enum"] == [
+        "structured_items_v1",
+        "text_pipeline_v1",
+    ]
+    assert candidate_rule_schema["additionalProperties"] is False
     sent_schema = json.dumps(request["format"], sort_keys=True)
     assert "maxItems" not in sent_schema
     assert "minItems" not in sent_schema
