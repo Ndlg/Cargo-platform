@@ -374,6 +374,8 @@ def overall_ai_status(diagnostics: list[dict[str, Any]]) -> str:
         return "ai_parse_failed"
     if "model_running" in reasons:
         return "model_running"
+    if "ai_result_invalid" in reasons:
+        return "ai_result_invalid"
     return "ai_rule_pending"
 
 
@@ -410,7 +412,8 @@ def ai_fallback_response(payload: BatchParseRequest, deterministic_reason: str) 
     summary = order_row_draft_summary(parents)
     summary["needs_review_count"] = len(parents)
     summary["pending_rule_pack_count"] = sum(
-        diagnostic["reason"] in {"model_running", "ai_rule_pending"} for diagnostic in diagnostics
+        diagnostic["reason"] in {"model_running", "ai_rule_pending", "ai_result_invalid"}
+        for diagnostic in diagnostics
     )
     return {
         "contract_version": ORDER_ROW_DRAFTS_CONTRACT_VERSION,
@@ -656,7 +659,13 @@ def parse_batch(payload: BatchParseRequest) -> dict[str, Any]:
             next_parent_sequence = first_parent_sequence + len(document_payloads)
 
         reasons = {diagnostic["reason"] for diagnostic in diagnostics if diagnostic["reason"]}
-        ai_reasons = reasons & {"model_running", "ai_rule_pending", "ai_unavailable", "ai_parse_failed"}
+        ai_reasons = reasons & {
+            "model_running",
+            "ai_rule_pending",
+            "ai_result_invalid",
+            "ai_unavailable",
+            "ai_parse_failed",
+        }
         if ai_reasons:
             parse_status = overall_ai_status(diagnostics)
         else:
@@ -670,7 +679,8 @@ def parse_batch(payload: BatchParseRequest) -> dict[str, Any]:
         summary = order_row_draft_summary(parents)
         summary["needs_review_count"] += unresolved_parent_count
         summary["pending_rule_pack_count"] = sum(
-            diagnostic["reason"] in {"model_running", "ai_rule_pending"} for diagnostic in diagnostics
+            diagnostic["reason"] in {"model_running", "ai_rule_pending", "ai_result_invalid"}
+            for diagnostic in diagnostics
         )
         return {
             "contract_version": ORDER_ROW_DRAFTS_CONTRACT_VERSION,

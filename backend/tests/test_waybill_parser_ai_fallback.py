@@ -185,6 +185,20 @@ def test_manual_single_waybill_parse_creates_one_ai_session(monkeypatch) -> None
     assert requests[0]["deterministic_failure_reason"] == "rule_pack_missing"
 
 
+def test_manual_parse_keeps_invalid_ai_result_editable(monkeypatch) -> None:
+    app, _rules = load_parser()
+    with fake_ai("ai_result_invalid") as (url, _requests):
+        monkeypatch.setenv("AI_RECOGNITION_URL", url)
+        with TestClient(app) as client:
+            body = parse(client, None, payload(), allow_ai=True)
+
+    assert body["status"] == "ai_result_invalid"
+    assert body["ai_sessions"][0]["session_id"] == "session-1"
+    assert body["ai_sessions"][0]["console_url"].endswith("session=session-1")
+    assert body["diagnostics"][0]["reason"] == "ai_result_invalid"
+    assert body["summary"]["pending_rule_pack_count"] == 1
+
+
 def test_complete_known_profile_does_not_call_ai(monkeypatch) -> None:
     app, rules = load_parser()
     value = payload()
