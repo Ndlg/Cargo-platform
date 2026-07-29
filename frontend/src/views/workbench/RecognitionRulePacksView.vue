@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { Download, Refresh, UploadFilled } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
+import RecognitionProfileEditor from '../../components/recognition/RecognitionProfileEditor.vue'
 import {
   activateRecognitionRulePack,
   deactivateRecognitionRulePack,
@@ -10,6 +11,9 @@ import {
   exportRecognitionRulePack,
   importRecognitionRulePack,
   listRecognitionRulePacks,
+  type RecognitionFormatProfile,
+  type RecognitionLearningRecord,
+  type RecognitionRulePackPayload,
   type RecognitionRulePackSummary,
 } from '../../services/api'
 import { useSessionStore } from '../../stores/session'
@@ -30,15 +34,18 @@ const importText = ref('')
 const importDescription = ref('')
 const ruleEditorVisible = ref(false)
 const editingPack = ref<RecognitionRulePackSummary | null>(null)
-const editingPayload = ref<Record<string, unknown> | null>(null)
-const specialRules = ref<Array<{ keyword: string; reason: string; displayReason: string }>>([])
-const quantityDefault = ref(1)
-const labelPrefixesText = ref('')
-const stripPurchaseHint = ref(true)
-const allowEmptyProduct = ref(true)
-const allowNonNumericSalesAttr2 = ref(true)
+const editingPayload = ref<RecognitionRulePackPayload | null>(null)
+const formatProfiles = ref<RecognitionFormatProfile[]>([])
+const learningRecords = ref<RecognitionLearningRecord[]>([])
+const selectedFingerprint = ref('')
 
 const hasImportPayload = computed(() => importText.value.trim().length > 0)
+const selectedProfile = computed(() => (
+  formatProfiles.value.find((profile) => profile.fingerprint === selectedFingerprint.value) ?? null
+))
+const selectedLearningRecord = computed(() => (
+  learningRecords.value.find((record) => record.fingerprint === selectedFingerprint.value)
+))
 
 function readableDate(value?: string | null): string {
   if (!value) return '-'
@@ -226,33 +233,22 @@ async function editPackRules(pack: RecognitionRulePackSummary) {
   error.value = ''
   try {
     const result = await exportRecognitionRulePack(pack.id)
-    const policy = recordValue(result.payload.parser_policy)
-    const quantity = recordValue(policy.quantity)
-    const labelCleanup = recordValue(policy.label_cleanup)
-    const sizeNormalization = recordValue(policy.size_normalization)
-    const manualLabelOnly = recordValue(policy.manual_label_only)
-    const nonShoe = recordValue(policy.non_shoe)
-    const rules = policy.special_text_keywords
+    const payload = result.payload as RecognitionRulePackPayload
+    const policy = recordValue(payload.parser_policy)
+    const profiles = Array.isArray(policy.format_profiles)
+      ? policy.format_profiles.filter((profile): profile is RecognitionFormatProfile => (
+          Boolean(profile)
+          && typeof profile === 'object'
+          && typeof (profile as RecognitionFormatProfile).fingerprint === 'string'
+        ))
+      : []
     editingPack.value = pack
-    editingPayload.value = result.payload
-    const configuredQuantity = Number(quantity.default_if_missing)
-    quantityDefault.value = Number.isInteger(configuredQuantity) && configuredQuantity > 0 ? configuredQuantity : 1
-    labelPrefixesText.value = Array.isArray(labelCleanup.strip_prefixes)
-      ? labelCleanup.strip_prefixes.map(String).join('、')
-      : ''
-    stripPurchaseHint.value = sizeNormalization.strip_purchase_hint !== false
-    allowEmptyProduct.value = manualLabelOnly.allow_empty_product !== false
-    allowNonNumericSalesAttr2.value = nonShoe.allow_non_numeric_sales_attr2 !== false
-    specialRules.value = (Array.isArray(rules) ? rules : []).map((rule, index) => {
-      const values = rule && typeof rule === 'object' && !Array.isArray(rule)
-        ? (rule as Record<string, unknown>)
-        : {}
-      return {
-        keyword: String(values.keyword ?? ''),
-        reason: String(values.reason ?? `special_keyword_${index + 1}`),
-        displayReason: String(values.display_reason ?? ''),
-      }
-    })
+    editingPayload.value = structuredClone(payload)
+    formatProfiles.value = structuredClone(profiles)
+    learningRecords.value = Array.isArray(payload.ai_learning_records)
+      ? structuredClone(payload.ai_learning_records)
+      : []
+    selectedFingerprint.value = formatProfiles.value[0]?.fingerprint ?? ''
     ruleEditorVisible.value = true
   } catch (err) {
     error.value = err instanceof Error ? err.message : '规则包读取失败'
@@ -261,83 +257,53 @@ async function editPackRules(pack: RecognitionRulePackSummary) {
   }
 }
 
-function addSpecialRule() {
-  specialRules.value.push({
-    keyword: '',
-    reason: `special_keyword_${specialRules.value.length + 1}`,
-    displayReason: '',
-  })
+function updateSelectedProfile(profile: RecognitionFormatProfile) {
+  const index = formatProfiles.value.findIndex((item) => item.fingerprint === profile.fingerprint)
+  if (index < 0) return
+  formatProfiles.value[index] = profile
+}
+
+async function deleteSelectedProfile() {
+  if (!selectedProfile.value) return
+  if (formatProfiles.value.length === 1) {
+    ElMessage.warning('这是最后一条子规则。如需清空，请关闭编辑窗口后删除整个规则包。')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `删除后，这种面单格式将不再被识别：${selectedProfile.value.name || '未命名规则'}`,
+      '删除子规则',
+      {
+        confirmButtonText: '删除',
+        cancelButtonText: '取消',
+        type: 'warning',
+      },
+    )
+  } catch {
+    return
+  }
+  const fingerprint = selectedProfile.value.fingerprint
+  formatProfiles.value = formatProfiles.value.filter((profile) => profile.fingerprint !== fingerprint)
+  learningRecords.value = learningRecords.value.filter((record) => record.fingerprint !== fingerprint)
+  selectedFingerprint.value = formatProfiles.value[0]?.fingerprint ?? ''
 }
 
 async function savePackRules() {
   if (!editingPack.value || !editingPayload.value) return
-  if (specialRules.value.some((rule) => !rule.keyword.trim())) {
-    ElMessage.warning('特殊单关键词不能为空。')
-    return
-  }
-  if (!Number.isInteger(quantityDefault.value) || quantityDefault.value <= 0) {
-    ElMessage.warning('默认数量必须是大于 0 的整数。')
+  if (!formatProfiles.value.length) {
+    ElMessage.warning('规则包至少需要保留一条子规则。')
     return
   }
 
   const currentPolicy = recordValue(editingPayload.value.parser_policy)
-  const packMeta = recordValue(editingPayload.value.pack)
-  const currentQuantity = recordValue(currentPolicy.quantity)
-  const currentLabelCleanup = recordValue(currentPolicy.label_cleanup)
-  const currentSizeNormalization = recordValue(currentPolicy.size_normalization)
-  const currentManualLabelOnly = recordValue(currentPolicy.manual_label_only)
-  const currentNonShoe = recordValue(currentPolicy.non_shoe)
-  const versionMatch = String(packMeta.version ?? '1.0.0').match(/^(\d+)\.(\d+)\.(\d+)$/)
-  const nextVersion = versionMatch
-    ? `${versionMatch[1]}.${versionMatch[2]}.${Number(versionMatch[3]) + 1}`
-    : String(packMeta.version ?? '1.0.0')
-  const prefixes = labelPrefixesText.value
-    .split(/[、,，\n]+/)
-    .map((value) => value.trim())
-    .filter(Boolean)
-  const nextPayload = {
+  const nextPayload: RecognitionRulePackPayload = {
     ...editingPayload.value,
-    pack: {
-      ...packMeta,
-      version: nextVersion,
-    },
     parser_policy: {
       ...currentPolicy,
-      special_text_keywords: specialRules.value.map((rule, index) => ({
-        keyword: rule.keyword.trim(),
-        status: 'special',
-        reason: rule.reason || `special_keyword_${index + 1}`,
-        parse_fields: false,
-        match_product: false,
-        match_image: false,
-        display_reason: rule.displayReason.trim() || `${rule.keyword.trim()}特殊单，保留原文，不参与商品和图片匹配。`,
-      })),
-      quantity: {
-        ...currentQuantity,
-        default_if_missing: quantityDefault.value,
-      },
-      label_cleanup: {
-        ...currentLabelCleanup,
-        strip_prefixes: prefixes,
-        separator_chars: Array.isArray(currentLabelCleanup.separator_chars)
-          ? currentLabelCleanup.separator_chars
-          : [':', '：', ';', '；', ',', '，', '/', '|'],
-      },
-      size_normalization: {
-        ...currentSizeNormalization,
-        enabled: true,
-        strip_purchase_hint: stripPurchaseHint.value,
-      },
-      manual_label_only: {
-        ...currentManualLabelOnly,
-        allow_empty_product: allowEmptyProduct.value,
-        default_quantity_if_missing: quantityDefault.value,
-      },
-      non_shoe: {
-        ...currentNonShoe,
-        allow_non_numeric_sales_attr2: allowNonNumericSalesAttr2.value,
-      },
+      order_row_parser: 'declarative_v1',
+      format_profiles: structuredClone(formatProfiles.value),
     },
+    ai_learning_records: structuredClone(learningRecords.value),
   }
 
   savingRules.value = true
@@ -350,7 +316,7 @@ async function savePackRules() {
     })
     ruleEditorVisible.value = false
     await loadPacks()
-    ElMessage.success('子规则已保存。')
+    ElMessage.success(`已保存 ${formatProfiles.value.length} 条子规则。`)
   } catch (err) {
     error.value = err instanceof Error ? err.message : '子规则保存失败'
   } finally {
@@ -427,7 +393,7 @@ onMounted(loadPacks)
       <div class="panel-heading">
         <div>
           <h2><el-icon><Download /></el-icon> 已保存规则包</h2>
-          <p>不同商品场景可以保存为不同规则包。导出后可备份，也可导入到其他工作空间。</p>
+          <p>AI 每确认一种新格式，就会追加到同一个“AI识别规则包”中；导出可用于备份。</p>
         </div>
       </div>
 
@@ -474,7 +440,7 @@ onMounted(loadPacks)
               导出
             </el-button>
             <el-button size="small" plain :loading="editingId === row.id" @click="editPackRules(row)">
-              编辑子规则
+              查看/微调规则
             </el-button>
             <el-button
               size="small"
@@ -491,61 +457,52 @@ onMounted(loadPacks)
     </article>
   </section>
 
-  <el-dialog v-model="ruleEditorVisible" title="编辑识别子规则" width="760px">
-    <el-form class="policy-form" label-position="top">
-      <el-form-item label="面单没有写数量时">
-        <el-input-number v-model="quantityDefault" :min="1" :max="999" />
-        <span class="field-help">系统使用这个默认数量，不从商品或尺码数字里猜数量。</span>
-      </el-form-item>
-      <el-form-item label="需要从商品属性开头去掉的字段名">
-        <el-input
-          v-model="labelPrefixesText"
-          type="textarea"
-          :rows="2"
-          placeholder="例如：颜色分类、颜色、鞋码、尺码、规格"
-        />
-        <span class="field-help">用顿号、逗号或换行分隔；只清理开头字段名，原始面单仍保留。</span>
-      </el-form-item>
-      <el-form-item label="尺码中的购买提示">
-        <el-switch
-          v-model="stripPurchaseHint"
-          active-text="去掉提示，只保留尺码"
-          inactive-text="保留提示原文"
-        />
-      </el-form-item>
-      <el-form-item label="只有颜色/尺码、没有商品名的手工单">
-        <el-switch
-          v-model="allowEmptyProduct"
-          active-text="允许进入商品匹配"
-          inactive-text="列为解析异常"
-        />
-      </el-form-item>
-      <el-form-item label="非数字规格（例如均码）">
-        <el-switch
-          v-model="allowNonNumericSalesAttr2"
-          active-text="允许"
-          inactive-text="列为解析异常"
-        />
-      </el-form-item>
-    </el-form>
+  <el-dialog v-model="ruleEditorVisible" title="AI识别规则包" width="min(1280px, 96vw)" top="4vh">
     <el-alert
+      v-if="!formatProfiles.length"
       :closable="false"
-      title="特殊单关键词"
-      description="面单原文中任意出现一条关键词，就按特殊单保留，不进入商品和图片匹配。多商品拆行和原文追溯是固定业务约束，不能在这里关闭。"
-      type="info"
+      title="这个规则包还没有可编辑的 AI 子规则"
+      description="请先到“AI 面单解析”页面手动确认一种新格式。"
+      type="warning"
       show-icon
     />
-    <div class="special-rule-list">
-      <div v-for="(rule, index) in specialRules" :key="index" class="special-rule-row">
-        <el-input v-model="rule.keyword" placeholder="关键词，例如：微信" />
-        <el-input v-model="rule.displayReason" placeholder="页面说明（可选）" />
-        <el-button type="danger" plain @click="specialRules.splice(index, 1)">删除</el-button>
-      </div>
-      <el-button plain @click="addSpecialRule">添加关键词规则</el-button>
+    <div v-else class="rule-editor-layout">
+      <aside class="profile-list">
+        <div class="profile-list__heading">
+          <strong>已学习 {{ formatProfiles.length }} 种格式</strong>
+          <small>选择一条查看和微调</small>
+        </div>
+        <button
+          v-for="(profile, index) in formatProfiles"
+          :key="profile.fingerprint"
+          type="button"
+          class="profile-list__item"
+          :class="{ active: selectedFingerprint === profile.fingerprint }"
+          @click="selectedFingerprint = profile.fingerprint"
+        >
+          <strong>{{ profile.name || `规则 ${index + 1}` }}</strong>
+          <span>{{ profile.strategy === 'structured_items_v1' ? '结构化字段' : '文本拆分' }}</span>
+          <small>{{ learningRecords.find((record) => record.fingerprint === profile.fingerprint)?.source_component || '导入规则' }}</small>
+        </button>
+      </aside>
+      <RecognitionProfileEditor
+        v-if="selectedProfile"
+        :model-value="selectedProfile"
+        :learning-record="selectedLearningRecord"
+        @update:model-value="updateSelectedProfile"
+        @delete="deleteSelectedProfile"
+      />
     </div>
     <template #footer>
       <el-button @click="ruleEditorVisible = false">取消</el-button>
-      <el-button type="primary" :loading="savingRules" @click="savePackRules">保存子规则</el-button>
+      <el-button
+        type="primary"
+        :loading="savingRules"
+        :disabled="!formatProfiles.length"
+        @click="savePackRules"
+      >
+        保存全部子规则
+      </el-button>
     </template>
   </el-dialog>
 </template>
@@ -599,29 +556,6 @@ onMounted(loadPacks)
   gap: 10px;
 }
 
-.special-rule-list {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  margin-top: 16px;
-}
-
-.policy-form {
-  margin-bottom: 18px;
-}
-
-.field-help {
-  margin-left: 10px;
-  color: var(--el-text-color-secondary);
-  font-size: 13px;
-}
-
-.special-rule-row {
-  display: grid;
-  grid-template-columns: minmax(160px, 0.7fr) minmax(260px, 1.3fr) auto;
-  gap: 10px;
-}
-
 .el-table strong {
   display: block;
   color: var(--el-text-color-primary);
@@ -633,13 +567,71 @@ onMounted(loadPacks)
   color: var(--el-text-color-secondary);
 }
 
+.rule-editor-layout {
+  display: grid;
+  grid-template-columns: 250px minmax(0, 1fr);
+  gap: 20px;
+  min-height: 560px;
+}
+
+.profile-list {
+  padding-right: 14px;
+  overflow: auto;
+  border-right: 1px solid var(--el-border-color-lighter);
+}
+
+.profile-list__heading {
+  padding: 4px 8px 12px;
+}
+
+.profile-list__heading small,
+.profile-list__item span,
+.profile-list__item small {
+  display: block;
+  margin-top: 5px;
+  color: var(--el-text-color-secondary);
+}
+
+.profile-list__item {
+  display: block;
+  width: 100%;
+  padding: 12px;
+  margin-bottom: 8px;
+  text-align: left;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+  background: var(--el-fill-color-blank);
+  cursor: pointer;
+}
+
+.profile-list__item.active {
+  border-color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+}
+
 @media (max-width: 1100px) {
   .rule-pack-grid {
     grid-template-columns: 1fr;
   }
 
-  .special-rule-row {
+  .rule-editor-layout {
     grid-template-columns: 1fr;
+  }
+
+  .profile-list {
+    display: flex;
+    gap: 8px;
+    padding: 0 0 12px;
+    border-right: 0;
+    border-bottom: 1px solid var(--el-border-color-lighter);
+  }
+
+  .profile-list__heading {
+    min-width: 160px;
+  }
+
+  .profile-list__item {
+    min-width: 190px;
   }
 }
 </style>

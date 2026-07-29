@@ -376,6 +376,69 @@ export interface RecognitionRulePackSummary extends ApiRecord {
   updated_at?: string | null
 }
 
+export type RecognitionRuleStrategy = 'structured_items_v1' | 'text_pipeline_v1'
+
+export type RecognitionBusinessField =
+  | 'product'
+  | 'sales_attr1'
+  | 'sales_attr2'
+  | 'quantity'
+  | 'remark'
+  | 'image_match_text'
+
+export interface RecognitionTextStep extends ApiRecord {
+  op: 'split' | 'rsplit' | 'extract_between' | 'trim' | 'strip_prefix' | 'strip_suffix' | 'to_positive_int' | string
+  source?: string
+  delimiter?: string
+  targets?: string[]
+  start?: string
+  end?: string
+  target?: string
+  consume?: boolean
+  chars?: string
+  literal?: string
+}
+
+export interface RecognitionFormatProfile extends ApiRecord {
+  fingerprint: string
+  strategy: RecognitionRuleStrategy | string
+  name?: string
+  description?: string
+  items_path?: string
+  fields?: Partial<Record<RecognitionBusinessField, string>>
+  defaults?: Partial<Record<RecognitionBusinessField, string | number>>
+  text_path?: string
+  item_split?: string
+  steps?: RecognitionTextStep[]
+}
+
+export interface RecognitionLearningRecord extends ApiRecord {
+  fingerprint: string
+  session_id?: string
+  task_id?: number
+  raw_record_id?: number
+  source_component?: string
+  sample_payload?: Record<string, unknown>
+  confirmed_rows?: Array<Partial<Record<RecognitionBusinessField, string | number>>>
+  rule_evidence?: string[]
+}
+
+export interface RecognitionRulePackPayload extends ApiRecord {
+  contract_version: string
+  pack: {
+    code: string
+    name: string
+    version: string
+    [key: string]: unknown
+  }
+  parser_policy: {
+    order_row_parser: string
+    format_profiles?: RecognitionFormatProfile[]
+    [key: string]: unknown
+  }
+  ai_learning_records?: RecognitionLearningRecord[]
+}
+
 export interface RecognitionRulePacksResponse extends ApiRecord {
   contract_version: 'recognition_rule_pack_v1' | string
   active_pack?: RecognitionRulePackSummary | null
@@ -383,20 +446,20 @@ export interface RecognitionRulePacksResponse extends ApiRecord {
 }
 
 export interface RecognitionRulePackImportPayload {
-  payload: Record<string, unknown>
+  payload: RecognitionRulePackPayload | Record<string, unknown>
   activate?: boolean
   description?: string | null
 }
 
 export interface RecognitionRulePackImportResponse extends ApiRecord {
   contract_version: 'recognition_rule_pack_v1' | string
-  pack: RecognitionRulePackSummary & { payload?: Record<string, unknown> }
+  pack: RecognitionRulePackSummary & { payload?: RecognitionRulePackPayload | Record<string, unknown> }
 }
 
 export interface RecognitionRulePackExportResponse extends ApiRecord {
   contract_version: 'recognition_rule_pack_v1' | string
   pack: RecognitionRulePackSummary
-  payload: Record<string, unknown>
+  payload: RecognitionRulePackPayload | Record<string, unknown>
 }
 
 export interface RecognitionPreviewRow extends ApiRecord {
