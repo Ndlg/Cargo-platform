@@ -134,10 +134,13 @@ def upsert_recognition_rule_pack(
         )
         db.add(pack)
     else:
+        was_deleted = pack.is_deleted
         pack.is_deleted = False
         pack.name = text_value(pack_meta.get("name"))
         pack.version = text_value(pack_meta.get("version")) or pack.version
-        pack.description = description or text_value(pack_meta.get("description")) or pack.description
+        pack.description = description or text_value(pack_meta.get("description")) or (
+            None if was_deleted else pack.description
+        )
         pack.payload = normalized
 
     if activate:

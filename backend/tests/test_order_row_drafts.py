@@ -1043,7 +1043,7 @@ def test_recognition_rule_pack_import_activate_export_api(monkeypatch) -> None:
         imported = client.post(
             "/api/v1/recognition-rule-packs/import",
             headers=headers,
-            json={"payload": payload, "activate": True},
+            json={"payload": payload, "activate": True, "description": "obsolete"},
         )
         assert imported.status_code == 201
         imported_pack = imported.json()["pack"]
@@ -1093,6 +1093,7 @@ def test_recognition_rule_pack_import_activate_export_api(monkeypatch) -> None:
         assert restored.status_code == 201
         assert restored.json()["pack"]["id"] == imported_pack["id"]
         assert restored.json()["pack"]["status"] == "active"
+        assert restored.json()["pack"]["description"] is None
 
 
 def test_recognition_rule_pack_import_rejects_pack_without_order_row_parser() -> None:
