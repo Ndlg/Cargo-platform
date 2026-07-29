@@ -90,6 +90,7 @@ def test_ai_approval_replaces_existing_fingerprint() -> None:
             session_id="session-1",
             profile=candidate_profile(fingerprint, product_path="old"),
             validate=lambda payload: {"status": "valid", "errors": []},
+            learning_record={"session_id": "session-1", "confirmed_rows": [{"product": "old"}]},
         )
         db.commit()
         second = save_ai_rule_profile(
@@ -99,6 +100,7 @@ def test_ai_approval_replaces_existing_fingerprint() -> None:
             session_id="session-2",
             profile=candidate_profile(fingerprint, product_path="new"),
             validate=lambda payload: {"status": "valid", "errors": []},
+            learning_record={"session_id": "session-2", "confirmed_rows": [{"product": "new"}]},
         )
         db.commit()
         packs = db.scalars(select(RecognitionRulePack)).all()
@@ -108,6 +110,10 @@ def test_ai_approval_replaces_existing_fingerprint() -> None:
     profiles = packs[0].payload["parser_policy"]["format_profiles"]
     assert len(profiles) == 1
     assert profiles[0]["fields"]["product"] == "new"
+    assert [
+        item["session_id"]
+        for item in packs[0].payload["ai_learning_records"]
+    ] == ["session-1", "session-2"]
 
 
 def test_ai_approval_rejects_invalid_candidate_without_creating_pack() -> None:
@@ -507,6 +513,132 @@ def test_internal_approval_rejects_rule_that_cannot_reproduce_candidate(monkeypa
         else:
             raise AssertionError("non-reproducible AI rule must be rejected")
         assert db.scalar(select(RecognitionRulePack)) is None
+
+    ai_route.get_settings.cache_clear()
+
+
+def test_new_rule_cannot_break_prior_confirmed_sample_of_same_fingerprint(monkeypatch) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    monkeypatch.setenv("AI_RECOGNITION_ENABLED", "true")
+    monkeypatch.setenv("AI_RECOGNITION_INTERNAL_TOKEN", "test-secret")
+    ai_route.get_settings.cache_clear()
+    fingerprint = f"sha256:{'6' * 64}"
+    monkeypatch.setattr(
+        ai_route,
+        "validate_rule_pack_with_service",
+        lambda **_kwargs: {"status": "valid", "errors": []},
+    )
+
+    def replay_by_record(**kwargs) -> dict:
+        raw_record_id = kwargs["raw_records"][0]["raw_record_id"]
+        product = "new shoe" if raw_record_id == 100 else "broken old shoe"
+        return {
+            "contract_version": "order_row_drafts_v1",
+            "rows": [
+                {
+                    "product": product,
+                    "sales_attr1": "",
+                    "sales_attr2": "",
+                    "quantity": 1,
+                    "remark": "",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(
+        ai_route,
+        "preview_order_row_drafts_with_service",
+        replay_by_record,
+    )
+
+    with Session(engine) as db:
+        db.add(Workspace(id=1, tenant_id=1, name="test", code="test"))
+        for record_id, product in ((100, "new shoe"), (101, "old shoe")):
+            db.add(
+                RawCaptureRecord(
+                    id=record_id,
+                    tenant_id=1,
+                    workspace_id=1,
+                    task_id=61,
+                    document_id=f"doc-{record_id}",
+                    source_component="test",
+                    source_index=str(record_id),
+                    payload_format="json",
+                    raw_payload=json.dumps({"items": [{"name": product, "quantity": 1}]}),
+                    status="pending",
+                )
+            )
+        old_pack = save_ai_rule_profile(
+            db,
+            tenant_id=1,
+            workspace_id=1,
+            session_id="session-old",
+            profile=candidate_profile(fingerprint, product_path="old_name"),
+            validate=lambda payload: {"status": "valid", "errors": []},
+            learning_record={
+                "session_id": "session-old",
+                "task_id": 61,
+                "raw_record_id": 101,
+                "document_sequence": 1,
+                "source_component": "test",
+                "confirmed_rows": [
+                    {
+                        "product": "old shoe",
+                        "sales_attr1": "",
+                        "sales_attr2": "",
+                        "quantity": 1,
+                        "remark": "",
+                    }
+                ],
+            },
+        )
+        db.commit()
+        old_pack_id = old_pack.id
+
+        try:
+            ai_route.approve_ai_rule(
+                AiRuleApprovalRequest(
+                    session_id="session-new",
+                    workspace_id=1,
+                    task_id=61,
+                    raw_record_id=100,
+                    document_sequence=1,
+                    format_fingerprint=fingerprint,
+                    candidate_rule=candidate_profile(fingerprint, product_path="name"),
+                    candidate_output={
+                        "parents": [
+                            {
+                                "source": {"sanitized_payload": {"items": [{"name": "new shoe", "quantity": 1}]}},
+                                "rows": [
+                                    {
+                                        "product": "new shoe",
+                                        "sales_attr1": "",
+                                        "sales_attr2": "",
+                                        "quantity": 1,
+                                        "remark": "",
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                ),
+                db,
+                "test-secret",
+            )
+        except Exception as exc:
+            assert getattr(exc, "status_code", None) == 422
+        else:
+            raise AssertionError("rule that breaks a prior confirmed sample must be rejected")
+
+        db.expire_all()
+        persisted = db.get(RecognitionRulePack, old_pack_id)
+        assert persisted is not None
+        assert persisted.payload["parser_policy"]["format_profiles"][0]["fields"]["product"] == "old_name"
+        assert [
+            item["session_id"]
+            for item in persisted.payload["ai_learning_records"]
+        ] == ["session-old"]
 
     ai_route.get_settings.cache_clear()
 

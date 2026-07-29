@@ -206,7 +206,7 @@ def save_ai_rule_profile(
     learning_records = [
         deepcopy(item)
         for item in list_value(current_payload.get("ai_learning_records"))
-        if isinstance(item, dict) and text_value(item.get("fingerprint")) != fingerprint
+        if isinstance(item, dict) and text_value(item.get("session_id")) != session_id
     ]
     if learning_record is not None:
         learning_records.append({**deepcopy(learning_record), "fingerprint": fingerprint})

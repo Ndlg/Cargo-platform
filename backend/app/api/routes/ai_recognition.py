@@ -161,14 +161,36 @@ def approve_ai_rule(
                 "rule_evidence": request.rule_evidence,
             },
         )
-        parser_input = parser_input_for_document(record, request.document_sequence)
-        replay = preview_order_row_drafts_with_service(
-            task_id=request.task_id,
-            raw_records=[parser_input],
-            rule_pack=pack.payload,
-        )
-        if not rows_cover_expected(comparable_rows(replay), expected_rows):
-            raise ValueError("AI 生成的规则无法复现你确认的订单行，尚未保存。请按修改结果重新生成规则。")
+        learning_records = pack.payload.get("ai_learning_records")
+        for learning_record in learning_records if isinstance(learning_records, list) else []:
+            if (
+                not isinstance(learning_record, dict)
+                or learning_record.get("fingerprint") != request.format_fingerprint
+            ):
+                continue
+            raw_record_id = learning_record.get("raw_record_id")
+            confirmed_rows = comparable_rows({"rows": learning_record.get("confirmed_rows")})
+            if not isinstance(raw_record_id, int) or not confirmed_rows:
+                continue
+            replay_record = db.scalar(
+                select(RawCaptureRecord).where(
+                    RawCaptureRecord.id == raw_record_id,
+                    RawCaptureRecord.workspace_id == request.workspace_id,
+                    RawCaptureRecord.is_deleted.is_(False),
+                )
+            )
+            if replay_record is None:
+                continue
+            document_sequence = int(learning_record.get("document_sequence") or 1)
+            replay = preview_order_row_drafts_with_service(
+                task_id=int(learning_record.get("task_id") or replay_record.task_id or request.task_id),
+                raw_records=[parser_input_for_document(replay_record, document_sequence)],
+                rule_pack=pack.payload,
+            )
+            if not rows_cover_expected(comparable_rows(replay), confirmed_rows):
+                if learning_record.get("session_id") == request.session_id:
+                    raise ValueError("AI 生成的规则无法复现你确认的订单行，尚未保存。请按修改结果重新生成规则。")
+                raise ValueError("AI 生成的规则破坏了同类型面单的已确认结果，尚未保存。")
         if request.validate_only:
             db.rollback()
             return {
