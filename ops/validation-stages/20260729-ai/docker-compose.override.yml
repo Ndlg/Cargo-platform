@@ -32,7 +32,7 @@ services:
           - ai-recognition
 
   waybill-parser:
-    image: cargo-platform-validation-parser:print-xml-89c39d7
+    image: cargo-platform-validation-parser:ai-result-invalid-7923a34
     depends_on:
       - ai-recognition
     environment:
