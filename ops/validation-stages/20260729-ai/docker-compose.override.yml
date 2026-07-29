@@ -11,7 +11,7 @@ services:
           - local-model
 
   ai-recognition:
-    image: cargo-platform-ai-recognition:business-fields-fe17eea
+    image: cargo-platform-ai-recognition:tenant-fingerprints-8fc7439
     container_name: cargo-platform-validation-ai-recognition
     depends_on:
       - local-model
@@ -39,19 +39,19 @@ services:
       AI_RECOGNITION_URL: http://ai-recognition:8011
 
   backend:
-    image: cargo-platform-validation-backend:single-ai-pack-0a1a18d
+    image: cargo-platform-validation-backend:tenant-fingerprints-8fc7439
     depends_on:
       - redis
       - waybill-parser
       - ai-recognition
     environment:
-      APP_VERSION: single-ai-pack-0a1a18d
+      APP_VERSION: tenant-fingerprints-8fc7439
       AI_RECOGNITION_URL: http://ai-recognition:8011
       AI_RECOGNITION_ENABLED: "true"
       AI_RECOGNITION_INTERNAL_TOKEN: ${AI_RECOGNITION_INTERNAL_TOKEN:?set AI_RECOGNITION_INTERNAL_TOKEN}
 
   ui:
-    image: cargo-platform-validation-ui:ai-session-b72ee71
+    image: cargo-platform-validation-ui:tenant-fingerprints-8fc7439
 
 volumes:
   validation-data:
