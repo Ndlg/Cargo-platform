@@ -123,6 +123,9 @@ python scripts/verify_ai_recognition_e2e.py `
   --answer-set ops/validation-stages/20260729-ai/runtime/answer-set.jsonl
 ```
 
+2026-07-29 已实际执行整套回退和恢复：6173 成功切回 `stage-17`/`stage-14`
+及原数据卷，健康检查通过；随后恢复本目录 AI 镜像和冷库卷，完整验收再次通过。
+
 ## 5173 未变快照
 
 验收前后均为：
