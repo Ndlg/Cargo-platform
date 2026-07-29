@@ -437,4 +437,8 @@ def test_health_console_and_session_list_are_available(tmp_path: Path) -> None:
     assert health.json()["status"] == "ok"
     assert console.status_code == 200
     assert "本地 AI 面单识别会话" in console.text
+    assert all(label in console.text for label in ("商品", "销售属性1", "销售属性2", "数量", "备注"))
+    assert "格式指纹" not in console.text
+    assert "确定性规则失败原因" not in console.text
+    assert "JSON.stringify(row.candidate" not in console.text
     assert sessions.json() == []

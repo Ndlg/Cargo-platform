@@ -12,7 +12,10 @@
       button { padding: 8px 14px; margin-right: 8px; border: 1px solid #2563eb; border-radius: 6px; background: white; color: #2563eb; cursor: pointer; }
       button.primary { color: white; background: #2563eb; }
       textarea { box-sizing: border-box; width: 100%; min-height: 80px; padding: 8px; border: 1px solid #d1d5db; border-radius: 6px; }
-      pre { overflow: auto; padding: 12px; background: #f8fafc; white-space: pre-wrap; }
+      .result-table { overflow-x: auto; margin: 12px 0 16px; }
+      table { width: 100%; border-collapse: collapse; }
+      th, td { padding: 10px 12px; border: 1px solid #e5e7eb; text-align: left; vertical-align: top; }
+      th { background: #f8fafc; color: #475569; white-space: nowrap; }
       .muted { color: #6b7280; }
     </style>
   </head>
@@ -28,6 +31,36 @@
       const params = new URLSearchParams(location.search);
       const selected = params.get("session");
       const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
+      const displayValue = (value) => value === null || value === undefined || value === "" ? "-" : escapeHtml(value);
+      const statusText = (status) => ({
+        model_running: "正在解析",
+        ai_rule_pending: "等待管理员确认",
+        ai_parse_failed: "解析失败",
+        approved: "已确认并同步",
+        rejected: "已拒绝",
+      })[status] || "待处理";
+      const candidateRows = (session) => (session.candidate?.parents || []).flatMap((parent) => Array.isArray(parent?.rows) ? parent.rows : []);
+      function candidateResult(session) {
+        const rows = candidateRows(session);
+        if (!rows.length) return session.status === "model_running"
+          ? '<p class="muted">模型正在解析，完成后会在这里显示结果。</p>'
+          : '<p class="muted">本次没有生成可确认的商品行。</p>';
+        return `
+          <div class="result-table">
+            <table aria-label="AI 识别结果">
+              <thead><tr><th>商品</th><th>销售属性1</th><th>销售属性2</th><th>数量</th><th>备注</th></tr></thead>
+              <tbody>${rows.map((item) => `
+                <tr>
+                  <td>${displayValue(item.product)}</td>
+                  <td>${displayValue(item.sales_attr1)}</td>
+                  <td>${displayValue(item.sales_attr2)}</td>
+                  <td>${displayValue(item.quantity)}</td>
+                  <td>${displayValue(item.remark)}</td>
+                </tr>
+              `).join("")}</tbody>
+            </table>
+          </div>`;
+      }
       async function post(url, body) {
         const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
         if (!response.ok) throw new Error(await response.text());
@@ -43,7 +76,7 @@
           `<textarea id="feedback-${row.session_id}" placeholder="指出错误字段，模型会重新生成候选"></textarea>`,
           "<p>",
           `<button onclick="sendFeedback('${row.session_id}')">发送反馈并重新识别</button>`,
-          `<button class="primary" onclick="post('/api/v1/sessions/${row.session_id}/approve')">确认并生成规则版本</button>`,
+          `<button class="primary" onclick="post('/api/v1/sessions/${row.session_id}/approve')">确认并同步为规则</button>`,
           `<button onclick="post('/api/v1/sessions/${row.session_id}/reject')">拒绝候选</button>`,
           "</p>",
         ].join("");
@@ -57,11 +90,8 @@
         const rows = Array.isArray(payload) ? payload : [payload];
         document.querySelector("#sessions").innerHTML = rows.map((row) => `
           <article>
-            <h2>${escapeHtml(row.source_component)} · ${escapeHtml(row.status)}</h2>
-            <p>格式指纹：${escapeHtml(row.fingerprint)}</p>
-            <p>确定性规则失败原因：${escapeHtml(row.deterministic_failure_reason || "-")}</p>
-            <h3>候选订单行与规则</h3>
-            <pre>${escapeHtml(JSON.stringify(row.candidate, null, 2))}</pre>
+            <h2>识别结果 · ${statusText(row.status)}</h2>
+            ${candidateResult(row)}
             ${actions(row)}
           </article>
         `).join("");
