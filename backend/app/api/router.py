@@ -12,6 +12,7 @@ from app.api.routes import (
     product_sku_linking,
     recognition_rule_packs,
     resources,
+    tenant_fingerprint_configs,
     waybill_reading,
 )
 
@@ -26,6 +27,7 @@ api_router.include_router(product_assets.router, tags=["product-assets"])
 api_router.include_router(order_row_drafts.router)
 api_router.include_router(product_sku_linking.router)
 api_router.include_router(recognition_rule_packs.router)
+api_router.include_router(tenant_fingerprint_configs.router)
 api_router.include_router(waybill_reading.router)
 api_router.include_router(platform_accounts.router)
 

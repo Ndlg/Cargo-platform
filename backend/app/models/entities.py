@@ -178,6 +178,18 @@ class RecognitionRulePack(WorkspaceModel):
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
+class TenantFingerprintConfig(BaseModel):
+    __tablename__ = "tenant_fingerprint_configs"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "fingerprint_code", name="uk_tenant_fingerprint_config"),
+    )
+
+    tenant_id: Mapped[int] = mapped_column(index=True, nullable=False)
+    fingerprint_code: Mapped[str] = mapped_column(String(128), nullable=False)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    selected_fields: Mapped[list] = mapped_column(JSON, nullable=False)
+
+
 class Product(WorkspaceModel):
     __tablename__ = "products"
     __table_args__ = (UniqueConstraint("workspace_id", "name", name="uk_products_workspace_name"),)
