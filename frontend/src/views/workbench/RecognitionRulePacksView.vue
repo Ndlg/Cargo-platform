@@ -322,7 +322,9 @@ async function savePackRules() {
     await loadPacks()
     ElMessage.success(`已保存 ${formatProfiles.value.length} 条子规则。`)
   } catch (err) {
-    error.value = err instanceof Error ? err.message : '子规则保存失败'
+    const message = err instanceof Error ? err.message : '子规则保存失败'
+    error.value = message
+    ElMessage.error(message)
   } finally {
     savingRules.value = false
   }
