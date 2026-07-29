@@ -11,7 +11,7 @@ services:
           - local-model
 
   ai-recognition:
-    image: cargo-platform-ai-recognition:print-xml-89c39d7
+    image: cargo-platform-ai-recognition:admin-correct-660188d
     container_name: cargo-platform-validation-ai-recognition
     depends_on:
       - local-model
