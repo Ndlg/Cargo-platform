@@ -10,97 +10,149 @@ SYSTEM_PROMPT = """你是面单商品订单行解析器。只处理提供的脱�
 输出必须完全符合 JSON Schema，并且只输出 parents 和 candidate_rule。每个商品生成独立订单行，不去重。
 同时生成 candidate_rule。结构化数据只能使用：
 {"strategy":"structured_items_v1","items_path":"数组路径[]","fields":{"product":"相对字段路径","sales_attr1":"相对字段路径","sales_attr2":"相对字段路径","quantity":"相对字段路径","remark":"相对字段路径"}}
-文本数据只能使用 strategy=text_pipeline_v1、text_path、可选 item_split、steps 和 defaults。
+文本数据示例：
+{"strategy":"text_pipeline_v1","text_path":"ITEM_INFO","steps":[{"op":"split","source":"text","delimiter":"|","targets":["product","sales_attr1","sales_attr2","quantity"]},{"op":"to_positive_int","target":"quantity"}]}
 不得输出 operations、脚本、正则、文件或网络操作。"""
 
-CANDIDATE_RULE_SCHEMA = {
+ROW_FIELD_PROPERTIES = {
+    "product": {"type": "string"},
+    "sales_attr1": {"type": "string"},
+    "sales_attr2": {"type": "string"},
+    "quantity": {"type": "string"},
+    "remark": {"type": "string"},
+    "image_match_text": {"type": "string"},
+}
+
+DEFAULT_PROPERTIES = {
+    **ROW_FIELD_PROPERTIES,
+    "quantity": {"type": "integer"},
+}
+
+TEXT_STATE_FIELDS = [
+    "text",
+    "product",
+    "sales_attr1",
+    "sales_attr2",
+    "quantity",
+    "remark",
+    "image_match_text",
+]
+
+TEXT_STEP_SCHEMA = {
+    "oneOf": [
+        {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["op", "source", "delimiter", "targets"],
+            "properties": {
+                "op": {"type": "string", "enum": ["split", "rsplit"]},
+                "source": {"type": "string", "enum": TEXT_STATE_FIELDS},
+                "delimiter": {"type": "string"},
+                "targets": {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 10,
+                    "items": {"type": "string", "enum": TEXT_STATE_FIELDS},
+                },
+            },
+        },
+        {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["op", "source", "start", "end", "target"],
+            "properties": {
+                "op": {"const": "extract_between"},
+                "source": {"type": "string", "enum": TEXT_STATE_FIELDS},
+                "start": {"type": "string"},
+                "end": {"type": "string"},
+                "target": {"type": "string", "enum": TEXT_STATE_FIELDS},
+                "consume": {"type": "boolean"},
+            },
+        },
+        {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["op", "target"],
+            "properties": {
+                "op": {"const": "trim"},
+                "target": {"type": "string", "enum": TEXT_STATE_FIELDS},
+                "chars": {"type": "string"},
+            },
+        },
+        {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["op", "target", "literal"],
+            "properties": {
+                "op": {"type": "string", "enum": ["strip_prefix", "strip_suffix"]},
+                "target": {"type": "string", "enum": TEXT_STATE_FIELDS},
+                "literal": {"type": "string"},
+            },
+        },
+        {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["op", "target"],
+            "properties": {
+                "op": {"const": "to_positive_int"},
+                "target": {"const": "quantity"},
+            },
+        },
+    ],
+}
+
+STRUCTURED_RULE_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["strategy"],
+    "required": ["strategy", "items_path", "fields"],
     "properties": {
-        "strategy": {
-            "type": "string",
-            "enum": ["structured_items_v1", "text_pipeline_v1"],
-        },
+        "strategy": {"const": "structured_items_v1"},
         "name": {"type": "string"},
         "description": {"type": "string"},
         "items_path": {"type": "string"},
         "fields": {
             "type": "object",
             "additionalProperties": False,
-            "properties": {
-                "product": {"type": "string"},
-                "sales_attr1": {"type": "string"},
-                "sales_attr2": {"type": "string"},
-                "quantity": {"type": "string"},
-                "remark": {"type": "string"},
-                "image_match_text": {"type": "string"},
-            },
+            "required": ["product", "quantity"],
+            "properties": ROW_FIELD_PROPERTIES,
         },
         "defaults": {
             "type": "object",
             "additionalProperties": False,
-            "properties": {
-                "product": {"type": "string"},
-                "sales_attr1": {"type": "string"},
-                "sales_attr2": {"type": "string"},
-                "quantity": {"type": "integer"},
-                "remark": {"type": "string"},
-                "image_match_text": {"type": "string"},
-            },
+            "properties": DEFAULT_PROPERTIES,
         },
+    },
+}
+
+TEXT_RULE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["strategy", "text_path", "steps"],
+    "properties": {
+        "strategy": {"const": "text_pipeline_v1"},
+        "name": {"type": "string"},
+        "description": {"type": "string"},
         "text_path": {"type": "string"},
         "item_split": {"type": "string"},
         "steps": {
             "type": "array",
             "minItems": 1,
             "maxItems": 20,
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["op"],
-                "properties": {
-                    "op": {
-                        "type": "string",
-                        "enum": [
-                            "split",
-                            "rsplit",
-                            "extract_between",
-                            "trim",
-                            "strip_prefix",
-                            "strip_suffix",
-                            "to_positive_int",
-                        ],
-                    },
-                    "source": {"type": "string"},
-                    "delimiter": {"type": "string"},
-                    "targets": {
-                        "type": "array",
-                        "minItems": 2,
-                        "maxItems": 10,
-                        "items": {
-                            "type": "string",
-                            "enum": [
-                                "text",
-                                "product",
-                                "sales_attr1",
-                                "sales_attr2",
-                                "quantity",
-                                "remark",
-                                "image_match_text",
-                            ],
-                        },
-                    },
-                    "start": {"type": "string"},
-                    "end": {"type": "string"},
-                    "target": {"type": "string"},
-                    "chars": {"type": "string"},
-                    "literal": {"type": "string"},
-                    "consume": {"type": "boolean"},
-                },
-            },
+            "items": TEXT_STEP_SCHEMA,
+        },
+        "defaults": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": DEFAULT_PROPERTIES,
         },
     },
+}
+
+CANDIDATE_RULE_SCHEMA = {
+    "oneOf": [
+        STRUCTURED_RULE_SCHEMA,
+        TEXT_RULE_SCHEMA,
+    ]
 }
 
 ORDER_ROW_SCHEMA = {
@@ -115,12 +167,8 @@ ORDER_ROW_SCHEMA = {
         "image_match_text",
     ],
     "properties": {
-        "product": {"type": "string"},
-        "sales_attr1": {"type": "string"},
-        "sales_attr2": {"type": "string"},
+        **ROW_FIELD_PROPERTIES,
         "quantity": {"type": "integer"},
-        "remark": {"type": "string"},
-        "image_match_text": {"type": "string"},
     },
 }
 

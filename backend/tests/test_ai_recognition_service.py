@@ -336,11 +336,11 @@ def test_ollama_client_requests_schema_constrained_non_thinking_json(tmp_path: P
     row_schema = request["format"]["properties"]["parents"]["items"]["properties"]["rows"]["items"]
     assert row_schema["additionalProperties"] is False
     candidate_rule_schema = request["format"]["properties"]["candidate_rule"]
-    assert candidate_rule_schema["properties"]["strategy"]["enum"] == [
+    assert [schema["properties"]["strategy"]["const"] for schema in candidate_rule_schema["oneOf"]] == [
         "structured_items_v1",
         "text_pipeline_v1",
     ]
-    assert candidate_rule_schema["additionalProperties"] is False
+    assert all(schema["additionalProperties"] is False for schema in candidate_rule_schema["oneOf"])
     rows_schema = request["format"]["properties"]["parents"]["items"]["properties"]["rows"]
     assert rows_schema["minItems"] == 1
     assert rows_schema["maxItems"] == 100
