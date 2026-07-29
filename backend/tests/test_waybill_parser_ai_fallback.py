@@ -61,6 +61,7 @@ def raw_record(value: dict[str, Any]) -> dict[str, Any]:
     return {
         "raw_record_id": 901,
         "task_id": 61,
+        "document_sequence": 1,
         "source_component": "cainiao-cnprint",
         "source_index": "1",
         "payload": value,
@@ -182,6 +183,7 @@ def test_manual_single_waybill_parse_creates_one_ai_session(monkeypatch) -> None
     assert "AI候选商品" not in json.dumps(body, ensure_ascii=False)
     assert len(requests) == 1
     assert requests[0]["workspace_id"] == 1
+    assert requests[0]["document_sequence"] == 1
     assert requests[0]["deterministic_failure_reason"] == "rule_pack_missing"
 
 

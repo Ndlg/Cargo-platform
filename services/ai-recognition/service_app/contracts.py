@@ -52,6 +52,7 @@ class RecognizeRequest(BaseModel):
     workspace_id: int = Field(ge=1)
     task_id: int = Field(ge=1)
     raw_record_id: int = Field(ge=1)
+    document_sequence: int = Field(default=1, ge=1)
     source_component: str = Field(min_length=1, max_length=128)
     deterministic_failure_reason: str = Field(default="", max_length=512)
     payload: dict[str, Any]

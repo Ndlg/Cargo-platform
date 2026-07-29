@@ -63,6 +63,7 @@ class RawRecordParseInput(BaseModel):
     raw_record_id: int
     task_id: int | None = None
     parent_sequence: int | None = None
+    document_sequence: int = Field(default=1, ge=1)
     source_component: str | None = None
     source_index: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
@@ -324,6 +325,7 @@ def ai_diagnostic(
     task_id: int,
     record: RawRecordParseInput,
     document_payload: dict[str, Any],
+    document_sequence: int,
     parent: ParentWaybillDraft,
     deterministic_reason: str,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
@@ -332,6 +334,7 @@ def ai_diagnostic(
             workspace_id=workspace_id,
             task_id=task_id,
             raw_record_id=record.raw_record_id,
+            document_sequence=document_sequence,
             source_component=str(record.source_component or ""),
             deterministic_failure_reason=deterministic_reason,
             payload=document_payload,
@@ -402,6 +405,7 @@ def ai_fallback_response(payload: BatchParseRequest, deterministic_reason: str) 
                 task_id=int(payload.task_id),
                 record=record,
                 document_payload=document_payload,
+                document_sequence=record.document_sequence + document_offset,
                 parent=parent,
                 deterministic_reason=deterministic_reason,
             )
@@ -643,6 +647,7 @@ def parse_batch(payload: BatchParseRequest) -> dict[str, Any]:
                             task_id=int(payload.task_id),
                             record=record,
                             document_payload=document_payload,
+                            document_sequence=record.document_sequence + document_offset,
                             parent=parent,
                             deterministic_reason=deterministic_reason,
                         )

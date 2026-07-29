@@ -20,6 +20,7 @@ from app.services.waybill_parser_client import (
     preview_order_row_drafts_with_service,
     validate_rule_pack_with_service,
 )
+from app.services.waybill_reading import task_documents
 
 
 router = APIRouter(prefix="/internal/ai-recognition", tags=["ai-recognition-internal"])
@@ -30,6 +31,7 @@ class AiRuleApprovalRequest(BaseModel):
     workspace_id: int = Field(ge=1)
     task_id: int = Field(ge=1)
     raw_record_id: int = Field(ge=1)
+    document_sequence: int = Field(default=1, ge=1)
     format_fingerprint: str = Field(min_length=1, max_length=128)
     candidate_rule: dict[str, Any]
     rule_evidence: list[str] = Field(default_factory=list)
@@ -64,12 +66,38 @@ def comparable_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def rows_cover_expected(actual: list[dict[str, Any]], expected: list[dict[str, Any]]) -> bool:
+    if len(actual) != len(expected):
+        return False
     remaining = actual.copy()
     for row in expected:
         if row not in remaining:
             return False
         remaining.remove(row)
     return True
+
+
+def parser_input_for_document(
+    record: RawCaptureRecord,
+    document_sequence: int,
+) -> dict[str, Any]:
+    parser_input = parser_raw_record_inputs([record])[0]
+    payload = parser_input["payload"]
+    documents = task_documents(payload)
+    if documents:
+        if document_sequence > len(documents):
+            raise ValueError("所选面单已经不存在，未同步规则。")
+        task = payload.get("task")
+        parser_input["payload"] = {
+            **payload,
+            "task": {
+                **(task if isinstance(task, dict) else {}),
+                "documents": [documents[document_sequence - 1]],
+            },
+        }
+    elif document_sequence != 1:
+        raise ValueError("所选面单已经不存在，未同步规则。")
+    parser_input["document_sequence"] = document_sequence
+    return parser_input
 
 
 @router.post("/approve")
@@ -126,13 +154,14 @@ def approve_ai_rule(
                 "session_id": request.session_id,
                 "task_id": request.task_id,
                 "raw_record_id": request.raw_record_id,
+                "document_sequence": request.document_sequence,
                 "source_component": record.source_component,
                 "sample_payload": evidence_payload,
                 "confirmed_rows": expected_rows,
                 "rule_evidence": request.rule_evidence,
             },
         )
-        parser_input = parser_raw_record_inputs([record])[0]
+        parser_input = parser_input_for_document(record, request.document_sequence)
         replay = preview_order_row_drafts_with_service(
             task_id=request.task_id,
             raw_records=[parser_input],

@@ -26,6 +26,7 @@ class SessionStore:
                     workspace_id INTEGER NOT NULL,
                     task_id INTEGER NOT NULL,
                     raw_record_id INTEGER NOT NULL,
+                    document_sequence INTEGER NOT NULL DEFAULT 1,
                     source_component TEXT NOT NULL,
                     fingerprint TEXT NOT NULL,
                     deterministic_failure_reason TEXT NOT NULL,
@@ -41,6 +42,15 @@ class SessionStore:
                 )
                 """
             )
+            columns = {
+                str(row[1])
+                for row in db.execute("PRAGMA table_info(recognition_sessions)").fetchall()
+            }
+            if "document_sequence" not in columns:
+                db.execute(
+                    "ALTER TABLE recognition_sessions "
+                    "ADD COLUMN document_sequence INTEGER NOT NULL DEFAULT 1"
+                )
             db.commit()
 
     def connect(self) -> sqlite3.Connection:
@@ -69,6 +79,7 @@ class SessionStore:
         workspace_id: int,
         task_id: int,
         raw_record_id: int,
+        document_sequence: int,
         source_component: str,
         fingerprint: str,
         deterministic_failure_reason: str,
@@ -82,9 +93,9 @@ class SessionStore:
                     """
                     INSERT INTO recognition_sessions(
                         session_id, request_key, workspace_id, task_id, raw_record_id,
-                        source_component, fingerprint, deterministic_failure_reason,
+                        document_sequence, source_component, fingerprint, deterministic_failure_reason,
                         sanitized_payload, status, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'model_running', ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'model_running', ?, ?)
                     """,
                     (
                         session_id,
@@ -92,6 +103,7 @@ class SessionStore:
                         workspace_id,
                         task_id,
                         raw_record_id,
+                        document_sequence,
                         source_component,
                         fingerprint,
                         deterministic_failure_reason,
@@ -117,6 +129,7 @@ class SessionStore:
                 workspace_id=workspace_id,
                 task_id=task_id,
                 raw_record_id=raw_record_id,
+                document_sequence=document_sequence,
                 source_component=source_component,
                 fingerprint=fingerprint,
                 deterministic_failure_reason=deterministic_failure_reason,

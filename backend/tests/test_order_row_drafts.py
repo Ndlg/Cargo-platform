@@ -145,6 +145,7 @@ def test_manual_ai_start_isolates_exactly_one_selected_waybill(monkeypatch) -> N
     assert calls[0]["allow_ai"] is True
     assert calls[0]["workspace_id"] == 1
     assert calls[0]["raw_records"][0]["parent_sequence"] == 2
+    assert calls[0]["raw_records"][0]["document_sequence"] == 2
     assert calls[0]["raw_records"][0]["ai_field_selections"]["CLOUD-PRODUCT-INFO"] == [
         "product_info",
         "product_count",

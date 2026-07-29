@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import sqlite3
 import sys
 from threading import Event, Thread
 import time
@@ -57,6 +58,7 @@ def raw_request(product: str = "范74") -> dict[str, Any]:
         "workspace_id": 1,
         "task_id": 61,
         "raw_record_id": 901,
+        "document_sequence": 1,
         "source_component": "cainiao-cnprint",
         "deterministic_failure_reason": "format_profile_missing",
         "payload": {
@@ -188,6 +190,51 @@ def test_recognize_returns_running_session_before_slow_model_finishes(tmp_path: 
         wait_for_session(client, result["response"].json()["session_id"], "ai_rule_pending")
 
 
+def test_existing_session_database_adds_document_sequence_column(tmp_path: Path) -> None:
+    module = load_ai_service(tmp_path / "import-default.db")
+    database = tmp_path / "legacy-sessions.db"
+    with sqlite3.connect(database) as db:
+        db.execute(
+            """
+            CREATE TABLE recognition_sessions (
+                session_id TEXT PRIMARY KEY,
+                request_key TEXT NOT NULL UNIQUE,
+                workspace_id INTEGER NOT NULL,
+                task_id INTEGER NOT NULL,
+                raw_record_id INTEGER NOT NULL,
+                source_component TEXT NOT NULL,
+                fingerprint TEXT NOT NULL,
+                deterministic_failure_reason TEXT NOT NULL,
+                sanitized_payload TEXT NOT NULL,
+                candidate TEXT,
+                feedback TEXT NOT NULL DEFAULT '[]',
+                platform_response TEXT,
+                status TEXT NOT NULL,
+                error TEXT,
+                model_calls INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+
+    store = module.SessionStore(database)
+    session, created = store.reserve(
+        request_key="legacy-request",
+        workspace_id=1,
+        task_id=61,
+        raw_record_id=901,
+        document_sequence=3,
+        source_component="test",
+        fingerprint="sha256:test",
+        deterministic_failure_reason="format_profile_missing",
+        sanitized_payload={"product": "shoe"},
+    )
+
+    assert created is True
+    assert session["document_sequence"] == 3
+
+
 def test_recognize_sanitizes_pii_and_reuses_identical_session(tmp_path: Path) -> None:
     module = load_ai_service(tmp_path / "import-default.db")
     model = FakeModel()
@@ -221,6 +268,7 @@ def test_recognize_sanitizes_pii_and_reuses_identical_session(tmp_path: Path) ->
     assert first.json()["session_id"] == second.json()["session_id"]
     assert first.json()["console_url"].startswith("http://127.0.0.1:6183/console?session=")
     assert stored["candidate"]
+    assert stored["document_sequence"] == 1
     assert stored["model_input"] == {
         "fingerprint": stored["fingerprint"],
         "sanitized_payload": model.calls[0]["payload"],
@@ -530,6 +578,7 @@ def test_approve_calls_platform_with_shared_token_and_reject_is_local(tmp_path: 
     assert approved.json()["status"] == "approved"
     assert approvals[0][1] == "test-shared-token"
     assert approvals[0][0]["session_id"] == approved_id
+    assert approvals[0][0]["document_sequence"] == 1
     assert approvals[0][0]["candidate_rule"]["strategy"] == "structured_items_v1"
     assert approvals[0][0]["validate_only"] is True
     assert approvals[1][0]["validate_only"] is False

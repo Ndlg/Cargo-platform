@@ -1,3 +1,5 @@
+import json
+
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
@@ -15,6 +17,21 @@ def candidate_profile(fingerprint: str, *, product_path: str = "name") -> dict:
         "items_path": "items[]",
         "fields": {"product": product_path, "quantity": "quantity"},
     }
+
+
+def test_rule_replay_requires_exact_row_multiset() -> None:
+    shoe = {
+        "product": "shoe",
+        "sales_attr1": "",
+        "sales_attr2": "",
+        "quantity": 1,
+        "remark": "",
+    }
+    sibling = {**shoe, "product": "sibling shoe"}
+
+    assert ai_route.rows_cover_expected([shoe], [shoe]) is True
+    assert ai_route.rows_cover_expected([shoe, sibling], [shoe]) is False
+    assert ai_route.rows_cover_expected([shoe], [shoe, shoe]) is False
 
 
 def test_ai_approval_updates_one_rule_pack_in_place() -> None:
@@ -135,14 +152,6 @@ def test_internal_approval_activates_validated_revision(monkeypatch) -> None:
             "contract_version": "order_row_drafts_v1",
             "rows": [
                 {
-                    "product": "sibling shoe",
-                    "sales_attr1": "",
-                    "sales_attr2": "",
-                    "quantity": 1,
-                    "remark": "",
-                    "image_match_text": "sibling shoe",
-                },
-                {
                     "product": "shoe",
                     "sales_attr1": "",
                     "sales_attr2": "",
@@ -217,6 +226,7 @@ def test_internal_approval_activates_validated_revision(monkeypatch) -> None:
             "session_id": "session-api",
             "task_id": 61,
             "raw_record_id": 100,
+            "document_sequence": 1,
             "source_component": "test",
             "sample_payload": {"items": [{"name": "shoe", "quantity": 1}]},
             "confirmed_rows": [
@@ -317,6 +327,101 @@ def test_internal_validation_replays_candidate_without_persisting_pack(monkeypat
         assert db.scalar(select(RecognitionRulePack)) is None
 
     ai_route.get_settings.cache_clear()
+
+
+def test_internal_validation_replays_only_selected_document(monkeypatch) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    monkeypatch.setenv("AI_RECOGNITION_ENABLED", "true")
+    monkeypatch.setenv("AI_RECOGNITION_INTERNAL_TOKEN", "test-secret")
+    ai_route.get_settings.cache_clear()
+    monkeypatch.setattr(
+        ai_route,
+        "validate_rule_pack_with_service",
+        lambda **_kwargs: {"status": "valid", "errors": []},
+    )
+
+    def replay_selected_document(**kwargs) -> dict:
+        documents = kwargs["raw_records"][0]["payload"]["task"]["documents"]
+        assert [document["documentID"] for document in documents] == ["SECOND"]
+        return {
+            "contract_version": "order_row_drafts_v1",
+            "rows": [
+                {
+                    "product": "second shoe",
+                    "sales_attr1": "",
+                    "sales_attr2": "",
+                    "quantity": 1,
+                    "remark": "",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(
+        ai_route,
+        "preview_order_row_drafts_with_service",
+        replay_selected_document,
+    )
+
+    with Session(engine) as db:
+        db.add(Workspace(id=1, tenant_id=1, name="test", code="test"))
+        db.add(
+            RawCaptureRecord(
+                id=100,
+                tenant_id=1,
+                workspace_id=1,
+                task_id=61,
+                document_id="doc",
+                source_component="test",
+                source_index="1",
+                payload_format="json",
+                raw_payload=json.dumps(
+                    {
+                        "task": {
+                            "documents": [
+                                {"documentID": "FIRST", "items": [{"name": "first shoe", "quantity": 1}]},
+                                {"documentID": "SECOND", "items": [{"name": "second shoe", "quantity": 1}]},
+                            ]
+                        }
+                    }
+                ),
+                status="pending",
+            )
+        )
+        db.commit()
+        response = ai_route.approve_ai_rule(
+            AiRuleApprovalRequest(
+                session_id="session-selected-document",
+                workspace_id=1,
+                task_id=61,
+                raw_record_id=100,
+                document_sequence=2,
+                format_fingerprint=f"sha256:{'4' * 64}",
+                candidate_rule=candidate_profile(f"sha256:{'0' * 64}"),
+                candidate_output={
+                    "parents": [
+                        {
+                            "source": {"sanitized_payload": {"items": [{"name": "second shoe", "quantity": 1}]}},
+                            "rows": [
+                                {
+                                    "product": "second shoe",
+                                    "sales_attr1": "",
+                                    "sales_attr2": "",
+                                    "quantity": 1,
+                                    "remark": "",
+                                }
+                            ],
+                        }
+                    ]
+                },
+                validate_only=True,
+            ),
+            db,
+            "test-secret",
+        )
+
+    ai_route.get_settings.cache_clear()
+    assert response["status"] == "valid"
 
 
 def test_internal_approval_rejects_rule_that_cannot_reproduce_candidate(monkeypatch) -> None:

@@ -97,6 +97,7 @@ def start_manual_ai_parse(
     elif request.document_sequence != 1:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Waybill document not found.")
     parser_input["parent_sequence"] = request.parent_sequence
+    parser_input["document_sequence"] = request.document_sequence
     parser_input["ai_field_selections"] = tenant_ai_field_selections(db, workspace_id)
 
     active_pack = active_recognition_rule_pack(db, workspace_id=workspace_id)
