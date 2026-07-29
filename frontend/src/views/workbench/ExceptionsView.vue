@@ -128,12 +128,24 @@ const selectedTask = computed(
 
 const recognitionRows = computed<RecognitionPreviewRow[]>(() => recognitionPreview.value?.rows ?? [])
 const recognitionWaybillCount = computed(
-  () => recognitionPreview.value?.waybill_count ?? recognitionPreview.value?.detail_count ?? 0,
+  () => Math.max(
+    recognitionPreview.value?.waybill_count ?? recognitionPreview.value?.detail_count ?? 0,
+    orderDrafts.value?.summary.parent_waybill_count ?? 0,
+  ),
 )
+const parseExceptionCount = computed(() => {
+  if (!aiStatus.value || !orderDrafts.value) return 0
+  const resolvedParents = orderDrafts.value.parents.filter((parent) => parent.rows.length).length
+  return Math.max(0, orderDrafts.value.summary.parent_waybill_count - resolvedParents)
+})
 const exceptionRows = computed(() =>
   recognitionRows.value.filter((row) => row.status !== 'matched' && row.status !== 'special'),
 )
 const specialRows = computed(() => recognitionRows.value.filter((row) => row.status === 'special'))
+const totalExceptionCount = computed(() => exceptionRows.value.length + parseExceptionCount.value)
+const showParseException = computed(
+  () => parseExceptionCount.value > 0 && (statusFilter.value === 'all' || statusFilter.value === 'pending'),
+)
 const visibleExceptionRows = computed(() => {
   if (statusFilter.value === 'all') return exceptionRows.value
   return exceptionRows.value.filter((row) => row.status === statusFilter.value)
@@ -218,7 +230,8 @@ function ensureSelectedTask() {
 }
 
 function exceptionCountByStatus(status: ExceptionStatus): number {
-  return recognitionRows.value.filter((row) => row.status === status).length
+  const count = recognitionRows.value.filter((row) => row.status === status).length
+  return status === 'pending' ? count + parseExceptionCount.value : count
 }
 
 function statusLabel(status: string): string {
@@ -445,7 +458,7 @@ onMounted(load)
     </div>
     <div class="stat-tile">
       <span>异常</span>
-      <strong>{{ exceptionRows.length }}</strong>
+      <strong>{{ totalExceptionCount }}</strong>
       <small>需要补规则或回解析处理</small>
     </div>
     <div class="stat-tile">
@@ -477,7 +490,7 @@ onMounted(load)
         @click="statusFilter = 'all'"
       >
         <strong>全部异常</strong>
-        <span>{{ exceptionRows.length }}</span>
+        <span>{{ totalExceptionCount }}</span>
       </button>
       <button
         v-for="type in exceptionTypes"
@@ -492,8 +505,23 @@ onMounted(load)
       </button>
     </div>
 
+    <el-alert
+      v-if="showParseException"
+      :closable="false"
+      :title="`${parseExceptionCount} 张面单：${aiStatusText}`"
+      :type="aiStatus === 'ai_rule_pending' ? 'warning' : 'error'"
+      show-icon
+    >
+      <template #default>
+        解析未生成订单行，已保留为异常，不会进入正常导出。
+        <el-link v-if="aiSessionUrl" :href="aiSessionUrl" target="_blank" rel="noopener noreferrer" type="primary">
+          查看 AI 识别会话
+        </el-link>
+      </template>
+    </el-alert>
+
     <el-table
-      v-if="exceptionRows.length"
+      v-if="visibleExceptionRows.length"
       v-loading="previewLoading"
       :data="visibleExceptionRows"
       row-key="candidate_key"
@@ -575,7 +603,7 @@ onMounted(load)
     </el-table>
 
     <el-empty
-      v-else
+      v-else-if="!showParseException"
       v-loading="previewLoading"
       description="当前采集轮次没有会进入异常面单的待处理行"
     />
