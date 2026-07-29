@@ -115,7 +115,6 @@ def approve_ai_rule(
             validate=lambda payload: validate_rule_pack_with_service(rule_pack=payload),
         )
         parser_input = parser_raw_record_inputs([record])[0]
-        parser_input["payload"] = evidence_payload
         replay = preview_order_row_drafts_with_service(
             task_id=request.task_id,
             raw_records=[parser_input],

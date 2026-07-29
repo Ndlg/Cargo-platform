@@ -98,10 +98,9 @@ def test_internal_approval_activates_validated_revision(monkeypatch) -> None:
         "validate_rule_pack_with_service",
         lambda **_kwargs: {"status": "valid", "errors": []},
     )
-    monkeypatch.setattr(
-        ai_route,
-        "preview_order_row_drafts_with_service",
-        lambda **_kwargs: {
+    def replay_original_record(**kwargs) -> dict:
+        assert kwargs["raw_records"][0]["payload"]["receiver"] == "secret"
+        return {
             "contract_version": "order_row_drafts_v1",
             "rows": [
                 {
@@ -113,8 +112,9 @@ def test_internal_approval_activates_validated_revision(monkeypatch) -> None:
                     "image_match_text": "",
                 }
             ],
-        },
-    )
+        }
+
+    monkeypatch.setattr(ai_route, "preview_order_row_drafts_with_service", replay_original_record)
 
     with Session(engine) as db:
         db.add(Workspace(id=1, tenant_id=1, name="test", code="test"))
@@ -128,7 +128,7 @@ def test_internal_approval_activates_validated_revision(monkeypatch) -> None:
                 source_component="test",
                 source_index="1",
                 payload_format="json",
-                raw_payload='{"items":[{"name":"shoe","quantity":1}]}',
+                raw_payload='{"receiver":"secret","items":[{"name":"shoe","quantity":1}]}',
                 status="pending",
             )
         )
