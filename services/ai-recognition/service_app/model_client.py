@@ -13,17 +13,6 @@ SYSTEM_PROMPT = """你是面单商品订单行解析器。只处理提供的脱�
 文本数据只能使用 strategy=text_pipeline_v1、text_path、可选 item_split、steps 和 defaults。
 不得输出 operations、脚本、正则、文件或网络操作。"""
 
-OLLAMA_GRAMMAR_UNSUPPORTED = {
-    "exclusiveMaximum",
-    "exclusiveMinimum",
-    "maxItems",
-    "maxLength",
-    "maximum",
-    "minItems",
-    "minLength",
-    "minimum",
-}
-
 CANDIDATE_RULE_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -64,6 +53,8 @@ CANDIDATE_RULE_SCHEMA = {
         "item_split": {"type": "string"},
         "steps": {
             "type": "array",
+            "minItems": 1,
+            "maxItems": 20,
             "items": {
                 "type": "object",
                 "additionalProperties": False,
@@ -85,6 +76,8 @@ CANDIDATE_RULE_SCHEMA = {
                     "delimiter": {"type": "string"},
                     "targets": {
                         "type": "array",
+                        "minItems": 2,
+                        "maxItems": 10,
                         "items": {
                             "type": "string",
                             "enum": [
@@ -138,6 +131,8 @@ OLLAMA_OUTPUT_SCHEMA = {
     "properties": {
         "parents": {
             "type": "array",
+            "minItems": 1,
+            "maxItems": 1,
             "items": {
                 "type": "object",
                 "additionalProperties": False,
@@ -145,6 +140,8 @@ OLLAMA_OUTPUT_SCHEMA = {
                 "properties": {
                     "rows": {
                         "type": "array",
+                        "minItems": 1,
+                        "maxItems": 100,
                         "items": ORDER_ROW_SCHEMA,
                     },
                 },
@@ -155,18 +152,8 @@ OLLAMA_OUTPUT_SCHEMA = {
 }
 
 
-def ollama_json_schema(value: Any | None = None) -> Any:
-    if value is None:
-        value = OLLAMA_OUTPUT_SCHEMA
-    if isinstance(value, dict):
-        return {
-            key: ollama_json_schema(item)
-            for key, item in value.items()
-            if key not in OLLAMA_GRAMMAR_UNSUPPORTED
-        }
-    if isinstance(value, list):
-        return [ollama_json_schema(item) for item in value]
-    return value
+def ollama_json_schema() -> dict[str, Any]:
+    return OLLAMA_OUTPUT_SCHEMA
 
 
 class OllamaModelClient:

@@ -332,6 +332,7 @@ def test_ollama_client_requests_schema_constrained_non_thinking_json(tmp_path: P
     assert request["options"]["num_ctx"] == 4096
     assert request["format"]["properties"]["parents"]
     assert request["format"]["required"] == ["parents", "candidate_rule"]
+    assert request["format"]["properties"]["parents"]["maxItems"] == 1
     row_schema = request["format"]["properties"]["parents"]["items"]["properties"]["rows"]["items"]
     assert row_schema["additionalProperties"] is False
     candidate_rule_schema = request["format"]["properties"]["candidate_rule"]
@@ -340,11 +341,9 @@ def test_ollama_client_requests_schema_constrained_non_thinking_json(tmp_path: P
         "text_pipeline_v1",
     ]
     assert candidate_rule_schema["additionalProperties"] is False
-    sent_schema = json.dumps(request["format"], sort_keys=True)
-    assert "maxItems" not in sent_schema
-    assert "minItems" not in sent_schema
-    assert "maxLength" not in sent_schema
-    assert "minLength" not in sent_schema
+    rows_schema = request["format"]["properties"]["parents"]["items"]["properties"]["rows"]
+    assert rows_schema["minItems"] == 1
+    assert rows_schema["maxItems"] == 100
 
 
 def test_health_console_and_session_list_are_available(tmp_path: Path) -> None:
