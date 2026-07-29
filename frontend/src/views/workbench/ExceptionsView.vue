@@ -319,10 +319,6 @@ function goToRepair(row: RecognitionPreviewRow) {
   if (target) void router.push(target)
 }
 
-function openAiSession() {
-  if (aiSessionUrl.value) window.open(aiSessionUrl.value, '_blank', 'noopener,noreferrer')
-}
-
 async function loadRecognitionPreview() {
   if (!selectedTaskId.value) {
     recognitionPreview.value = null
@@ -425,7 +421,9 @@ onMounted(load)
   >
     <template #default>
       当前面单保留为明确异常，不会进入正常导出。
-      <el-button v-if="aiSessionUrl" link type="primary" @click="openAiSession">查看 AI 识别会话</el-button>
+      <el-link v-if="aiSessionUrl" :href="aiSessionUrl" target="_blank" rel="noopener noreferrer" type="primary">
+        查看 AI 识别会话
+      </el-link>
     </template>
   </el-alert>
 

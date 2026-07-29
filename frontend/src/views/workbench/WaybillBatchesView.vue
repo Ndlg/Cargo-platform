@@ -201,10 +201,6 @@ function emptyText(value: string | number | null | undefined): string {
   return String(value)
 }
 
-function openAiSession() {
-  if (aiSessionUrl.value) window.open(aiSessionUrl.value, '_blank', 'noopener,noreferrer')
-}
-
 async function loadTasks() {
   const records = await getRecords('/capture-tasks?limit=2000&include_waybill_counts=false')
   captureTasks.value = records as CaptureTaskRecord[]
@@ -335,7 +331,9 @@ onMounted(load)
   >
     <template #default>
       当前结果不会进入商品匹配或正常导出。
-      <el-button v-if="aiSessionUrl" link type="primary" @click="openAiSession">查看 AI 识别会话</el-button>
+      <el-link v-if="aiSessionUrl" :href="aiSessionUrl" target="_blank" rel="noopener noreferrer" type="primary">
+        查看 AI 识别会话
+      </el-link>
     </template>
   </el-alert>
   <el-alert
