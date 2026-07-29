@@ -468,7 +468,6 @@ onMounted(loadPacks)
   </section>
 
   <el-dialog v-model="ruleEditorVisible" title="AI识别规则包" width="min(1280px, 96vw)" top="4vh">
-    <el-alert v-if="editorError" :closable="false" :title="editorError" type="error" show-icon />
     <el-alert
       v-if="!formatProfiles.length"
       :closable="false"
@@ -505,15 +504,20 @@ onMounted(loadPacks)
       />
     </div>
     <template #footer>
-      <el-button @click="ruleEditorVisible = false">取消</el-button>
-      <el-button
-        type="primary"
-        :loading="savingRules"
-        :disabled="!formatProfiles.length"
-        @click="savePackRules"
-      >
-        保存全部子规则
-      </el-button>
+      <div class="rule-editor-footer">
+        <el-alert v-if="editorError" :closable="false" :title="editorError" type="error" show-icon />
+        <div class="rule-editor-footer__actions">
+          <el-button @click="ruleEditorVisible = false">取消</el-button>
+          <el-button
+            type="primary"
+            :loading="savingRules"
+            :disabled="!formatProfiles.length"
+            @click="savePackRules"
+          >
+            保存全部子规则
+          </el-button>
+        </div>
+      </div>
     </template>
   </el-dialog>
 </template>
@@ -620,6 +624,24 @@ onMounted(loadPacks)
   background: var(--el-color-primary-light-9);
 }
 
+.rule-editor-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+}
+
+.rule-editor-footer .el-alert {
+  flex: 1;
+  text-align: left;
+}
+
+.rule-editor-footer__actions {
+  display: flex;
+  flex: none;
+  gap: 10px;
+}
+
 @media (max-width: 1100px) {
   .rule-pack-grid {
     grid-template-columns: 1fr;
@@ -643,6 +665,15 @@ onMounted(loadPacks)
 
   .profile-list__item {
     min-width: 190px;
+  }
+
+  .rule-editor-footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .rule-editor-footer__actions {
+    justify-content: flex-end;
   }
 }
 </style>
