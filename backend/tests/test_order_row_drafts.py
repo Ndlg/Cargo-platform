@@ -19,6 +19,7 @@ os.environ["SECRET_KEY"] = "test-secret"
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+from app.api.routes import order_row_drafts as order_row_drafts_route  # noqa: E402
 from app.core.database import SessionLocal  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import RawCaptureRecord, RecognitionRulePack, StandardDetail  # noqa: E402
@@ -29,6 +30,102 @@ from service_app.order_row_engine import (  # noqa: E402
     draft_rows_from_waybill_sample,
     order_row_draft_summary,
 )
+
+
+def test_manual_ai_start_isolates_exactly_one_selected_waybill(monkeypatch) -> None:
+    task_id = 8810
+    raw_record_id = 9910
+    with TestClient(app):
+        pass
+    with SessionLocal() as db:
+        db.add(
+            RawCaptureRecord(
+                id=raw_record_id,
+                tenant_id=1,
+                workspace_id=1,
+                task_id=task_id,
+                document_id="batch",
+                source_component="cainiao-cnprint",
+                source_index="1",
+                payload_format="json",
+                raw_payload=json.dumps(
+                    {
+                        "task": {
+                            "documents": [
+                                {"documentID": "FIRST", "contents": [{"data": {"product": "A"}}]},
+                                {"documentID": "SECOND", "contents": [{"data": {"product": "B"}}]},
+                            ]
+                        }
+                    }
+                ),
+                status="pending",
+            )
+        )
+        db.commit()
+
+    calls: list[dict] = []
+
+    def fake_parser(**kwargs) -> dict:
+        calls.append(kwargs)
+        return {
+            "contract_version": "order_row_drafts_v1",
+            "task_id": task_id,
+            "status": "model_running",
+            "summary": {
+                "parent_waybill_count": 1,
+                "child_waybill_count": 0,
+                "draft_count": 0,
+                "needs_review_count": 1,
+            },
+            "ai_sessions": [
+                {
+                    "session_id": "manual-session",
+                    "status": "model_running",
+                    "console_url": "http://127.0.0.1:18111/console?session=manual-session",
+                }
+            ],
+            "parents": [],
+            "rows": [],
+        }
+
+    monkeypatch.setattr(
+        order_row_drafts_route,
+        "active_recognition_rule_pack",
+        lambda *_args, **_kwargs: None,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        order_row_drafts_route,
+        "parse_order_row_drafts_with_service",
+        fake_parser,
+        raising=False,
+    )
+
+    with TestClient(app) as client:
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin123"})
+        assert login.status_code == 200
+        headers = {
+            "Authorization": f"Bearer {login.json()['access_token']}",
+            "X-Workspace-Id": "1",
+        }
+        response = client.post(
+            f"/api/v1/order-row-drafts/tasks/{task_id}/manual-ai",
+            headers=headers,
+            json={
+                "raw_record_id": raw_record_id,
+                "document_sequence": 2,
+                "parent_sequence": 2,
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["ai_sessions"][0]["session_id"] == "manual-session"
+    assert len(calls) == 1
+    assert calls[0]["allow_ai"] is True
+    assert calls[0]["workspace_id"] == 1
+    assert calls[0]["raw_records"][0]["parent_sequence"] == 2
+    documents = calls[0]["raw_records"][0]["payload"]["task"]["documents"]
+    assert [document["documentID"] for document in documents] == ["SECOND"]
 
 
 ACTIVE_RULE_PACK_PAYLOAD = {
@@ -1059,6 +1156,7 @@ def test_order_row_draft_endpoint_requires_active_rule_pack() -> None:
     assert body["status"] == "rule_pack_missing"
     assert body["rule_pack_required"] is True
     assert body["rows"] == []
+    assert body["summary"]["needs_review_count"] == 1
     assert body["summary"]["pending_rule_pack_count"] == 1
 
 

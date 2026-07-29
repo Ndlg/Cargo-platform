@@ -258,7 +258,7 @@ def rule_pack_missing_order_rows_response(
             "parent_waybill_count": parent_waybill_count,
             "child_waybill_count": 0,
             "draft_count": 0,
-            "needs_review_count": 0,
+            "needs_review_count": parent_waybill_count,
             "special_count": 0,
             "pending_rule_pack_count": parent_waybill_count,
         },

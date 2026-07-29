@@ -121,15 +121,10 @@ def test_internal_approval_activates_validated_revision(monkeypatch) -> None:
     assert response["rerun_task_id"] == 61
 
 
-def test_no_pack_raw_records_reach_parser_when_ai_is_enabled(monkeypatch) -> None:
+def test_no_pack_raw_records_do_not_reach_parser_from_business_flow(monkeypatch) -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
     calls: list[dict] = []
-    monkeypatch.setattr(
-        order_row_reader,
-        "get_settings",
-        lambda: type("Settings", (), {"ai_recognition_enabled": True})(),
-    )
     monkeypatch.setattr(order_row_reader, "waybill_parser_service_enabled", lambda: True)
 
     def fake_parser(**kwargs) -> dict:
@@ -158,14 +153,16 @@ def test_no_pack_raw_records_reach_parser_when_ai_is_enabled(monkeypatch) -> Non
     )
 
     with Session(engine) as db:
-        rows, sources = order_row_reader.parse_raw_records_to_order_rows(
-            db,
-            workspace_id=1,
-            task_id=61,
-            records=[record],
-        )
+        try:
+            order_row_reader.parse_raw_records_to_order_rows(
+                db,
+                workspace_id=1,
+                task_id=61,
+                records=[record],
+            )
+        except Exception as exc:
+            assert getattr(exc, "status_code", None) == 422
+        else:
+            raise AssertionError("business parsing must require a rule pack")
 
-    assert rows == []
-    assert sources == []
-    assert calls[0]["workspace_id"] == 1
-    assert calls[0]["rule_pack"] is None
+    assert calls == []

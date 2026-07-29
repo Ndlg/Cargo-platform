@@ -341,6 +341,16 @@ export interface OrderRowDraftsResponse extends ApiRecord {
     deterministic_failure_reason?: string
     error?: string
   }>
+  diagnostics?: Array<{
+    raw_record_id: number
+    parent_label?: string
+    fingerprint?: string
+    reason: string
+    deterministic_reason?: string
+    session_id?: string
+    console_url?: string
+    error?: string
+  }>
   summary: {
     parent_waybill_count: number
     child_waybill_count: number
@@ -610,6 +620,23 @@ export function getOrderRowDrafts(taskId: number, query: { limit?: number; offse
   if (query.offset !== undefined && query.offset !== null) params.set('offset', String(query.offset))
   const suffix = params.toString() ? `?${params.toString()}` : ''
   return request<OrderRowDraftsResponse>(withCurrentWorkspace(`/order-row-drafts/tasks/${taskId}${suffix}`))
+}
+
+export function startManualAiRecognition(
+  taskId: number,
+  payload: {
+    raw_record_id: number
+    document_sequence: number
+    parent_sequence: number
+  },
+): Promise<OrderRowDraftsResponse> {
+  return request<OrderRowDraftsResponse>(
+    withCurrentWorkspace(`/order-row-drafts/tasks/${taskId}/manual-ai`),
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  )
 }
 
 export function listRecognitionRulePacks(): Promise<RecognitionRulePacksResponse> {

@@ -8,7 +8,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import RawCaptureRecord, StandardDetail
-from app.core.config import get_settings
 from app.services.order_row_contract import OrderRowDraft, ParentWaybillDraft
 from app.services.recognition_rule_packs import (
     active_recognition_rule_pack,
@@ -411,8 +410,7 @@ def parse_raw_records_to_order_rows(
     records: list[RawCaptureRecord],
 ) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
     active_pack = active_recognition_rule_pack(db, workspace_id=workspace_id)
-    ai_enabled = get_settings().ai_recognition_enabled
-    if active_pack is None and not ai_enabled:
+    if active_pack is None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="当前工作区没有启用识别规则包，请先导入并启用规则包。",
@@ -426,10 +424,8 @@ def parse_raw_records_to_order_rows(
             "standard_details": [],
             "raw_records": parser_raw_record_inputs(records),
             "waybill_samples": [],
-            "rule_pack": active_pack.payload if active_pack is not None else None,
+            "rule_pack": active_pack.payload,
         }
-        if ai_enabled:
-            parser_kwargs["workspace_id"] = workspace_id
         payload = parse_order_row_drafts_with_service(**parser_kwargs)
     except Exception as exc:
         raise HTTPException(
@@ -614,8 +610,7 @@ def task_order_row_drafts_payload(
     sample_inputs = order_row_sample_inputs_from_records(records)
     if raw_inputs and has_readable_waybill_samples(sample_inputs):
         active_pack = active_recognition_rule_pack(db, workspace_id=workspace_id)
-        ai_enabled = get_settings().ai_recognition_enabled
-        if active_pack is None and not ai_enabled:
+        if active_pack is None:
             return rule_pack_missing_order_rows_response(
                 task_id=task_id,
                 parent_waybill_count=len(sample_inputs),
@@ -630,10 +625,8 @@ def task_order_row_drafts_payload(
                 "standard_details": [],
                 "raw_records": raw_inputs[offset : offset + limit],
                 "waybill_samples": [],
-                "rule_pack": active_pack.payload if active_pack is not None else None,
+                "rule_pack": active_pack.payload,
             }
-            if ai_enabled:
-                parser_kwargs["workspace_id"] = workspace_id
             payload = parse_order_row_drafts_with_service(**parser_kwargs)
         except Exception as exc:
             raise HTTPException(

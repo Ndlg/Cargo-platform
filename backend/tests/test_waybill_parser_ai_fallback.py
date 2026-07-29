@@ -134,7 +134,13 @@ def fake_ai(status: str = "ai_rule_pending") -> Iterator[tuple[str, list[dict[st
         server.server_close()
 
 
-def parse(client: TestClient, rule_pack: dict[str, Any] | None, value: dict[str, Any]) -> dict[str, Any]:
+def parse(
+    client: TestClient,
+    rule_pack: dict[str, Any] | None,
+    value: dict[str, Any],
+    *,
+    allow_ai: bool = False,
+) -> dict[str, Any]:
     return client.post(
         "/api/v1/parse/batch",
         json={
@@ -142,11 +148,12 @@ def parse(client: TestClient, rule_pack: dict[str, Any] | None, value: dict[str,
             "task_id": 61,
             "raw_records": [raw_record(value)],
             "rule_pack": rule_pack,
+            "allow_ai": allow_ai,
         },
     ).json()
 
 
-def test_no_rule_pack_creates_pending_ai_session_without_returning_candidate_rows(
+def test_normal_parse_never_calls_ai_when_rule_pack_is_missing(
     monkeypatch,
 ) -> None:
     app, _rules = load_parser()
@@ -155,12 +162,25 @@ def test_no_rule_pack_creates_pending_ai_session_without_returning_candidate_row
         with TestClient(app) as client:
             body = parse(client, None, payload())
 
-    assert body["status"] == "ai_rule_pending"
+    assert body["status"] == "rule_pack_missing"
     assert body["summary"]["parent_waybill_count"] == 1
     assert body["summary"]["child_waybill_count"] == 0
     assert body["rows"] == []
+    assert requests == []
+
+
+def test_manual_single_waybill_parse_creates_one_ai_session(monkeypatch) -> None:
+    app, _rules = load_parser()
+    with fake_ai() as (url, requests):
+        monkeypatch.setenv("AI_RECOGNITION_URL", url)
+        with TestClient(app) as client:
+            body = parse(client, None, payload(), allow_ai=True)
+
+    assert body["status"] == "ai_rule_pending"
+    assert body["rows"] == []
     assert body["ai_sessions"][0]["session_id"] == "session-1"
     assert "AI候选商品" not in json.dumps(body, ensure_ascii=False)
+    assert len(requests) == 1
     assert requests[0]["workspace_id"] == 1
     assert requests[0]["deterministic_failure_reason"] == "rule_pack_missing"
 
@@ -178,7 +198,7 @@ def test_complete_known_profile_does_not_call_ai(monkeypatch) -> None:
     assert requests == []
 
 
-def test_incomplete_known_profile_calls_ai_and_withholds_partial_row(monkeypatch) -> None:
+def test_normal_parse_keeps_incomplete_profile_as_exception_without_calling_ai(monkeypatch) -> None:
     app, rules = load_parser()
     baseline = payload()
     incomplete = payload(quantity="")
@@ -187,10 +207,32 @@ def test_incomplete_known_profile_calls_ai_and_withholds_partial_row(monkeypatch
         with TestClient(app) as client:
             body = parse(client, pack([profile(rules, baseline)]), incomplete)
 
-    assert body["status"] == "ai_rule_pending"
+    assert body["status"] == "format_profile_incomplete"
     assert body["rows"] == []
-    assert body["diagnostics"][0]["deterministic_reason"] == "missing_quantity"
-    assert requests[0]["deterministic_failure_reason"] == "missing_quantity"
+    assert body["diagnostics"][0]["reason"] == "missing_quantity"
+    assert requests == []
+
+
+def test_manual_parse_rejects_more_than_one_waybill(monkeypatch) -> None:
+    app, _rules = load_parser()
+    value = payload()
+    value["task"]["documents"].append(value["task"]["documents"][0])
+    with fake_ai() as (url, requests):
+        monkeypatch.setenv("AI_RECOGNITION_URL", url)
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/v1/parse/batch",
+                json={
+                    "workspace_id": 1,
+                    "task_id": 61,
+                    "raw_records": [raw_record(value)],
+                    "rule_pack": None,
+                    "allow_ai": True,
+                },
+            )
+
+    assert response.status_code == 422
+    assert requests == []
 
 
 def test_ai_network_failure_is_business_exception_not_parser_500(monkeypatch) -> None:
@@ -205,6 +247,7 @@ def test_ai_network_failure_is_business_exception_not_parser_500(monkeypatch) ->
                 "task_id": 61,
                 "raw_records": [raw_record(payload())],
                 "rule_pack": None,
+                "allow_ai": True,
             },
         )
 
@@ -218,7 +261,7 @@ def test_ai_parse_failure_is_distinct_from_unavailable(monkeypatch) -> None:
     with fake_ai("ai_parse_failed") as (url, _requests):
         monkeypatch.setenv("AI_RECOGNITION_URL", url)
         with TestClient(app) as client:
-            body = parse(client, None, payload())
+            body = parse(client, None, payload(), allow_ai=True)
 
     assert body["status"] == "ai_parse_failed"
     assert body["diagnostics"][0]["reason"] == "ai_parse_failed"

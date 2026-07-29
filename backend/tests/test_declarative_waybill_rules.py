@@ -165,8 +165,8 @@ def test_matching_fingerprint_with_incomplete_row_is_not_accepted() -> None:
 
     body = response.json()
     assert body["status"] == "format_profile_incomplete"
-    assert body["rows"][0]["status"] == "needs_review"
-    assert "quantity" in body["rows"][0]["review_reason"]
+    assert body["rows"] == []
+    assert body["summary"]["needs_review_count"] == 1
     assert body["diagnostics"][0]["reason"] == "missing_quantity"
 
 

@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 import sys
+from threading import Event, Thread
+import time
 from typing import Any
 
 from fastapi.testclient import TestClient
@@ -141,6 +143,58 @@ class FakeModel:
         return self.result
 
 
+def wait_for_session(client: TestClient, session_id: str, status: str) -> dict[str, Any]:
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        payload = client.get(f"/api/v1/sessions/{session_id}").json()
+        if payload["status"] == status:
+            return payload
+        time.sleep(0.01)
+    raise AssertionError(f"session {session_id} did not reach {status}")
+
+
+def test_recognize_returns_running_session_before_slow_model_finishes(tmp_path: Path) -> None:
+    module = load_ai_service(tmp_path / "import-default.db")
+
+    class SlowModel(FakeModel):
+        def __init__(self) -> None:
+            super().__init__()
+            self.started = Event()
+            self.release = Event()
+
+        def recognize(
+            self,
+            payload: dict[str, Any],
+            fingerprint: str,
+            feedback: list[str] | None = None,
+        ) -> dict[str, Any]:
+            self.started.set()
+            self.release.wait(2)
+            return super().recognize(payload, fingerprint, feedback)
+
+    model = SlowModel()
+    app = module.create_app(model_client=model, db_path=tmp_path / "sessions.db")
+    result: dict[str, Any] = {}
+    with TestClient(app) as client:
+        request_thread = Thread(
+            target=lambda: result.update(response=client.post("/api/v1/recognize", json=raw_request())),
+            daemon=True,
+        )
+        request_thread.start()
+        assert model.started.wait(1)
+        try:
+            request_thread.join(0.2)
+            assert not request_thread.is_alive()
+            response = result["response"]
+            assert response.status_code == 200
+            assert response.json()["status"] == "model_running"
+        finally:
+            model.release.set()
+            request_thread.join(2)
+
+        wait_for_session(client, result["response"].json()["session_id"], "ai_rule_pending")
+
+
 def test_recognize_sanitizes_pii_and_reuses_identical_session(tmp_path: Path) -> None:
     module = load_ai_service(tmp_path / "import-default.db")
     model = FakeModel()
@@ -164,11 +218,13 @@ def test_recognize_sanitizes_pii_and_reuses_identical_session(tmp_path: Path) ->
     with TestClient(app) as client:
         first = client.post("/api/v1/recognize", json=request)
         second = client.post("/api/v1/recognize", json=request)
+        stored = wait_for_session(client, first.json()["session_id"], "ai_rule_pending")
 
     assert first.status_code == 200
-    assert first.json()["status"] == "ai_rule_pending"
+    assert first.json()["status"] == "model_running"
     assert first.json()["session_id"] == second.json()["session_id"]
     assert first.json()["console_url"].startswith("http://127.0.0.1:6183/console?session=")
+    assert stored["candidate"]
     assert len(model.calls) == 1
     sent = json.dumps(model.calls[0]["payload"], ensure_ascii=False)
     assert "张三" not in sent
@@ -209,11 +265,12 @@ def test_invalid_model_candidate_becomes_business_failure(tmp_path: Path) -> Non
 
     with TestClient(app) as client:
         response = client.post("/api/v1/recognize", json=raw_request())
+        stored = wait_for_session(client, response.json()["session_id"], "ai_parse_failed")
 
     assert response.status_code == 200
-    assert response.json()["status"] == "ai_parse_failed"
-    assert response.json()["error"]
-    assert response.json()["candidate"] is None
+    assert response.json()["status"] == "model_running"
+    assert stored["error"]
+    assert stored["candidate"] is None
 
 
 def test_structured_candidate_rule_paths_are_normalized_from_payload(tmp_path: Path) -> None:
@@ -235,9 +292,10 @@ def test_structured_candidate_rule_paths_are_normalized_from_payload(tmp_path: P
 
     with TestClient(app) as client:
         response = client.post("/api/v1/recognize", json=raw_request())
+        stored = wait_for_session(client, response.json()["session_id"], "ai_rule_pending")
 
-    assert response.json()["status"] == "ai_rule_pending"
-    rule = response.json()["candidate"]["candidate_rule"]
+    assert response.json()["status"] == "model_running"
+    rule = stored["candidate"]["candidate_rule"]
     assert rule["items_path"] == "task.documents[].contents[].data"
     assert rule["fields"] == {
         "product": "productName",
@@ -253,13 +311,16 @@ def test_feedback_reruns_model_and_persists_session(tmp_path: Path) -> None:
     app = module.create_app(model_client=model, db_path=database)
     with TestClient(app) as client:
         session_id = client.post("/api/v1/recognize", json=raw_request()).json()["session_id"]
+        wait_for_session(client, session_id, "ai_rule_pending")
         response = client.post(
             f"/api/v1/sessions/{session_id}/feedback",
             json={"message": "销售属性1应该只保留5代白金"},
         )
+        stored = wait_for_session(client, session_id, "ai_rule_pending")
 
     assert response.status_code == 200
-    assert response.json()["status"] == "ai_rule_pending"
+    assert response.json()["status"] == "model_running"
+    assert stored["status"] == "ai_rule_pending"
     assert len(model.calls) == 2
     assert model.calls[-1]["feedback"] == ["销售属性1应该只保留5代白金"]
 
@@ -286,6 +347,7 @@ def test_approve_calls_platform_with_shared_token_and_reject_is_local(tmp_path: 
     )
     with TestClient(app) as client:
         approved_id = client.post("/api/v1/recognize", json=raw_request()).json()["session_id"]
+        wait_for_session(client, approved_id, "ai_rule_pending")
         approved = client.post(f"/api/v1/sessions/{approved_id}/approve")
         other = raw_request()
         other["raw_record_id"] = 902

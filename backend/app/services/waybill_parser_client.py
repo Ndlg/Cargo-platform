@@ -76,6 +76,7 @@ def parse_order_row_drafts_with_service(
     raw_records: list[dict[str, Any]],
     waybill_samples: list[dict[str, Any]] | None = None,
     rule_pack: dict[str, Any] | None,
+    allow_ai: bool = False,
 ) -> dict[str, Any]:
     payload = post_waybill_parser_service(
         "/api/v1/parse/batch",
@@ -86,6 +87,7 @@ def parse_order_row_drafts_with_service(
             "raw_records": raw_records,
             "waybill_samples": waybill_samples or [],
             "rule_pack": rule_pack,
+            "allow_ai": allow_ai,
         },
         timeout=180.0,
     )

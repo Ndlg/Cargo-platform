@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
 import json
 import os
@@ -9,7 +10,6 @@ from typing import Any, Callable
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse
 import httpx
-from pydantic import ValidationError
 
 from .contracts import AiCandidate, FeedbackRequest, RecognizeRequest
 from .fingerprint import structural_fingerprint
@@ -106,6 +106,11 @@ def create_app(
     )
     store = SessionStore(database_path)
     app = FastAPI(title="Cargo Platform Local AI Recognition", version="1.0.0")
+    model_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="waybill-ai")
+    app.router.add_event_handler(
+        "shutdown",
+        lambda: model_executor.shutdown(wait=False, cancel_futures=True),
+    )
 
     def response_payload(session: dict[str, Any]) -> dict[str, Any]:
         session_id = session["session_id"]
@@ -156,7 +161,7 @@ def create_app(
                 candidate=candidate.model_dump(mode="json"),
                 status="ai_rule_pending",
             )
-        except (ValidationError, ValueError, TypeError, KeyError, httpx.HTTPError) as exc:
+        except Exception as exc:
             updated = store.set_candidate(
                 session["session_id"],
                 candidate=None,
@@ -201,7 +206,8 @@ def create_app(
         )
         if not created:
             return response_payload(session)
-        return run_model(session)
+        model_executor.submit(run_model, session)
+        return response_payload(session)
 
     @app.get("/api/v1/sessions")
     def list_sessions(limit: int = Query(default=100, ge=1, le=100)) -> list[dict[str, Any]]:
@@ -221,7 +227,9 @@ def create_app(
             raise HTTPException(status_code=404, detail="Recognition session not found.")
         if session["status"] in {"approved", "rejected"}:
             raise HTTPException(status_code=409, detail="Recognition session is closed.")
-        return run_model(store.append_feedback(session_id, request.message.strip()))
+        updated = store.append_feedback(session_id, request.message.strip())
+        model_executor.submit(run_model, updated)
+        return response_payload(updated)
 
     @app.post("/api/v1/sessions/{session_id}/approve")
     def approve(session_id: str) -> dict[str, Any]:

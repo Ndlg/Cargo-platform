@@ -31,9 +31,26 @@
       async function post(url, body) {
         const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
         if (!response.ok) throw new Error(await response.text());
+        const payload = await response.json();
         await load();
+        if (payload.status === "approved") window.parent.postMessage({ type: "cargo-ai-rule-approved" }, "*");
       }
+      function actions(row) {
+        if (row.status === "model_running") return "<p>模型正在解析这一张面单，请稍候……</p>";
+        if (row.status === "approved") return "<p>已确认，新规则已经同步到系统。</p>";
+        if (row.status !== "ai_rule_pending") return "";
+        return [
+          `<textarea id="feedback-${row.session_id}" placeholder="指出错误字段，模型会重新生成候选"></textarea>`,
+          "<p>",
+          `<button onclick="sendFeedback('${row.session_id}')">发送反馈并重新识别</button>`,
+          `<button class="primary" onclick="post('/api/v1/sessions/${row.session_id}/approve')">确认并生成规则版本</button>`,
+          `<button onclick="post('/api/v1/sessions/${row.session_id}/reject')">拒绝候选</button>`,
+          "</p>",
+        ].join("");
+      }
+      let pollTimer;
       async function load() {
+        clearTimeout(pollTimer);
         const url = selected ? `/api/v1/sessions/${encodeURIComponent(selected)}` : "/api/v1/sessions";
         const response = await fetch(url);
         const payload = await response.json();
@@ -45,14 +62,10 @@
             <p>确定性规则失败原因：${escapeHtml(row.deterministic_failure_reason || "-")}</p>
             <h3>候选订单行与规则</h3>
             <pre>${escapeHtml(JSON.stringify(row.candidate, null, 2))}</pre>
-            <textarea id="feedback-${row.session_id}" placeholder="指出错误字段，模型会重新生成候选"></textarea>
-            <p>
-              <button onclick="sendFeedback('${row.session_id}')">发送反馈并重新识别</button>
-              <button class="primary" onclick="post('/api/v1/sessions/${row.session_id}/approve')">确认并生成规则版本</button>
-              <button onclick="post('/api/v1/sessions/${row.session_id}/reject')">拒绝候选</button>
-            </p>
+            ${actions(row)}
           </article>
         `).join("");
+        if (rows.some((row) => row.status === "model_running")) pollTimer = setTimeout(load, 2000);
       }
       function sendFeedback(id) {
         const message = document.querySelector(`#feedback-${id}`).value.trim();
