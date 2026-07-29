@@ -31,6 +31,49 @@ SENSITIVE_KEY_PARTS = {
     "快递单号",
 }
 
+BUSINESS_KEY_PARTS = {
+    "attr",
+    "color",
+    "customcontent",
+    "itemdetail",
+    "iteminfo",
+    "itemname",
+    "itemtitle",
+    "itemtotalcount",
+    "product",
+    "quantity",
+    "remark",
+    "size",
+    "sku",
+    "spec",
+    "商品",
+    "备注",
+    "尺码",
+    "数量",
+    "款式",
+    "规格",
+    "颜色",
+}
+ITEM_CONTAINER_KEY_PARTS = {
+    "items",
+    "orderitems",
+    "packageitem",
+    "productitems",
+    "skus",
+}
+GENERIC_ITEM_KEYS = {
+    "attr1",
+    "attr2",
+    "color",
+    "count",
+    "name",
+    "quantity",
+    "remark",
+    "size",
+    "spec",
+    "title",
+}
+
 
 def normalized_key(value: object) -> str:
     return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", str(value).lower())
@@ -41,7 +84,19 @@ def sensitive_key(value: object) -> bool:
     return any(part in normalized for part in SENSITIVE_KEY_PARTS)
 
 
-def sanitize_payload(value: Any, *, depth: int = 0) -> Any:
+def business_key(value: object, *, item_context: bool) -> bool:
+    normalized = normalized_key(value)
+    return any(part in normalized for part in BUSINESS_KEY_PARTS) or (
+        item_context and normalized in GENERIC_ITEM_KEYS
+    )
+
+
+def item_container_key(value: object) -> bool:
+    normalized = normalized_key(value)
+    return any(part in normalized for part in ITEM_CONTAINER_KEY_PARTS)
+
+
+def sanitize_payload(value: Any, *, depth: int = 0, item_context: bool = False) -> Any:
     if depth > 12:
         return "[depth-limit]"
     if isinstance(value, dict):
@@ -51,15 +106,34 @@ def sanitize_payload(value: Any, *, depth: int = 0) -> Any:
                 break
             if sensitive_key(key):
                 continue
-            sanitized[str(key)[:256]] = sanitize_payload(item, depth=depth + 1)
+            child_context = item_context or item_container_key(key)
+            child = sanitize_payload(item, depth=depth + 1, item_context=child_context)
+            if isinstance(item, (dict, list)):
+                if child:
+                    sanitized[str(key)[:256]] = child
+            elif business_key(key, item_context=item_context):
+                sanitized[str(key)[:256]] = sanitize_payload(
+                    item,
+                    depth=depth + 1,
+                    item_context=True,
+                )
         return sanitized
     if isinstance(value, list):
-        return [sanitize_payload(item, depth=depth + 1) for item in value[:100]]
+        return [
+            sanitized
+            for item in value[:100]
+            if (sanitized := sanitize_payload(item, depth=depth + 1, item_context=item_context))
+            not in ({}, [], "", None)
+        ]
     if isinstance(value, str):
+        if not item_context:
+            return ""
         stripped = value.strip()
         if re.fullmatch(r"1\d{10}", stripped) or re.fullmatch(r"[A-Z]{0,4}\d{10,}", stripped, re.I):
             return "[redacted]"
         return value[:4000]
     if value is None or isinstance(value, (bool, int, float)):
+        if not item_context:
+            return None
         return value
-    return str(value)[:4000]
+    return str(value)[:4000] if item_context else ""

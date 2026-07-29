@@ -150,9 +150,20 @@ def test_recognize_sanitizes_pii_and_reuses_identical_session(tmp_path: Path) ->
         console_base_url="http://127.0.0.1:6183",
     )
 
+    request = raw_request()
+    request["payload"]["requestID"] = "technical-request-id"
+    request["payload"]["task"]["taskID"] = "technical-task-id"
+    request["payload"]["task"]["printer"] = r"\\machine\printer"
+    content = request["payload"]["task"]["documents"][0]["contents"][0]
+    content["encryptedData"] = "AES:opaque-secret"
+    content["templateURL"] = "https://example.invalid/template"
+    content["addData"] = {"sender": {"name": "某店铺"}}
+    content["data"]["SHOP_NAME"] = "某店铺"
+    content["data"]["ITEM_INFO"] = "范74 5代白金 45 【1件】"
+
     with TestClient(app) as client:
-        first = client.post("/api/v1/recognize", json=raw_request())
-        second = client.post("/api/v1/recognize", json=raw_request())
+        first = client.post("/api/v1/recognize", json=request)
+        second = client.post("/api/v1/recognize", json=request)
 
     assert first.status_code == 200
     assert first.json()["status"] == "ai_rule_pending"
@@ -164,7 +175,14 @@ def test_recognize_sanitizes_pii_and_reuses_identical_session(tmp_path: Path) ->
     assert "13800138000" not in sent
     assert "福建省泉州市" not in sent
     assert "SF123456789012" not in sent
+    assert "technical-request-id" not in sent
+    assert "technical-task-id" not in sent
+    assert "machine" not in sent
+    assert "AES:opaque-secret" not in sent
+    assert "example.invalid" not in sent
+    assert "某店铺" not in sent
     assert "范74" in sent
+    assert "ITEM_INFO" in sent
 
 
 def test_fingerprint_is_value_stable_but_changes_with_structure(tmp_path: Path) -> None:
