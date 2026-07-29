@@ -12,6 +12,7 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 import httpx
+from services.shared.waybill_fingerprint import business_shape_fingerprint, fingerprint_for_payload
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -83,6 +84,33 @@ def raw_request(product: str = "范74") -> dict[str, Any]:
             },
         },
     }
+
+
+def package_request() -> dict[str, Any]:
+    request = raw_request()
+    request["payload"] = {
+        "receiverName": "张三",
+        "task": {
+            "documents": [
+                {
+                    "contents": [
+                        {
+                            "data": {
+                                "packageItemDetail": [
+                                    {
+                                        "itemName": "范74",
+                                        "skuFullName": "5代白金 45",
+                                        "itemNum": 1,
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            ]
+        },
+    }
+    return request
 
 
 def candidate(product: str = "范74") -> dict[str, Any]:
@@ -366,6 +394,66 @@ def test_recognize_sends_only_tenant_selected_fingerprint_fields_to_model(tmp_pa
     }
 
 
+def test_package_session_uses_shared_business_shape_v2_fingerprint(tmp_path: Path) -> None:
+    module = load_ai_service(tmp_path / "import-default.db")
+    app = module.create_app(model_client=FakeModel(), db_path=tmp_path / "sessions.db")
+    request = package_request()
+
+    with TestClient(app) as client:
+        response = client.post("/api/v1/recognize", json=request)
+
+    fingerprint = response.json()["fingerprint"]
+    assert fingerprint.startswith("v2:CN-PACKAGE-ITEMS:sha256:")
+    assert fingerprint == business_shape_fingerprint(request["payload"], request["source_component"])
+    assert fingerprint == module.business_shape_fingerprint(request["payload"], request["source_component"])
+    assert fingerprint == fingerprint_for_payload(
+        request["payload"], request["source_component"], "business_shape_v2"
+    )
+
+
+def test_tenant_selection_changes_model_input_without_changing_raw_v2_fingerprint(tmp_path: Path) -> None:
+    module = load_ai_service(tmp_path / "import-default.db")
+    model = FakeModel()
+    app = module.create_app(model_client=model, db_path=tmp_path / "sessions.db")
+    first = package_request()
+    second = package_request()
+    first["field_selections"] = {"CN-PACKAGE-ITEMS": ["item_name"]}
+    second["field_selections"] = {"CN-PACKAGE-ITEMS": ["sku_full_name"]}
+    second["raw_record_id"] = 902
+
+    with TestClient(app) as client:
+        first_response = client.post("/api/v1/recognize", json=first)
+        second_response = client.post("/api/v1/recognize", json=second)
+        wait_for_session(client, first_response.json()["session_id"], "ai_rule_pending")
+        wait_for_session(client, second_response.json()["session_id"], "ai_rule_pending")
+
+    assert first_response.json()["fingerprint"] == second_response.json()["fingerprint"]
+    assert model.calls[0]["payload"] != model.calls[1]["payload"]
+    assert "itemName" in json.dumps(model.calls[0]["payload"], ensure_ascii=False)
+    assert "skuFullName" in json.dumps(model.calls[1]["payload"], ensure_ascii=False)
+
+
+def test_field_selection_cannot_smuggle_receiver_name_past_catalog(tmp_path: Path) -> None:
+    module = load_ai_service(tmp_path / "import-default.db")
+    model = FakeModel()
+    app = module.create_app(model_client=model, db_path=tmp_path / "sessions.db")
+    request = package_request()
+    request["field_selections"] = {"CN-PACKAGE-ITEMS": ["item_name", "receiverName"]}
+
+    with TestClient(app) as client:
+        inspected = client.post(
+            "/api/v1/fingerprints/inspect",
+            json={"source_component": request["source_component"], "payload": request["payload"]},
+        )
+        response = client.post("/api/v1/recognize", json=request)
+        wait_for_session(client, response.json()["session_id"], "ai_rule_pending")
+
+    assert inspected.json()["fingerprint_code"] == "CN-PACKAGE-ITEMS"
+    sent = json.dumps(model.calls[0]["payload"], ensure_ascii=False)
+    assert "范74" in sent
+    assert "张三" not in sent
+
+
 def test_rejected_identical_request_starts_a_new_session(tmp_path: Path) -> None:
     module = load_ai_service(tmp_path / "import-default.db")
     model = FakeModel()
@@ -481,6 +569,14 @@ def test_structured_candidate_rule_paths_are_normalized_from_payload(tmp_path: P
             "sales_attr1": ".sku",
             "quantity": ".quantity",
         },
+        "steps": [
+            {
+                "op": "rsplit",
+                "source": "sales_attr1",
+                "delimiter": " ",
+                "targets": ["sales_attr1", "sales_attr2"],
+            }
+        ],
     }
     app = module.create_app(
         model_client=FakeModel(result),
@@ -499,6 +595,7 @@ def test_structured_candidate_rule_paths_are_normalized_from_payload(tmp_path: P
         "sales_attr1": "sku",
         "quantity": "quantity",
     }
+    assert rule["steps"] == result["candidate_rule"]["steps"]
 
 
 def test_feedback_reruns_model_and_persists_session(tmp_path: Path) -> None:
@@ -519,6 +616,7 @@ def test_feedback_reruns_model_and_persists_session(tmp_path: Path) -> None:
     assert response.json()["status"] == "model_running"
     assert stored["status"] == "ai_rule_pending"
     assert len(model.calls) == 2
+    assert model.calls[-1]["payload"] == model.calls[0]["payload"]
     assert model.calls[-1]["feedback"] == ["销售属性1应该只保留5代白金"]
 
     restarted = module.create_app(model_client=FakeModel(), db_path=database)
@@ -1096,6 +1194,16 @@ def test_ollama_client_requests_schema_constrained_non_thinking_json(tmp_path: P
         "text_pipeline_v1",
     ]
     assert all(schema["additionalProperties"] is False for schema in candidate_rule_schema["oneOf"])
+    structured_steps = candidate_rule_schema["oneOf"][0]["properties"]["steps"]
+    assert structured_steps["minItems"] == 1
+    assert structured_steps["maxItems"] == 20
+    structured_step_schemas = structured_steps["items"]["oneOf"]
+    assert all(
+        "text" not in schema["properties"].get("source", {}).get("enum", [])
+        and "text" not in schema["properties"].get("target", {}).get("enum", [])
+        and "text" not in schema["properties"].get("targets", {}).get("items", {}).get("enum", [])
+        for schema in structured_step_schemas
+    )
     text_step_schema = candidate_rule_schema["oneOf"][1]["properties"]["steps"]["items"]["oneOf"]
     extract_schema = next(
         schema for schema in text_step_schema if schema["properties"]["op"].get("const") == "extract_between"
@@ -1185,6 +1293,12 @@ def test_fingerprint_catalog_exposes_five_named_code_assets(tmp_path: Path) -> N
             "default_selected": True,
         },
     ]
+
+
+def test_ai_image_copies_shared_fingerprint_contract() -> None:
+    dockerfile = (REPO_ROOT / "services" / "ai-recognition" / "Dockerfile").read_text(encoding="utf-8")
+
+    assert "COPY services/shared /app/services/shared" in dockerfile
 
 
 def test_inspect_item_info_returns_configurable_fields_without_logistics_data(tmp_path: Path) -> None:

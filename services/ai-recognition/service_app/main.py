@@ -13,7 +13,7 @@ import httpx
 from pydantic import ValidationError
 
 from .contracts import AiCandidate, AiOrderRow, FeedbackRequest, FingerprintInspectRequest, RecognizeRequest
-from .fingerprint import fingerprint_catalog, inspect_fingerprint, structural_fingerprint
+from .fingerprint import business_shape_fingerprint, fingerprint_catalog, inspect_fingerprint
 from .model_client import OllamaModelClient
 from .sanitizer import sanitize_payload
 from .store import SessionStore
@@ -463,8 +463,8 @@ def create_app(
 
     @app.post("/api/v1/recognize")
     def recognize(request: RecognizeRequest) -> dict[str, Any]:
-        fingerprint = structural_fingerprint(request.payload, request.source_component)
         inspected = inspect_fingerprint(request.payload, request.source_component)
+        fingerprint = business_shape_fingerprint(request.payload, request.source_component)
         allowed_source_keys = None
         if inspected and inspected["fingerprint_code"] in request.field_selections:
             selected_fields = set(request.field_selections[inspected["fingerprint_code"]])

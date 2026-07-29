@@ -6,6 +6,7 @@ COPY services/ai-recognition/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY services/ai-recognition/service_app /app/service_app
+COPY services/shared /app/services/shared
 
 ENV PYTHONPATH=/app
 EXPOSE 8011

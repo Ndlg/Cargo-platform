@@ -17,6 +17,7 @@ items_path、text_path 和 fields 只能写点分隔字段路径，不能写 .sp
 文本规则按顺序执行，初始只有 text 和 defaults；后续步骤只能读取 text、defaults 或前一步已写入的字段。extract_between 默认不保留 start/end；若确认后的字段值包含这两个边界符，必须设置 include_delimiters:true。
 同时生成 candidate_rule。结构化数据只能使用：
 {"strategy":"structured_items_v1","items_path":"数组路径[]","fields":{"product":"相对字段路径","sales_attr1":"相对字段路径","sales_attr2":"相对字段路径","quantity":"相对字段路径","remark":"相对字段路径"}}
+结构化规则可选 steps，先映射 fields 再按顺序执行；steps 只能读写 product、sales_attr1、sales_attr2、quantity、remark，禁止使用 text。通用拆分示例：{"op":"rsplit","source":"sales_attr1","delimiter":" ","targets":["sales_attr1","sales_attr2"]}。
 若 ITEM_INFO 为“商品名称 属性1;属性2 【1件】”，文本规则示例为：
 {"strategy":"text_pipeline_v1","text_path":"task.documents[].contents[].data.ITEM_INFO","steps":[{"op":"extract_between","source":"text","start":"【","end":"件】","target":"quantity","consume":true},{"op":"rsplit","source":"text","delimiter":";","targets":["product","sales_attr2"]},{"op":"rsplit","source":"product","delimiter":" ","targets":["product","sales_attr1"]},{"op":"to_positive_int","target":"quantity"}],"defaults":{"remark":""}}
 若 printXML 纯文本为“编号 商品，,属性，尺码*数量”，文本规则示例为：
@@ -27,6 +28,14 @@ items_path、text_path 和 fields 只能写点分隔字段路径，不能写 .sp
 
 ABSOLUTE_PATH_PATTERN = r"^[A-Za-z0-9_]+(?:\[\])?(?:\.[A-Za-z0-9_]+(?:\[\])?)*$"
 RELATIVE_PATH_PATTERN = r"^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*$"
+
+ROW_FIELDS = [
+    "product",
+    "sales_attr1",
+    "sales_attr2",
+    "quantity",
+    "remark",
+]
 
 ROW_FIELD_PROPERTIES = {
     "product": {"type": "string"},
@@ -46,30 +55,24 @@ DEFAULT_PROPERTIES = {
     "quantity": {"type": "integer", "minimum": 1, "maximum": 100_000},
 }
 
-TEXT_STATE_FIELDS = [
-    "text",
-    "product",
-    "sales_attr1",
-    "sales_attr2",
-    "quantity",
-    "remark",
-]
+TEXT_STATE_FIELDS = ["text", *ROW_FIELDS]
 
-TEXT_STEP_SCHEMA = {
-    "oneOf": [
+
+def step_schema(state_fields: list[str]) -> dict[str, Any]:
+    return {"oneOf": [
         {
             "type": "object",
             "additionalProperties": False,
             "required": ["op", "source", "delimiter", "targets"],
             "properties": {
                 "op": {"type": "string", "enum": ["split", "rsplit"]},
-                "source": {"type": "string", "enum": TEXT_STATE_FIELDS},
+                "source": {"type": "string", "enum": state_fields},
                 "delimiter": {"type": "string"},
                 "targets": {
                     "type": "array",
                     "minItems": 2,
                     "maxItems": 10,
-                    "items": {"type": "string", "enum": TEXT_STATE_FIELDS},
+                    "items": {"type": "string", "enum": state_fields},
                 },
             },
         },
@@ -79,10 +82,10 @@ TEXT_STEP_SCHEMA = {
             "required": ["op", "source", "start", "end", "target"],
             "properties": {
                 "op": {"const": "extract_between"},
-                "source": {"type": "string", "enum": TEXT_STATE_FIELDS},
+                "source": {"type": "string", "enum": state_fields},
                 "start": {"type": "string"},
                 "end": {"type": "string"},
-                "target": {"type": "string", "enum": TEXT_STATE_FIELDS},
+                "target": {"type": "string", "enum": state_fields},
                 "consume": {"type": "boolean"},
                 "include_delimiters": {"type": "boolean"},
             },
@@ -93,7 +96,7 @@ TEXT_STEP_SCHEMA = {
             "required": ["op", "target"],
             "properties": {
                 "op": {"const": "trim"},
-                "target": {"type": "string", "enum": TEXT_STATE_FIELDS},
+                "target": {"type": "string", "enum": state_fields},
                 "chars": {"type": "string"},
             },
         },
@@ -103,7 +106,7 @@ TEXT_STEP_SCHEMA = {
             "required": ["op", "target", "literal"],
             "properties": {
                 "op": {"type": "string", "enum": ["strip_prefix", "strip_suffix"]},
-                "target": {"type": "string", "enum": TEXT_STATE_FIELDS},
+                "target": {"type": "string", "enum": state_fields},
                 "literal": {"type": "string"},
             },
         },
@@ -116,8 +119,11 @@ TEXT_STEP_SCHEMA = {
                 "target": {"const": "quantity"},
             },
         },
-    ],
-}
+    ]}
+
+
+TEXT_STEP_SCHEMA = step_schema(TEXT_STATE_FIELDS)
+STRUCTURED_STEP_SCHEMA = step_schema(ROW_FIELDS)
 
 STRUCTURED_RULE_SCHEMA = {
     "type": "object",
@@ -133,6 +139,12 @@ STRUCTURED_RULE_SCHEMA = {
             "additionalProperties": False,
             "required": ["product", "quantity"],
             "properties": RULE_FIELD_PROPERTIES,
+        },
+        "steps": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 20,
+            "items": STRUCTURED_STEP_SCHEMA,
         },
         "defaults": {
             "type": "object",
