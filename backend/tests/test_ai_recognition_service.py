@@ -353,6 +353,39 @@ def test_feedback_reruns_model_and_persists_session(tmp_path: Path) -> None:
     assert stored.json()["feedback"] == ["销售属性1应该只保留5代白金"]
 
 
+def test_admin_corrected_rows_are_preserved_when_rule_is_regenerated(tmp_path: Path) -> None:
+    module = load_ai_service(tmp_path / "import-default.db")
+    model = FakeModel()
+    app = module.create_app(model_client=model, db_path=tmp_path / "sessions.db")
+    corrected_rows = [
+        {
+            "product": "带木one帆布kw",
+            "sales_attr1": "木村-3M反光",
+            "sales_attr2": "40",
+            "quantity": 1,
+            "remark": "",
+        }
+    ]
+    message = json.dumps({"corrected_rows": corrected_rows}, ensure_ascii=False)
+
+    with TestClient(app) as client:
+        session_id = client.post("/api/v1/recognize", json=raw_request()).json()["session_id"]
+        wait_for_session(client, session_id, "ai_rule_pending")
+        response = client.post(
+            f"/api/v1/sessions/{session_id}/feedback",
+            json={"message": message},
+        )
+        stored = wait_for_session(client, session_id, "ai_rule_pending")
+
+    assert response.status_code == 200
+    row = stored["candidate"]["parents"][0]["rows"][0]
+    assert {
+        key: row[key]
+        for key in ("product", "sales_attr1", "sales_attr2", "quantity", "remark")
+    } == corrected_rows[0]
+    assert model.calls[-1]["feedback"] == [message]
+
+
 def test_approve_calls_platform_with_shared_token_and_reject_is_local(tmp_path: Path) -> None:
     module = load_ai_service(tmp_path / "import-default.db")
     approvals: list[tuple[dict[str, Any], str]] = []
@@ -415,10 +448,13 @@ def test_ollama_client_requests_schema_constrained_non_thinking_json(tmp_path: P
     assert request["options"]["temperature"] == 0
     assert request["options"]["num_ctx"] == 4096
     assert request["format"]["properties"]["parents"]
+    assert "不得包含字段名称" in request["messages"][0]["content"]
+    assert "corrected_rows" in request["messages"][0]["content"]
     assert request["format"]["required"] == ["parents", "candidate_rule"]
     assert request["format"]["properties"]["parents"]["maxItems"] == 1
     row_schema = request["format"]["properties"]["parents"]["items"]["properties"]["rows"]["items"]
     assert row_schema["additionalProperties"] is False
+    assert "字段名称" in row_schema["properties"]["product"]["description"]
     candidate_rule_schema = request["format"]["properties"]["candidate_rule"]
     assert [schema["properties"]["strategy"]["const"] for schema in candidate_rule_schema["oneOf"]] == [
         "structured_items_v1",
@@ -443,6 +479,9 @@ def test_health_console_and_session_list_are_available(tmp_path: Path) -> None:
     assert console.status_code == 200
     assert "本地 AI 面单识别会话" in console.text
     assert all(label in console.text for label in ("商品", "销售属性1", "销售属性2", "数量", "备注"))
+    assert 'data-field="${field}"' in console.text
+    assert 'cell("product", item.product)' in console.text
+    assert "按修改结果重新生成规则" in console.text
     assert "格式指纹" not in console.text
     assert "确定性规则失败原因" not in console.text
     assert "JSON.stringify(row.candidate" not in console.text

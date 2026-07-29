@@ -11,6 +11,7 @@
       h1, h2 { margin: 0 0 12px; }
       button { padding: 8px 14px; margin-right: 8px; border: 1px solid #2563eb; border-radius: 6px; background: white; color: #2563eb; cursor: pointer; }
       button.primary { color: white; background: #2563eb; }
+      input { box-sizing: border-box; width: 100%; min-width: 100px; padding: 7px 8px; border: 1px solid #d1d5db; border-radius: 5px; }
       textarea { box-sizing: border-box; width: 100%; min-height: 80px; padding: 8px; border: 1px solid #d1d5db; border-radius: 6px; }
       .result-table { overflow-x: auto; margin: 12px 0 16px; }
       table { width: 100%; border-collapse: collapse; }
@@ -45,17 +46,21 @@
         if (!rows.length) return session.status === "model_running"
           ? '<p class="muted">模型正在解析，完成后会在这里显示结果。</p>'
           : '<p class="muted">本次没有生成可确认的商品行。</p>';
+        const editable = session.status === "ai_rule_pending";
+        const cell = (field, value, type = "text") => editable
+          ? `<input data-field="${field}" type="${type}"${type === "number" ? ' min="1" step="1"' : ""} value="${escapeHtml(value)}" />`
+          : displayValue(value);
         return `
           <div class="result-table">
             <table aria-label="AI 识别结果">
               <thead><tr><th>商品</th><th>销售属性1</th><th>销售属性2</th><th>数量</th><th>备注</th></tr></thead>
-              <tbody>${rows.map((item) => `
+              <tbody id="result-${session.session_id}">${rows.map((item) => `
                 <tr>
-                  <td>${displayValue(item.product)}</td>
-                  <td>${displayValue(item.sales_attr1)}</td>
-                  <td>${displayValue(item.sales_attr2)}</td>
-                  <td>${displayValue(item.quantity)}</td>
-                  <td>${displayValue(item.remark)}</td>
+                  <td>${cell("product", item.product)}</td>
+                  <td>${cell("sales_attr1", item.sales_attr1)}</td>
+                  <td>${cell("sales_attr2", item.sales_attr2)}</td>
+                  <td>${cell("quantity", item.quantity, "number")}</td>
+                  <td>${cell("remark", item.remark)}</td>
                 </tr>
               `).join("")}</tbody>
             </table>
@@ -77,9 +82,9 @@
         if (row.status === "approved") return "<p>已确认，新规则已经同步到系统。</p>";
         if (row.status !== "ai_rule_pending") return "";
         return [
-          `<textarea id="feedback-${row.session_id}" placeholder="指出错误字段，模型会重新生成候选"></textarea>`,
+          `<textarea id="feedback-${row.session_id}" placeholder="可选：补充说明这类面单应如何读取"></textarea>`,
           "<p>",
-          `<button onclick="sendFeedback('${row.session_id}')">发送反馈并重新识别</button>`,
+          `<button onclick="sendCorrection('${row.session_id}')">按修改结果重新生成规则</button>`,
           `<button class="primary" onclick="post('/api/v1/sessions/${row.session_id}/approve')">确认并同步为规则</button>`,
           `<button onclick="post('/api/v1/sessions/${row.session_id}/reject')">拒绝候选</button>`,
           "</p>",
@@ -101,9 +106,26 @@
         `).join("");
         if (rows.some((row) => row.status === "model_running")) pollTimer = setTimeout(load, 2000);
       }
-      function sendFeedback(id) {
-        const message = document.querySelector(`#feedback-${id}`).value.trim();
-        if (message) post(`/api/v1/sessions/${id}/feedback`, { message });
+      function sendCorrection(id) {
+        const table = document.querySelector(`#result-${id}`);
+        const rows = [...table.querySelectorAll("tr")].map((row) => {
+          const value = (field) => row.querySelector(`[data-field="${field}"]`).value.trim();
+          return {
+            product: value("product"),
+            sales_attr1: value("sales_attr1"),
+            sales_attr2: value("sales_attr2"),
+            quantity: Number(value("quantity")),
+            remark: value("remark"),
+          };
+        });
+        if (rows.some((row) => !row.product || !Number.isInteger(row.quantity) || row.quantity < 1)) {
+          window.alert("商品不能为空，数量必须是大于 0 的整数。");
+          return;
+        }
+        const note = document.querySelector(`#feedback-${id}`).value.trim();
+        post(`/api/v1/sessions/${id}/feedback`, {
+          message: JSON.stringify({ corrected_rows: rows, note }),
+        });
       }
       load().catch((error) => { document.querySelector("#sessions").textContent = error.message; });
     </script>

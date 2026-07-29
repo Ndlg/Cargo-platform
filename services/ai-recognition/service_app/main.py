@@ -11,7 +11,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse
 import httpx
 
-from .contracts import AiCandidate, FeedbackRequest, FingerprintInspectRequest, RecognizeRequest
+from .contracts import AiCandidate, AiOrderRow, FeedbackRequest, FingerprintInspectRequest, RecognizeRequest
 from .fingerprint import fingerprint_catalog, inspect_fingerprint, structural_fingerprint
 from .model_client import OllamaModelClient
 from .sanitizer import sanitize_payload
@@ -66,6 +66,17 @@ def normalize_candidate_rule(result: dict[str, Any], payload: dict[str, Any]) ->
     if len(matching_paths) == 1:
         normalized_rule["items_path"] = matching_paths.pop()
     return {**result, "candidate_rule": normalized_rule}
+
+
+def administrator_corrected_rows(feedback: list[str]) -> list[dict[str, Any]] | None:
+    for message in reversed(feedback):
+        try:
+            rows = json.loads(message).get("corrected_rows")
+        except (AttributeError, json.JSONDecodeError):
+            continue
+        if isinstance(rows, list) and rows:
+            return [AiOrderRow.model_validate(row).model_dump(mode="json") for row in rows]
+    return None
 
 
 def default_approval_sender(platform_url: str) -> ApprovalSender:
@@ -142,6 +153,10 @@ def create_app(
                 session["feedback"],
             )
             result = normalize_candidate_rule(result, session["sanitized_payload"])
+            if corrected_rows := administrator_corrected_rows(session["feedback"]):
+                parents = result.get("parents")
+                parent = parents[0] if isinstance(parents, list) and parents and isinstance(parents[0], dict) else {}
+                result["parents"] = [{**parent, "rows": corrected_rows}]
             for parent in result.get("parents") or []:
                 if isinstance(parent, dict):
                     parent["source"] = {"sanitized_payload": session["sanitized_payload"]}

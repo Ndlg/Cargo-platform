@@ -9,6 +9,8 @@ import httpx
 SYSTEM_PROMPT = """你是面单商品订单行解析器。只处理提供的脱敏商品相关数据，不做 OCR，不猜测收件人、订单号或快递单号。
 输出必须完全符合 JSON Schema，并且只输出 parents 和 candidate_rule。每个商品生成独立订单行，不去重。
 订单行只能填写当前样本里的实际值，不得填写代码、JSONPath、“无”、“完整商品行原文”等占位文字。
+商品、销售属性1、销售属性2、数量和备注只填写字段值，不得包含字段名称或“商品是”“销售属性1是”等说明文字。
+若 administrator_feedback 包含 corrected_rows，parents 必须逐字段原样复制 corrected_rows，不得改写；只重新生成能复现这些正确订单行的 candidate_rule。
 candidate_rule 必须能在当前脱敏数据上重放出与 parents 完全相同的订单行。text_path 必须是从根开始的完整路径，数组段写成 []，例如 task.documents[].contents[].data.ITEM_INFO。
 文本规则按顺序执行，初始只有 text 和 defaults；后续步骤只能读取 text、defaults 或前一步已写入的字段。
 同时生成 candidate_rule。结构化数据只能使用：
@@ -171,7 +173,11 @@ ORDER_ROW_SCHEMA = {
     ],
     "properties": {
         **ROW_FIELD_PROPERTIES,
-        "quantity": {"type": "integer"},
+        "product": {"type": "string", "description": "商品值本身，不包含“商品”等字段名称"},
+        "sales_attr1": {"type": "string", "description": "销售属性1的值本身，不包含字段名称"},
+        "sales_attr2": {"type": "string", "description": "销售属性2的值本身，不包含字段名称"},
+        "quantity": {"type": "integer", "description": "数量值本身，不包含“数量”等字段名称"},
+        "remark": {"type": "string", "description": "备注值本身，不包含“备注”等字段名称"},
     },
 }
 
