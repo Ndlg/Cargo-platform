@@ -89,7 +89,7 @@ docker compose -f ops/validation-stages/20260728-night/docker-compose.yml up -d
 - backend：`cargo-platform-validation-backend:single-ai-pack-0a1a18d`
 - parser：`cargo-platform-validation-parser:manual-ai-0a7b184`
 - UI：`cargo-platform-validation-ui:ai-session-b72ee71`
-- AI 识别：`cargo-platform-ai-recognition:ai-session-a31a1dd`
+- AI 识别：`cargo-platform-ai-recognition:business-fields-fe17eea`
 - 本地模型：`qwen3.5:4b-q4_K_M`
 
 ## 阶段 3（历史，已被阶段 4 替代）：管理员手动单张学习

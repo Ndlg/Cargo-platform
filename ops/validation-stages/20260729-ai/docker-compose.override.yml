@@ -11,7 +11,7 @@ services:
           - local-model
 
   ai-recognition:
-    image: cargo-platform-ai-recognition:ai-session-a31a1dd
+    image: cargo-platform-ai-recognition:business-fields-fe17eea
     container_name: cargo-platform-validation-ai-recognition
     depends_on:
       - local-model
