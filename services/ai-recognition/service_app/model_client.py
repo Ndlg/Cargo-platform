@@ -13,9 +13,8 @@ candidate_rule 必须能在当前脱敏数据上重放出与 parents 完全相�
 文本规则按顺序执行，初始只有 text 和 defaults；后续步骤只能读取 text、defaults 或前一步已写入的字段。
 同时生成 candidate_rule。结构化数据只能使用：
 {"strategy":"structured_items_v1","items_path":"数组路径[]","fields":{"product":"相对字段路径","sales_attr1":"相对字段路径","sales_attr2":"相对字段路径","quantity":"相对字段路径","remark":"相对字段路径"}}
-文本数据示例：
-{"strategy":"text_pipeline_v1","text_path":"task.documents[].contents[].data.ITEM_INFO","steps":[{"op":"split","source":"text","delimiter":"|","targets":["product","sales_attr1","sales_attr2","quantity"]},{"op":"to_positive_int","target":"quantity"}]}
-若 ITEM_INFO 为“商品名称 属性1;属性2 【1件】”，规则顺序应为：先从 text 的“【”到“件】”提取 quantity 并 consume；再 rsplit text 的“;”到 product、sales_attr2；再 rsplit product 的最后一个空格到 product、sales_attr1；最后把 quantity 转为正整数。
+若 ITEM_INFO 为“商品名称 属性1;属性2 【1件】”，文本规则示例为：
+{"strategy":"text_pipeline_v1","text_path":"task.documents[].contents[].data.ITEM_INFO","steps":[{"op":"extract_between","source":"text","start":"【","end":"件】","target":"quantity","consume":true},{"op":"rsplit","source":"text","delimiter":";","targets":["product","sales_attr2"]},{"op":"rsplit","source":"product","delimiter":" ","targets":["product","sales_attr1"]},{"op":"to_positive_int","target":"quantity"}],"defaults":{"remark":"","image_match_text":""}}
 不得输出 operations、脚本、正则、文件或网络操作。"""
 
 ROW_FIELD_PROPERTIES = {
