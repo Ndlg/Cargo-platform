@@ -1017,7 +1017,15 @@ def test_standard_detail_size_attr2_strips_purchase_hint_noise() -> None:
     assert result.rows[0].quantity == 1
 
 
-def test_recognition_rule_pack_import_activate_export_api() -> None:
+def test_recognition_rule_pack_import_activate_export_api(monkeypatch) -> None:
+    from app.api.routes import recognition_rule_packs as rule_pack_route
+
+    monkeypatch.setattr(
+        rule_pack_route,
+        "validate_rule_pack_with_service",
+        lambda **_kwargs: {"status": "valid", "errors": []},
+        raising=False,
+    )
     payload = {
         **ACTIVE_RULE_PACK_PAYLOAD,
         "pack": {
@@ -1104,6 +1112,43 @@ def test_recognition_rule_pack_import_rejects_pack_without_order_row_parser() ->
 
     assert imported.status_code == 422
     assert "parser_policy.order_row_parser" in imported.json()["detail"]
+
+
+def test_recognition_rule_pack_import_rejects_parser_invalid_payload(monkeypatch) -> None:
+    from app.api.routes import recognition_rule_packs as rule_pack_route
+
+    monkeypatch.setattr(
+        rule_pack_route,
+        "validate_rule_pack_with_service",
+        lambda **_kwargs: {
+            "status": "invalid",
+            "errors": ["parser_policy.format_profiles[0].fields.product"],
+        },
+        raising=False,
+    )
+    payload = {
+        **ACTIVE_RULE_PACK_PAYLOAD,
+        "pack": {
+            "code": "parser-invalid",
+            "name": "解析服务判定无效",
+            "version": "1.0.0",
+        },
+    }
+
+    with TestClient(app) as client:
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin123"})
+        assert login.status_code == 200
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}", "X-Workspace-Id": "1"}
+        imported = client.post(
+            "/api/v1/recognition-rule-packs/import",
+            headers=headers,
+            json={"payload": payload, "activate": True},
+        )
+        listing = client.get("/api/v1/recognition-rule-packs", headers=headers)
+
+    assert imported.status_code == 422
+    assert "format_profiles[0].fields.product" in imported.json()["detail"]
+    assert all(pack["code"] != "parser-invalid" for pack in listing.json()["packs"])
 
 
 def test_order_row_draft_endpoint_requires_active_rule_pack() -> None:

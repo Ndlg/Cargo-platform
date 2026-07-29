@@ -18,6 +18,7 @@ from app.services.recognition_rule_packs import (
     recognition_rule_pack_summary,
     upsert_recognition_rule_pack,
 )
+from app.services.waybill_parser_client import validate_rule_pack_with_service
 
 
 router = APIRouter(prefix="/recognition-rule-packs", tags=["recognition-rule-packs"])
@@ -84,6 +85,28 @@ def import_recognition_rule_pack(
 ) -> dict[str, Any]:
     try:
         normalized = normalize_rule_pack_payload(request.payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+    try:
+        validation = validate_rule_pack_with_service(rule_pack=normalized)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="识别服务暂时不可用，规则包未保存。",
+        ) from exc
+    if validation.get("status") != "valid":
+        errors = validation.get("errors")
+        detail = next(
+            (str(error).strip() for error in errors if str(error).strip()),
+            "未知校验错误",
+        ) if isinstance(errors, list) else "未知校验错误"
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"识别规则包无效：{detail}",
+        )
+
+    try:
         pack = upsert_recognition_rule_pack(
             db,
             tenant_id=current_tenant_id(current_user),
