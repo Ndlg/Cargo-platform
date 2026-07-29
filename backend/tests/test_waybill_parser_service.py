@@ -68,6 +68,24 @@ def test_waybill_parser_service_validates_rule_pack() -> None:
     assert body["errors"] == []
 
 
+def test_waybill_parser_service_validates_and_reports_fingerprint_strategy_usage() -> None:
+    app = load_parser_service_app()
+    valid_pack = valid_rule_pack_payload()
+    valid_pack["parser_policy"]["fingerprint_strategy"] = "business_shape_v2"
+    invalid_pack = valid_rule_pack_payload()
+    invalid_pack["parser_policy"]["fingerprint_strategy"] = ["unsupported_v3"]
+
+    with TestClient(app) as client:
+        valid_response = client.post("/api/v1/rule-packs/validate", json={"rule_pack": valid_pack})
+        invalid_response = client.post("/api/v1/rule-packs/validate", json={"rule_pack": invalid_pack})
+        explain_response = client.post("/api/v1/rule-packs/explain", json={"rule_pack": valid_pack})
+
+    assert valid_response.json()["status"] == "valid"
+    assert invalid_response.json()["status"] == "invalid"
+    assert "parser_policy.fingerprint_strategy" in invalid_response.json()["errors"]
+    assert "fingerprint_strategy" in explain_response.json()["policy_usage"]["applied"]
+
+
 def test_waybill_parser_service_validates_structured_item_source_contract() -> None:
     app = load_parser_service_app()
     invalid_pack = structured_rule_pack_payload()

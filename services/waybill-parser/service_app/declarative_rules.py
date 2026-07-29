@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from hashlib import sha256
-import json
 import re
 from typing import Any
 
+from services.shared.waybill_fingerprint import fingerprint_for_payload
 from service_app.order_row_engine import (
     OrderRowDraft,
     ParentWaybillDraft,
@@ -17,7 +16,7 @@ from service_app.order_row_engine import (
 
 PATH_PATTERN = re.compile(r"^[A-Za-z0-9_]+(?:\[\])?(?:\.[A-Za-z0-9_]+(?:\[\])?)*$")
 FIELD_PATH_PATTERN = re.compile(r"^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*$")
-FINGERPRINT_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+FINGERPRINT_PATTERN = re.compile(r"^(?:sha256|v2:[A-Za-z0-9_-]+:sha256):[0-9a-f]{64}$")
 MAX_QUANTITY = 100_000
 ROW_FIELDS = {"product", "sales_attr1", "sales_attr2", "quantity", "remark", "image_match_text"}
 STATE_FIELDS = ROW_FIELDS | {"text"}
@@ -28,6 +27,7 @@ STRUCTURED_PROFILE_KEYS = {
     "description",
     "items_path",
     "fields",
+    "steps",
     "defaults",
 }
 TEXT_PROFILE_KEYS = {
@@ -42,38 +42,8 @@ TEXT_PROFILE_KEYS = {
 }
 
 
-def structure_signature(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {
-            str(key): structure_signature(item)
-            for key, item in sorted(value.items(), key=lambda entry: str(entry[0]))
-        }
-    if isinstance(value, list):
-        signatures: list[Any] = []
-        seen: set[str] = set()
-        for item in value[:10]:
-            signature = structure_signature(item)
-            encoded = json.dumps(signature, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-            if encoded not in seen:
-                seen.add(encoded)
-                signatures.append(signature)
-        return {"type": "list", "items": signatures}
-    if isinstance(value, str):
-        return {"type": "scalar"}
-    if value is None:
-        return {"type": "null"}
-    if isinstance(value, (bool, int, float)):
-        return {"type": "scalar"}
-    return {"type": type(value).__name__}
-
-
 def structural_fingerprint(payload: dict[str, Any], source_component: str | None) -> str:
-    signature = {
-        "source_component": text_value(source_component).lower(),
-        "payload": structure_signature(payload),
-    }
-    encoded = json.dumps(signature, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return f"sha256:{sha256(encoded).hexdigest()}"
+    return fingerprint_for_payload(payload, text_value(source_component), "legacy_structure_v1")
 
 
 def valid_path(value: object, *, allow_lists: bool = True) -> bool:
@@ -130,11 +100,23 @@ def validate_structured_profile(profile: dict[str, Any], prefix: str) -> list[st
         for field, path in fields.items():
             if field not in ROW_FIELDS or not valid_path(path, allow_lists=False):
                 errors.append(f"{prefix}.fields.{field}")
+    steps = profile.get("steps")
+    if steps is not None:
+        if not isinstance(steps, list) or not 1 <= len(steps) <= 20:
+            errors.append(f"{prefix}.steps")
+        else:
+            for index, step in enumerate(steps):
+                errors.extend(validate_text_step(step, f"{prefix}.steps[{index}]", state_fields=ROW_FIELDS))
     errors.extend(validate_defaults(profile.get("defaults"), prefix))
     return errors
 
 
-def validate_text_step(step: object, prefix: str) -> list[str]:
+def validate_text_step(
+    step: object,
+    prefix: str,
+    *,
+    state_fields: set[str] = STATE_FIELDS,
+) -> list[str]:
     if not isinstance(step, dict):
         return [prefix]
     op = step.get("op")
@@ -160,10 +142,10 @@ def validate_text_step(step: object, prefix: str) -> list[str]:
     errors: list[str] = []
     source = step.get("source", "text")
     target = step.get("target")
-    if op in {"split", "rsplit", "extract_between"} and source not in STATE_FIELDS:
+    if op in {"split", "rsplit", "extract_between"} and source not in state_fields:
         errors.append(f"{prefix}.source")
     if op in {"extract_between", "trim", "strip_prefix", "strip_suffix", "to_positive_int"}:
-        if target not in STATE_FIELDS:
+        if target not in state_fields:
             errors.append(f"{prefix}.target")
     if op in {"split", "rsplit"}:
         delimiter = step.get("delimiter")
@@ -174,7 +156,7 @@ def validate_text_step(step: object, prefix: str) -> list[str]:
             not isinstance(targets, list)
             or not 2 <= len(targets) <= 10
             or len(set(targets)) != len(targets)
-            or any(target not in STATE_FIELDS for target in targets)
+            or any(target not in state_fields for target in targets)
         ):
             errors.append(f"{prefix}.targets")
     if op == "extract_between":
@@ -345,6 +327,11 @@ def structured_parent(
             value, resolved = relative_field_value(item, path)
             values[field] = value
             traces[field] = f"{item_path}.{resolved}" if resolved else item_path
+        for step_index, step in enumerate(profile.get("steps", [])):
+            apply_text_step(values, step)
+            for target in step.get("targets") or [step.get("target")]:
+                if target in ROW_FIELDS:
+                    traces[target] = f"{item_path}#step[{step_index}]"
         rows.append(
             row_from_values(
                 values,
@@ -512,8 +499,9 @@ def parse_declarative_payload(
     source_component: str | None,
     source_index: str | None,
     parent_sequence: int,
+    fingerprint_strategy: str = "legacy_structure_v1",
 ) -> tuple[ParentWaybillDraft, dict[str, Any]]:
-    fingerprint = structural_fingerprint(payload, source_component)
+    fingerprint = fingerprint_for_payload(payload, text_value(source_component), fingerprint_strategy)
     profile = next(
         (profile for profile in profiles if profile.get("fingerprint") == fingerprint),
         None,

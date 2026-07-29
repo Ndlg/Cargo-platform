@@ -523,3 +523,78 @@ def test_two_identical_raw_records_remain_two_parents() -> None:
     assert body["summary"]["parent_waybill_count"] == 2
     assert body["summary"]["child_waybill_count"] == 4
     assert [parent["raw_record_id"] for parent in body["parents"]] == [906, 907]
+
+
+def test_business_shape_v2_structured_profile_applies_row_steps_without_deduplication() -> None:
+    app, _rules = load_parser()
+    payload = one_document()
+    items = payload["task"]["documents"][0]["contents"][0]["data"]["packageItemDetail"]
+    items[0]["color"] = "5代白金 45"
+    items[1]["color"] = "Cloud 6 43"
+    from services.shared.waybill_fingerprint import fingerprint_for_payload
+
+    profile = {
+        "fingerprint": fingerprint_for_payload(payload, "cainiao-cnprint", "business_shape_v2"),
+        "strategy": "structured_items_v1",
+        "items_path": "task.documents[].contents[].data.packageItemDetail[]",
+        "fields": {"product": "itemName", "sales_attr1": "color", "quantity": "itemNum"},
+        "steps": [
+            {
+                "op": "rsplit",
+                "source": "sales_attr1",
+                "delimiter": " ",
+                "targets": ["sales_attr1", "sales_attr2"],
+            }
+        ],
+    }
+    pack = declarative_pack([profile])
+    pack["parser_policy"]["fingerprint_strategy"] = "business_shape_v2"
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/parse/batch",
+            json={"task_id": 61, "raw_records": [raw_record(912, payload)], "rule_pack": pack},
+        )
+
+    body = response.json()
+    assert body["status"] == "parsed"
+    assert [(row["product"], row["sales_attr1"], row["sales_attr2"], row["quantity"]) for row in body["rows"]] == [
+        ("范74", "5代白金", "45", 2),
+        ("秒45 跑鞋", "Cloud 6", "43", 1),
+    ]
+
+
+def test_business_shape_v2_does_not_fall_back_to_legacy_profile() -> None:
+    app, rules = load_parser()
+    baseline = one_document()
+    changed = one_document()
+    changed["task"]["documents"][0]["contents"][0]["data"]["packageItemDetail"][0]["itemNum"] = "2"
+    from services.shared.waybill_fingerprint import fingerprint_for_payload
+
+    v2_profile = structured_profile(rules, baseline)
+    v2_profile["fingerprint"] = fingerprint_for_payload(baseline, "cainiao-cnprint", "business_shape_v2")
+    pack = declarative_pack([structured_profile(rules, baseline), v2_profile])
+    pack["parser_policy"]["fingerprint_strategy"] = "business_shape_v2"
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/parse/batch",
+            json={"task_id": 61, "raw_records": [raw_record(913, changed)], "rule_pack": pack},
+        )
+
+    body = response.json()
+    assert body["status"] == "format_profile_missing"
+    assert body["diagnostics"][0]["reason"] == "format_profile_missing"
+    assert body["diagnostics"][0]["fingerprint"].startswith("v2:")
+
+
+def test_structured_profile_steps_reject_text_state() -> None:
+    app, rules = load_parser()
+    profile = structured_profile(rules, one_document())
+    profile["steps"] = [{"op": "trim", "target": "text"}]
+
+    with TestClient(app) as client:
+        response = client.post("/api/v1/rule-packs/validate", json={"rule_pack": declarative_pack([profile])})
+
+    assert response.json()["status"] == "invalid"
+    assert "parser_policy.format_profiles[0].steps[0].target" in response.json()["errors"]

@@ -30,6 +30,7 @@ app = FastAPI(title="Cargo Platform Waybill Parser", version="0.1.0")
 
 RECOGNITION_RULE_PACK_CONTRACT_VERSION = "recognition_rule_pack_v1"
 SUPPORTED_ORDER_ROW_PARSERS = {"declarative_v1", "shoe_waybill_v1"}
+SUPPORTED_FINGERPRINT_STRATEGIES = {"legacy_structure_v1", "business_shape_v2"}
 STRUCTURED_ITEM_FIELD_LISTS = ("product_fields", "spec_fields", "quantity_fields", "remark_fields")
 STRUCTURED_ITEM_PATH_PATTERN = re.compile(r"^[A-Za-z0-9_]+(?:\[\])?(?:\.[A-Za-z0-9_]+(?:\[\])?)*$")
 SELECTED_PARSER_POLICY_FIELDS = {"order_row_parser"}
@@ -43,6 +44,7 @@ APPLIED_PARSER_POLICY_FIELDS = {
     "size_normalization",
     "special_text_keywords",
     "format_profiles",
+    "fingerprint_strategy",
     "structured_item_sources",
 }
 REQUIRED_MULTI_ITEM_FIELDS = (
@@ -122,6 +124,9 @@ def rule_pack_validation_errors(rule_pack: dict[str, Any] | None) -> list[str]:
             errors.append("parser_policy.order_row_parser")
         if order_row_parser == "declarative_v1":
             errors.extend(validate_format_profiles(parser_policy.get("format_profiles")))
+        fingerprint_strategy = parser_policy.get("fingerprint_strategy", "legacy_structure_v1")
+        if not isinstance(fingerprint_strategy, str) or fingerprint_strategy not in SUPPORTED_FINGERPRINT_STRATEGIES:
+            errors.append("parser_policy.fingerprint_strategy")
         if (
             "requires_active_rule_pack" in parser_policy
             and parser_policy.get("requires_active_rule_pack") is not True
@@ -637,6 +642,7 @@ def parse_batch(payload: BatchParseRequest) -> dict[str, Any]:
                     source_component=record.source_component,
                     source_index=record.source_index,
                     parent_sequence=first_parent_sequence + document_offset,
+                    fingerprint_strategy=parser_policy.get("fingerprint_strategy", "legacy_structure_v1"),
                 )
                 if diagnostic["reason"]:
                     deterministic_reason = str(diagnostic["reason"])
