@@ -10,6 +10,7 @@ from typing import Any, Callable
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse
 import httpx
+from pydantic import ValidationError
 
 from .contracts import AiCandidate, AiOrderRow, FeedbackRequest, FingerprintInspectRequest, RecognizeRequest
 from .fingerprint import fingerprint_catalog, inspect_fingerprint, structural_fingerprint
@@ -194,7 +195,26 @@ def create_app(
                     "warnings": [],
                 }
             )
-            candidate = AiCandidate.model_validate(result)
+            try:
+                candidate = AiCandidate.model_validate(result)
+            except ValidationError:
+                parents = result.get("parents")
+                rows = [
+                    row
+                    for parent in parents or []
+                    if isinstance(parent, dict)
+                    for row in parent.get("rows") or []
+                    if isinstance(row, dict)
+                ] if isinstance(parents, list) else []
+                if not rows:
+                    raise
+                updated = store.set_candidate(
+                    session["session_id"],
+                    candidate=result,
+                    status="ai_result_invalid",
+                    error="AI 未完整识别商品或数量，请修改后重新生成规则。",
+                )
+                return response_payload(updated)
             candidate_payload = candidate.model_dump(mode="json")
             validation_error = None
             if sender is not None and token:

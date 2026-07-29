@@ -295,6 +295,43 @@ def test_invalid_model_candidate_becomes_business_failure(tmp_path: Path) -> Non
     assert stored["candidate"] is None
 
 
+def test_invalid_ai_row_remains_editable_until_admin_corrects_it(tmp_path: Path) -> None:
+    module = load_ai_service(tmp_path / "import-default.db")
+    invalid = candidate()
+    invalid["parents"][0]["rows"][0]["product"] = ""
+    invalid["parents"][0]["rows"][0]["quantity"] = 0
+    app = module.create_app(
+        model_client=FakeModel(invalid),
+        db_path=tmp_path / "sessions.db",
+    )
+    corrected_rows = [
+        {
+            "product": "登山鞋",
+            "sales_attr1": "紫色",
+            "sales_attr2": "42.5",
+            "quantity": 1,
+            "remark": "",
+        }
+    ]
+
+    with TestClient(app) as client:
+        session_id = client.post("/api/v1/recognize", json=raw_request()).json()["session_id"]
+        failed = wait_for_session(client, session_id, "ai_result_invalid")
+        approval = client.post(f"/api/v1/sessions/{session_id}/approve")
+        client.post(
+            f"/api/v1/sessions/{session_id}/feedback",
+            json={"message": json.dumps({"corrected_rows": corrected_rows}, ensure_ascii=False)},
+        )
+        corrected = wait_for_session(client, session_id, "ai_rule_pending")
+
+    assert failed["candidate"]["parents"][0]["rows"][0]["product"] == ""
+    assert failed["candidate"]["parents"][0]["rows"][0]["quantity"] == 0
+    assert failed["error"] == "AI 未完整识别商品或数量，请修改后重新生成规则。"
+    assert approval.status_code == 409
+    assert corrected["candidate"]["parents"][0]["rows"][0]["product"] == "登山鞋"
+    assert corrected["candidate"]["parents"][0]["rows"][0]["quantity"] == 1
+
+
 def test_structured_candidate_rule_paths_are_normalized_from_payload(tmp_path: Path) -> None:
     module = load_ai_service(tmp_path / "import-default.db")
     result = candidate()
@@ -533,6 +570,7 @@ def test_health_console_and_session_list_are_available(tmp_path: Path) -> None:
     assert 'cell("product", item.product)' in console.text
     assert "按修改结果重新生成规则" in console.text
     assert "ai_rule_invalid" in console.text
+    assert "ai_result_invalid" in console.text
     assert "row.error" in console.text
     assert "window.alert(error?.detail" not in console.text
     assert "格式指纹" not in console.text
