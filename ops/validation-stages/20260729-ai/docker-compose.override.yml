@@ -1,0 +1,64 @@
+services:
+  local-model:
+    image: ollama/ollama:latest
+    container_name: cargo-platform-validation-local-model
+    gpus: all
+    volumes:
+      - ai-model-data:/root/.ollama
+    networks:
+      validation:
+        aliases:
+          - local-model
+
+  ai-recognition:
+    image: cargo-platform-ai-recognition:ai-98ebbd8
+    container_name: cargo-platform-validation-ai-recognition
+    depends_on:
+      - local-model
+    environment:
+      AI_RECOGNITION_DB: /data/ai-recognition.db
+      AI_RECOGNITION_INTERNAL_TOKEN: ${AI_RECOGNITION_INTERNAL_TOKEN:?set AI_RECOGNITION_INTERNAL_TOKEN}
+      AI_CONSOLE_BASE_URL: http://127.0.0.1:18111
+      OLLAMA_MODEL: qwen3.5:4b-q4_K_M
+      OLLAMA_URL: http://local-model:11434
+      PLATFORM_INTERNAL_URL: http://backend:8000/api/v1
+    volumes:
+      - ai-session-data:/data
+    ports:
+      - "127.0.0.1:18111:8011"
+    networks:
+      validation:
+        aliases:
+          - ai-recognition
+
+  waybill-parser:
+    image: cargo-platform-validation-parser:ai-1cb51cc
+    depends_on:
+      - ai-recognition
+    environment:
+      AI_RECOGNITION_URL: http://ai-recognition:8011
+
+  backend:
+    image: cargo-platform-validation-backend:ai-5d5ec7b
+    depends_on:
+      - redis
+      - waybill-parser
+      - ai-recognition
+    environment:
+      APP_VERSION: ai-5d5ec7b
+      AI_RECOGNITION_ENABLED: "true"
+      AI_RECOGNITION_INTERNAL_TOKEN: ${AI_RECOGNITION_INTERNAL_TOKEN:?set AI_RECOGNITION_INTERNAL_TOKEN}
+
+  ui:
+    image: cargo-platform-validation-ui:ai-287ca3b
+
+volumes:
+  validation-data:
+    external: true
+    name: cargo-platform-validation-ai-data-20260729-110409
+  ai-model-data:
+    external: true
+    name: cargo-platform-validation-ai-model-20260729
+  ai-session-data:
+    external: true
+    name: cargo-platform-validation-ai-sessions-20260729
