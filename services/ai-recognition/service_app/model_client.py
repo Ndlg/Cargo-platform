@@ -12,6 +12,30 @@ SYSTEM_PROMPT = """你是面单商品订单行解析器。只处理提供的脱�
 输出必须完全符合 JSON Schema。每个父面单保留来源，每个商品生成独立订单行，不去重。
 同时生成一个只使用允许的声明式操作的 candidate_rule；不得输出脚本、正则、文件或网络操作。"""
 
+OLLAMA_GRAMMAR_UNSUPPORTED = {
+    "exclusiveMaximum",
+    "exclusiveMinimum",
+    "maxItems",
+    "maxLength",
+    "maximum",
+    "minItems",
+    "minLength",
+    "minimum",
+}
+
+
+def ollama_json_schema(value: Any | None = None) -> Any:
+    value = AiCandidate.model_json_schema() if value is None else value
+    if isinstance(value, dict):
+        return {
+            key: ollama_json_schema(item)
+            for key, item in value.items()
+            if key not in OLLAMA_GRAMMAR_UNSUPPORTED
+        }
+    if isinstance(value, list):
+        return [ollama_json_schema(item) for item in value]
+    return value
+
 
 class OllamaModelClient:
     def __init__(
@@ -47,7 +71,7 @@ class OllamaModelClient:
                         "content": json.dumps(user_payload, ensure_ascii=False, sort_keys=True),
                     },
                 ],
-                "format": AiCandidate.model_json_schema(),
+                "format": ollama_json_schema(),
                 "stream": False,
                 "think": False,
                 "keep_alive": "10m",

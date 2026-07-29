@@ -283,6 +283,11 @@ def test_ollama_client_requests_schema_constrained_non_thinking_json(tmp_path: P
     assert request["options"]["temperature"] == 0
     assert request["options"]["num_ctx"] == 4096
     assert request["format"]["properties"]["parents"]
+    sent_schema = json.dumps(request["format"], sort_keys=True)
+    assert "maxItems" not in sent_schema
+    assert "minItems" not in sent_schema
+    assert "maxLength" not in sent_schema
+    assert "minLength" not in sent_schema
 
 
 def test_health_console_and_session_list_are_available(tmp_path: Path) -> None:
