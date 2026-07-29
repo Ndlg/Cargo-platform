@@ -11,7 +11,7 @@ services:
           - local-model
 
   ai-recognition:
-    image: cargo-platform-ai-recognition:approval-feedback-cc073df
+    image: cargo-platform-ai-recognition:print-xml-89c39d7
     container_name: cargo-platform-validation-ai-recognition
     depends_on:
       - local-model
@@ -32,7 +32,7 @@ services:
           - ai-recognition
 
   waybill-parser:
-    image: cargo-platform-validation-parser:manual-ai-0a7b184
+    image: cargo-platform-validation-parser:print-xml-89c39d7
     depends_on:
       - ai-recognition
     environment:
