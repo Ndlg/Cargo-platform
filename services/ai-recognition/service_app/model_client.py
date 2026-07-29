@@ -11,6 +11,7 @@ SYSTEM_PROMPT = """你是面单商品订单行解析器。只处理提供的脱�
 订单行只能填写当前样本里的实际值，不得填写代码、JSONPath、“无”、“完整商品行原文”等占位文字。
 商品、销售属性1、销售属性2、数量和备注只填写字段值，不得包含字段名称或“商品是”“销售属性1是”等说明文字。
 若 administrator_feedback 包含 corrected_rows，parents 必须逐字段原样复制 corrected_rows，不得改写；只重新生成能复现这些正确订单行的 candidate_rule。
+若 administrator_feedback 包含 rule_validation_error，必须修复该规则错误；defaults.quantity 只能省略或使用大于等于 1 的整数。
 candidate_rule 必须能在当前脱敏数据上重放出与 parents 完全相同的订单行。text_path 必须是从根开始的完整路径，数组段写成 []，例如 task.documents[].contents[].data.ITEM_INFO。
 items_path、text_path 和 fields 只能写点分隔字段路径，不能写 .split()、数组下标、表达式或代码。printXML 是文本字段，只能使用 text_pipeline_v1，路径通常为 task.documents[].contents[].printXML。
 文本规则按顺序执行，初始只有 text 和 defaults；后续步骤只能读取 text、defaults 或前一步已写入的字段。
@@ -40,7 +41,7 @@ RULE_FIELD_PROPERTIES = {
 
 DEFAULT_PROPERTIES = {
     **ROW_FIELD_PROPERTIES,
-    "quantity": {"type": "integer"},
+    "quantity": {"type": "integer", "minimum": 1, "maximum": 100_000},
 }
 
 TEXT_STATE_FIELDS = [
@@ -184,7 +185,12 @@ ORDER_ROW_SCHEMA = {
         "product": {"type": "string", "description": "商品值本身，不包含“商品”等字段名称"},
         "sales_attr1": {"type": "string", "description": "销售属性1的值本身，不包含字段名称"},
         "sales_attr2": {"type": "string", "description": "销售属性2的值本身，不包含字段名称"},
-        "quantity": {"type": "integer", "description": "数量值本身，不包含“数量”等字段名称"},
+        "quantity": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100_000,
+            "description": "数量值本身，不包含“数量”等字段名称",
+        },
         "remark": {"type": "string", "description": "备注值本身，不包含“备注”等字段名称"},
     },
 }

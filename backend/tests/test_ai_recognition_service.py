@@ -778,6 +778,66 @@ def test_candidate_must_pass_platform_replay_before_it_can_be_approved(tmp_path:
     assert approval.status_code == 409
 
 
+def test_invalid_rule_is_retried_once_after_admin_correction(tmp_path: Path) -> None:
+    module = load_ai_service(tmp_path / "import-default.db")
+    corrected_rows = [{
+        "product": "登山鞋",
+        "sales_attr1": "紫色",
+        "sales_attr2": "42.5",
+        "quantity": 1,
+        "remark": "",
+    }]
+
+    class RepairModel(FakeModel):
+        def recognize(
+            self,
+            payload: dict[str, Any],
+            fingerprint: str,
+            feedback: list[str] | None = None,
+        ) -> dict[str, Any]:
+            result = json.loads(json.dumps(super().recognize(payload, fingerprint, feedback)))
+            result["candidate_rule"]["defaults"] = {
+                "quantity": 1 if len(self.calls) == 3 else 0,
+            }
+            return result
+
+    model = RepairModel()
+    validations: list[dict[str, Any]] = []
+
+    def validate_rule(payload: dict[str, Any], _token: str) -> dict[str, Any]:
+        validations.append(payload)
+        if payload["candidate_rule"]["defaults"]["quantity"] != 1:
+            raise ValueError("AI candidate rule is invalid: defaults.quantity")
+        return {"status": "valid"}
+
+    app = module.create_app(
+        model_client=model,
+        db_path=tmp_path / "sessions.db",
+        internal_token="test-shared-token",
+        approval_sender=validate_rule,
+    )
+    with TestClient(app) as client:
+        session_id = client.post("/api/v1/recognize", json=raw_request()).json()["session_id"]
+        wait_for_session(client, session_id, "ai_rule_invalid")
+        feedback = client.post(
+            f"/api/v1/sessions/{session_id}/feedback",
+            json={"corrected_rows": corrected_rows},
+        )
+        stored = wait_for_session(client, session_id, "ai_rule_pending")
+
+    assert feedback.status_code == 200
+    assert len(model.calls) == 3
+    repair_context = json.loads(model.calls[-1]["feedback"][-1])
+    assert repair_context == {
+        "corrected_rows": corrected_rows,
+        "rule_validation_error": "AI candidate rule is invalid: defaults.quantity",
+    }
+    assert stored["candidate"]["parents"][0]["rows"] == corrected_rows
+    assert stored["candidate"]["candidate_rule"]["defaults"]["quantity"] == 1
+    assert len(validations) == 3
+    assert len(stored["feedback"]) == 1
+
+
 def test_approve_calls_platform_with_shared_token_and_reject_is_local(tmp_path: Path) -> None:
     module = load_ai_service(tmp_path / "import-default.db")
     approvals: list[tuple[dict[str, Any], str]] = []
@@ -886,6 +946,8 @@ def test_ollama_client_requests_schema_constrained_non_thinking_json(tmp_path: P
         "quantity",
         "remark",
     }
+    assert row_schema["properties"]["quantity"]["minimum"] == 1
+    assert row_schema["properties"]["quantity"]["maximum"] == 100_000
     assert "字段名称" in row_schema["properties"]["product"]["description"]
     candidate_rule_schema = request["format"]["properties"]["candidate_rule"]
     assert [schema["properties"]["strategy"]["const"] for schema in candidate_rule_schema["oneOf"]] == [
@@ -893,6 +955,10 @@ def test_ollama_client_requests_schema_constrained_non_thinking_json(tmp_path: P
         "text_pipeline_v1",
     ]
     assert all(schema["additionalProperties"] is False for schema in candidate_rule_schema["oneOf"])
+    assert all(
+        schema["properties"]["defaults"]["properties"]["quantity"]["minimum"] == 1
+        for schema in candidate_rule_schema["oneOf"]
+    )
     rows_schema = request["format"]["properties"]["parents"]["items"]["properties"]["rows"]
     assert rows_schema["minItems"] == 1
     assert rows_schema["maxItems"] == 100

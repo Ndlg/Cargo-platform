@@ -186,71 +186,92 @@ def create_app(
 
     def run_model(session: dict[str, Any]) -> dict[str, Any]:
         try:
-            result = model.recognize(
-                session["sanitized_payload"],
-                session["fingerprint"],
-                session["feedback"],
-            )
-            result = normalize_candidate_rule(result, session["sanitized_payload"])
-            if corrected_rows := administrator_corrected_rows(session["feedback"]):
-                parents = result.get("parents")
-                parent = parents[0] if isinstance(parents, list) and parents and isinstance(parents[0], dict) else {}
-                result["parents"] = [{**parent, "rows": corrected_rows}]
-            for parent in result.get("parents") or []:
-                if isinstance(parent, dict):
-                    parent["source"] = {"sanitized_payload": session["sanitized_payload"]}
-            result.update(
-                {
-                    "contract_version": "ai_waybill_candidate_v1",
-                    "fingerprint": session["fingerprint"],
-                    "rule_evidence": [
-                        json.dumps(session["sanitized_payload"], ensure_ascii=False, sort_keys=True)
-                    ],
-                    "warnings": [],
-                }
-            )
-            try:
-                candidate = AiCandidate.model_validate(result)
-            except ValidationError as exc:
-                parents = result.get("parents")
-                rows = [
-                    row
-                    for parent in parents or []
-                    if isinstance(parent, dict)
-                    for row in parent.get("rows") or []
-                    if isinstance(row, dict)
-                ] if isinstance(parents, list) else []
-                if not rows:
-                    raise
+            corrected_rows = administrator_corrected_rows(session["feedback"])
+            model_feedback = list(session["feedback"])
+            for attempt in range(2):
+                result = model.recognize(
+                    session["sanitized_payload"],
+                    session["fingerprint"],
+                    model_feedback,
+                )
+                result = normalize_candidate_rule(result, session["sanitized_payload"])
+                if corrected_rows:
+                    parents = result.get("parents")
+                    parent = parents[0] if isinstance(parents, list) and parents and isinstance(parents[0], dict) else {}
+                    result["parents"] = [{**parent, "rows": corrected_rows}]
+                for parent in result.get("parents") or []:
+                    if isinstance(parent, dict):
+                        parent["source"] = {"sanitized_payload": session["sanitized_payload"]}
+                result.update(
+                    {
+                        "contract_version": "ai_waybill_candidate_v1",
+                        "fingerprint": session["fingerprint"],
+                        "rule_evidence": [
+                            json.dumps(session["sanitized_payload"], ensure_ascii=False, sort_keys=True)
+                        ],
+                        "warnings": [],
+                    }
+                )
+                try:
+                    candidate = AiCandidate.model_validate(result)
+                except ValidationError as exc:
+                    parents = result.get("parents")
+                    rows = [
+                        row
+                        for parent in parents or []
+                        if isinstance(parent, dict)
+                        for row in parent.get("rows") or []
+                        if isinstance(row, dict)
+                    ] if isinstance(parents, list) else []
+                    if not rows:
+                        raise
+                    updated = store.set_candidate(
+                        session["session_id"],
+                        generation=session["generation"],
+                        candidate=result,
+                        status="ai_result_invalid",
+                        error=(
+                            "AI 返回的字段值包含字段名称，请修改后重新生成规则。"
+                            if any(
+                                "field value contains its field name" in str(error.get("msg") or "")
+                                for error in exc.errors()
+                            )
+                            else "AI 未完整识别商品或数量，请修改后重新生成规则。"
+                        ),
+                    )
+                    return response_payload(updated)
+                candidate_payload = candidate.model_dump(mode="json")
+                validation_error = None
+                repairable = False
+                if sender is not None and token:
+                    try:
+                        sender(platform_rule_payload(session, candidate_payload, validate_only=True), token)
+                    except ValueError as exc:
+                        validation_error = str(exc)[:2000]
+                        repairable = True
+                    except httpx.HTTPError as exc:
+                        validation_error = str(exc)[:2000]
+                if validation_error and corrected_rows and repairable and attempt == 0:
+                    model_feedback = [
+                        *model_feedback,
+                        json.dumps(
+                            {
+                                "corrected_rows": corrected_rows,
+                                "rule_validation_error": validation_error,
+                            },
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        ),
+                    ]
+                    continue
                 updated = store.set_candidate(
                     session["session_id"],
                     generation=session["generation"],
-                    candidate=result,
-                    status="ai_result_invalid",
-                    error=(
-                        "AI 返回的字段值包含字段名称，请修改后重新生成规则。"
-                        if any(
-                            "field value contains its field name" in str(error.get("msg") or "")
-                            for error in exc.errors()
-                        )
-                        else "AI 未完整识别商品或数量，请修改后重新生成规则。"
-                    ),
+                    candidate=candidate_payload,
+                    status="ai_rule_invalid" if validation_error else "ai_rule_pending",
+                    error=validation_error,
                 )
                 return response_payload(updated)
-            candidate_payload = candidate.model_dump(mode="json")
-            validation_error = None
-            if sender is not None and token:
-                try:
-                    sender(platform_rule_payload(session, candidate_payload, validate_only=True), token)
-                except (ValueError, httpx.HTTPError) as exc:
-                    validation_error = str(exc)[:2000]
-            updated = store.set_candidate(
-                session["session_id"],
-                generation=session["generation"],
-                candidate=candidate_payload,
-                status="ai_rule_invalid" if validation_error else "ai_rule_pending",
-                error=validation_error,
-            )
         except Exception as exc:
             updated = store.set_candidate(
                 session["session_id"],
