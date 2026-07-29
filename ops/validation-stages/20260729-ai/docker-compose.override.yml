@@ -46,6 +46,7 @@ services:
       - ai-recognition
     environment:
       APP_VERSION: single-ai-pack-0a1a18d
+      AI_RECOGNITION_URL: http://ai-recognition:8011
       AI_RECOGNITION_ENABLED: "true"
       AI_RECOGNITION_INTERNAL_TOKEN: ${AI_RECOGNITION_INTERNAL_TOKEN:?set AI_RECOGNITION_INTERNAL_TOKEN}
 

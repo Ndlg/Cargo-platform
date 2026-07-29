@@ -20,6 +20,7 @@ FINGERPRINT_CATALOG = (
     {
         "code": "CN-ITEM-INFO",
         "name": "菜鸟商品文本型",
+        "description": "从菜鸟商品信息字段读取商品文字。",
         "detect_path": "contents[].data.ITEM_INFO",
         "fields": (
             _field("item_info", "商品信息", "contents[].data.ITEM_INFO"),
@@ -31,6 +32,7 @@ FINGERPRINT_CATALOG = (
     {
         "code": "CN-PRINT-XML",
         "name": "菜鸟打印 XML 型",
+        "description": "把菜鸟打印 XML 转成纯文本后提供给 AI。",
         "detect_path": "contents[].printXML",
         "fields": (
             _field("print_text", "打印文本", "contents[].printXML//text"),
@@ -39,6 +41,7 @@ FINGERPRINT_CATALOG = (
     {
         "code": "CN-CUSTOM-CONTENT",
         "name": "菜鸟自定义内容型",
+        "description": "读取菜鸟自定义商品内容。",
         "detect_path": "contents[].data.customContent",
         "fields": (
             _field("custom_content", "自定义商品内容", "contents[].data.customContent"),
@@ -47,6 +50,7 @@ FINGERPRINT_CATALOG = (
     {
         "code": "CN-PACKAGE-ITEMS",
         "name": "菜鸟包裹明细型",
+        "description": "读取菜鸟包裹中的商品和规格明细。",
         "detect_path": "contents[].data.packageItemDetail[]",
         "fields": (
             _field("item_name", "商品名称", "packageItemDetail[].itemName"),
@@ -61,6 +65,7 @@ FINGERPRINT_CATALOG = (
     {
         "code": "CLOUD-PRODUCT-INFO",
         "name": "云打印商品信息型",
+        "description": "读取云打印返回的商品、规格和数量字段。",
         "detect_path": "contents[].data.productInfo",
         "fields": (
             _field("product_info", "商品信息", "contents[].data.productInfo"),
@@ -151,6 +156,7 @@ def fingerprint_catalog() -> list[dict[str, Any]]:
         {
             "code": item["code"],
             "name": item["name"],
+            "description": item["description"],
             "detect_path": item["detect_path"],
             "fields": [dict(field) for field in item["fields"]],
         }

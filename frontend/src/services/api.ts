@@ -462,6 +462,26 @@ export interface RecognitionRulePackExportResponse extends ApiRecord {
   payload: RecognitionRulePackPayload | Record<string, unknown>
 }
 
+export interface TenantFingerprintField {
+  key: string
+  label: string
+  default_selected: boolean
+}
+
+export interface TenantFingerprintConfig {
+  code: string
+  name: string
+  description: string
+  candidate_fields: TenantFingerprintField[]
+  selected_fields: string[]
+}
+
+export interface TenantFingerprintConfigsResponse extends ApiRecord {
+  contract_version: 'tenant_fingerprint_configs_v1' | string
+  tenant_id: number
+  fingerprints: TenantFingerprintConfig[]
+}
+
 export interface RecognitionPreviewRow extends ApiRecord {
   detail_id: number
   candidate_key: string
@@ -738,6 +758,23 @@ export function deleteRecognitionRulePack(packId: number): Promise<ApiRecord> {
 
 export function exportRecognitionRulePack(packId: number): Promise<RecognitionRulePackExportResponse> {
   return request<RecognitionRulePackExportResponse>(withCurrentWorkspace(`/recognition-rule-packs/${packId}/export`))
+}
+
+export function listTenantFingerprintConfigs(): Promise<TenantFingerprintConfigsResponse> {
+  return request<TenantFingerprintConfigsResponse>(withCurrentWorkspace('/tenant-fingerprint-configs'))
+}
+
+export function updateTenantFingerprintConfig(
+  fingerprintCode: string,
+  selectedFields: string[],
+): Promise<{ fingerprint: TenantFingerprintConfig }> {
+  return request<{ fingerprint: TenantFingerprintConfig }>(
+    withCurrentWorkspace(`/tenant-fingerprint-configs/${encodeURIComponent(fingerprintCode)}`),
+    {
+      method: 'PUT',
+      body: JSON.stringify({ selected_fields: selectedFields }),
+    },
+  )
 }
 
 export function getProductMatchingRules(includeDisabled = true): Promise<ProductMatchingRulesResponse> {

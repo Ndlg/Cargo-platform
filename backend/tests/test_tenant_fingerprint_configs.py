@@ -18,7 +18,7 @@ CATALOG = {
             "code": "CN-ITEM-INFO",
             "name": "菜鸟商品文本型",
             "description": "商品字段",
-            "candidate_fields": [
+            "fields": [
                 {"key": "item_info", "label": "商品信息", "default_selected": True},
                 {"key": "seller_memo", "label": "卖家备注", "default_selected": False},
             ],
@@ -27,7 +27,7 @@ CATALOG = {
             "code": "CN-PRINT-XML",
             "name": "菜鸟打印 XML 型",
             "description": "打印 XML",
-            "candidate_fields": [
+            "fields": [
                 {"key": "print_text", "label": "打印文本", "default_selected": True},
             ],
         },
@@ -35,7 +35,7 @@ CATALOG = {
             "code": "CLOUD-PRODUCT-INFO",
             "name": "云打印商品信息型",
             "description": "云打印商品字段",
-            "candidate_fields": [
+            "fields": [
                 {"key": "product_info", "label": "商品信息", "default_selected": True},
             ],
         },

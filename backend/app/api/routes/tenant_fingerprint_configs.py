@@ -43,7 +43,10 @@ def _catalog() -> dict[str, dict[str, Any]]:
 
 def _record(config: TenantFingerprintConfig, capability: dict[str, Any]) -> dict[str, Any]:
     return {
-        **capability,
+        "code": capability["code"],
+        "name": capability["name"],
+        "description": capability.get("description", ""),
+        "candidate_fields": capability.get("fields", []),
         "selected_fields": config.selected_fields,
     }
 
@@ -101,7 +104,7 @@ def update_tenant_fingerprint_config(
         raise HTTPException(status_code=404, detail="该面单指纹不存在。")
     allowed_fields = {
         field["key"]
-        for field in capability.get("candidate_fields", [])
+        for field in capability.get("fields", [])
         if isinstance(field, dict) and isinstance(field.get("key"), str)
     }
     selected_fields = list(dict.fromkeys(request.selected_fields))
