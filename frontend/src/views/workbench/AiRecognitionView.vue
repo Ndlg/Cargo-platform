@@ -27,6 +27,44 @@ const loading = ref(false)
 const startingSampleId = ref('')
 const error = ref('')
 const consoleUrl = ref('')
+const currentSessionLabel = ref('')
+const sessionError = ref('')
+
+const sessionStatusText = computed(() => {
+  if (startingSampleId.value) return '正在创建会话'
+  if (sessionError.value) return '启动失败'
+  if (consoleUrl.value) return '会话已连接'
+  return '等待选择面单'
+})
+
+function savedSessionKey(): string {
+  if (!selectedTaskId.value) return ''
+  return `cargo-platform-ai-session:${session.currentWorkspaceId ?? 'default'}:${selectedTaskId.value}`
+}
+
+function restoreSavedSession() {
+  consoleUrl.value = ''
+  currentSessionLabel.value = ''
+  sessionError.value = ''
+  const key = savedSessionKey()
+  if (!key) return
+  try {
+    const saved = JSON.parse(localStorage.getItem(key) || '{}') as { consoleUrl?: string; label?: string }
+    consoleUrl.value = saved.consoleUrl || ''
+    currentSessionLabel.value = saved.label || ''
+  } catch {
+    localStorage.removeItem(key)
+  }
+}
+
+function saveCurrentSession() {
+  const key = savedSessionKey()
+  if (!key || !consoleUrl.value) return
+  localStorage.setItem(
+    key,
+    JSON.stringify({ consoleUrl: consoleUrl.value, label: currentSessionLabel.value }),
+  )
+}
 
 const taskOptions = computed(() =>
   [...tasks.value]
@@ -90,8 +128,11 @@ async function loadQueue() {
   if (!selectedTaskId.value) {
     samples.value = []
     drafts.value = null
+    consoleUrl.value = ''
+    currentSessionLabel.value = ''
     return
   }
+  restoreSavedSession()
   loading.value = true
   error.value = ''
   try {
@@ -111,6 +152,10 @@ async function loadQueue() {
 async function start(item: QueueItem) {
   if (!selectedTaskId.value || startingSampleId.value) return
   startingSampleId.value = item.sample_id
+  currentSessionLabel.value = `面单 ${item.parentSequence}`
+  consoleUrl.value = ''
+  sessionError.value = ''
+  localStorage.removeItem(savedSessionKey())
   error.value = ''
   try {
     const result = await startManualAiRecognition(selectedTaskId.value, {
@@ -121,15 +166,19 @@ async function start(item: QueueItem) {
     const recognitionSession = result.ai_sessions?.[0]
     if (recognitionSession?.console_url) {
       consoleUrl.value = recognitionSession.console_url
+      saveCurrentSession()
       ElMessage.success('已开始解析这一张面单')
     } else if (result.status === 'parsed') {
       ElMessage.success('当前规则已经可以识别这张面单')
       await loadQueue()
     } else {
-      error.value = result.message || 'AI 会话未创建，请检查识别服务'
+      sessionError.value =
+        result.status === 'ai_unavailable'
+          ? 'AI 识别服务暂时不可用，未创建解析会话。'
+          : 'AI 会话未创建，请检查识别服务。'
     }
   } catch (err) {
-    error.value = err instanceof Error ? err.message : 'AI 面单解析启动失败'
+    sessionError.value = err instanceof Error ? err.message : 'AI 面单解析启动失败'
   } finally {
     startingSampleId.value = ''
   }
@@ -176,6 +225,48 @@ onBeforeUnmount(() => window.removeEventListener('message', handleConsoleMessage
     type="error"
   />
 
+  <section class="work-surface ai-session-window" aria-live="polite">
+    <div class="console-header">
+      <div>
+        <h2>AI 解析会话</h2>
+        <p>
+          {{ currentSessionLabel || '尚未选择面单' }} ·
+          模型候选必须由管理员确认后才会同步为识别规则。
+        </p>
+      </div>
+      <div class="console-actions">
+        <el-tag :type="sessionError ? 'danger' : consoleUrl ? 'success' : 'info'">
+          {{ sessionStatusText }}
+        </el-tag>
+        <el-button v-if="consoleUrl" tag="a" :href="consoleUrl" target="_blank">
+          在独立窗口打开
+        </el-button>
+      </div>
+    </div>
+
+    <el-alert
+      v-if="sessionError"
+      :closable="false"
+      :title="sessionError"
+      show-icon
+      type="error"
+    />
+    <div v-else-if="startingSampleId" class="session-placeholder">
+      <el-skeleton :rows="4" animated />
+      <p>正在创建会话并提交给本地模型，请稍候……</p>
+    </div>
+    <iframe
+      v-else-if="consoleUrl"
+      :src="consoleUrl"
+      title="本地 AI 面单识别会话"
+    />
+    <el-empty
+      v-else
+      :image-size="72"
+      description="从下方待学习清单选择一张面单，解析过程会显示在这里"
+    />
+  </section>
+
   <section class="work-surface">
     <div class="toolbar">
       <span>采集轮次</span>
@@ -219,16 +310,6 @@ onBeforeUnmount(() => window.removeEventListener('message', handleConsoleMessage
     </div>
   </section>
 
-  <section v-if="consoleUrl" class="work-surface ai-console">
-    <div class="console-header">
-      <div>
-        <h2>当前 AI 会话</h2>
-        <p>模型只生成候选。管理员确认后，规则会自动同步并重新检查当前轮次。</p>
-      </div>
-      <el-button tag="a" :href="consoleUrl" target="_blank">在独立窗口打开</el-button>
-    </div>
-    <iframe :src="consoleUrl" title="本地 AI 面单识别会话" />
-  </section>
 </template>
 
 <style scoped>
@@ -287,12 +368,18 @@ onBeforeUnmount(() => window.removeEventListener('message', handleConsoleMessage
   gap: 16px;
 }
 
+.console-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
 .console-header h2,
 .console-header p {
   margin: 0 0 6px;
 }
 
-.ai-console iframe {
+.ai-session-window iframe {
   width: 100%;
   min-height: 620px;
   margin-top: 12px;
@@ -301,10 +388,17 @@ onBeforeUnmount(() => window.removeEventListener('message', handleConsoleMessage
   background: white;
 }
 
+.session-placeholder {
+  min-height: 180px;
+  padding-top: 20px;
+  color: #606266;
+}
+
 @media (max-width: 760px) {
   .toolbar,
   .queue-card,
-  .console-header {
+  .console-header,
+  .console-actions {
     align-items: stretch;
     flex-direction: column;
   }
