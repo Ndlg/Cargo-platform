@@ -217,10 +217,34 @@ def test_existing_session_database_adds_document_sequence_column(tmp_path: Path)
             )
             """
         )
+        db.execute(
+            """
+            INSERT INTO recognition_sessions(
+                session_id, request_key, workspace_id, task_id, raw_record_id,
+                source_component, fingerprint, deterministic_failure_reason,
+                sanitized_payload, candidate, status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "legacy-session",
+                "legacy-request",
+                1,
+                61,
+                901,
+                "test",
+                "sha256:test",
+                "format_profile_missing",
+                json.dumps({"product": "shoe"}),
+                json.dumps(candidate()),
+                "ai_rule_pending",
+                "2026-07-29T00:00:00+00:00",
+                "2026-07-29T00:00:00+00:00",
+            ),
+        )
 
     store = module.SessionStore(database)
     session, created = store.reserve(
-        request_key="legacy-request",
+        request_key="new-request",
         workspace_id=1,
         task_id=61,
         raw_record_id=901,
@@ -233,6 +257,17 @@ def test_existing_session_database_adds_document_sequence_column(tmp_path: Path)
 
     assert created is True
     assert session["document_sequence"] == 3
+    assert session["generation"] == 1
+    legacy = store.get("legacy-session")
+    assert legacy is not None
+    assert legacy["document_sequence"] == 0
+    assert legacy["generation"] == 0
+
+    app = module.create_app(model_client=FakeModel(), db_path=database)
+    with TestClient(app) as client:
+        approval = client.post("/api/v1/sessions/legacy-session/approve")
+    assert approval.status_code == 409
+    assert approval.json()["detail"] == "旧会话无法确定所选面单，请重新创建识别会话。"
 
 
 def test_recognize_sanitizes_pii_and_reuses_identical_session(tmp_path: Path) -> None:
@@ -556,6 +591,112 @@ def test_structured_correction_accepts_many_rows_without_message_limit(tmp_path:
         "corrected_rows": corrected_rows,
         "note": "管理员核对",
     }
+
+
+def test_older_feedback_result_cannot_replace_newer_correction(tmp_path: Path) -> None:
+    module = load_ai_service(tmp_path / "import-default.db")
+
+    class SequencedModel(FakeModel):
+        def __init__(self) -> None:
+            super().__init__()
+            self.invocations = 0
+            self.second_started = Event()
+            self.release_second = Event()
+            self.third_started = Event()
+            self.release_third = Event()
+
+        def recognize(
+            self,
+            payload: dict[str, Any],
+            fingerprint: str,
+            feedback: list[str] | None = None,
+        ) -> dict[str, Any]:
+            self.invocations += 1
+            if self.invocations == 2:
+                self.second_started.set()
+                self.release_second.wait(2)
+            elif self.invocations == 3:
+                self.third_started.set()
+                self.release_third.wait(2)
+            return super().recognize(payload, fingerprint, feedback)
+
+    model = SequencedModel()
+    app = module.create_app(model_client=model, db_path=tmp_path / "sessions.db")
+    correction_a = [{
+        "product": "修正 A",
+        "sales_attr1": "",
+        "sales_attr2": "",
+        "quantity": 1,
+        "remark": "",
+    }]
+    correction_b = [{**correction_a[0], "product": "修正 B"}]
+
+    with TestClient(app) as client:
+        session_id = client.post("/api/v1/recognize", json=raw_request()).json()["session_id"]
+        wait_for_session(client, session_id, "ai_rule_pending")
+        client.post(
+            f"/api/v1/sessions/{session_id}/feedback",
+            json={"corrected_rows": correction_a},
+        )
+        assert model.second_started.wait(1)
+        client.post(
+            f"/api/v1/sessions/{session_id}/feedback",
+            json={"corrected_rows": correction_b},
+        )
+        model.release_second.set()
+        assert model.third_started.wait(1)
+        try:
+            current = client.get(f"/api/v1/sessions/{session_id}").json()
+            approval = client.post(f"/api/v1/sessions/{session_id}/approve")
+            assert current["status"] == "model_running"
+            assert approval.status_code == 409
+        finally:
+            model.release_third.set()
+        stored = wait_for_session(client, session_id, "ai_rule_pending")
+
+    assert stored["candidate"]["parents"][0]["rows"] == correction_b
+
+
+def test_feedback_is_rejected_while_rule_approval_is_running(tmp_path: Path) -> None:
+    module = load_ai_service(tmp_path / "import-default.db")
+    approval_started = Event()
+    release_approval = Event()
+
+    def blocking_approval(payload: dict[str, Any], _token: str) -> dict[str, Any]:
+        if payload.get("validate_only"):
+            return {"status": "valid"}
+        approval_started.set()
+        release_approval.wait(2)
+        return {"status": "activated"}
+
+    app = module.create_app(
+        model_client=FakeModel(),
+        db_path=tmp_path / "sessions.db",
+        internal_token="test-token",
+        approval_sender=blocking_approval,
+    )
+    result: dict[str, Any] = {}
+    with TestClient(app) as client:
+        session_id = client.post("/api/v1/recognize", json=raw_request()).json()["session_id"]
+        wait_for_session(client, session_id, "ai_rule_pending")
+        thread = Thread(
+            target=lambda: result.update(
+                approval=client.post(f"/api/v1/sessions/{session_id}/approve")
+            ),
+            daemon=True,
+        )
+        thread.start()
+        assert approval_started.wait(1)
+        feedback = client.post(
+            f"/api/v1/sessions/{session_id}/feedback",
+            json={"message": "不能在批准中修改"},
+        )
+        release_approval.set()
+        thread.join(2)
+
+    assert feedback.status_code == 409
+    assert result["approval"].status_code == 200
+    assert result["approval"].json()["status"] == "approved"
 
 
 def test_candidate_must_pass_platform_replay_before_it_can_be_approved(tmp_path: Path) -> None:

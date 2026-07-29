@@ -6,7 +6,7 @@ from typing import Any
 import httpx
 
 
-AI_STATUSES = {"model_running", "ai_rule_pending", "ai_rule_invalid", "ai_result_invalid", "ai_parse_failed"}
+AI_STATUSES = {"model_running", "approving", "ai_rule_pending", "ai_rule_invalid", "ai_result_invalid", "ai_parse_failed"}
 
 
 class AiRecognitionUnavailable(RuntimeError):

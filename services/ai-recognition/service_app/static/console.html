@@ -39,6 +39,7 @@
       const displayValue = (value) => value === null || value === undefined || value === "" ? "-" : escapeHtml(value);
       const statusText = (status) => ({
         model_running: "正在解析",
+        approving: "正在同步规则",
         ai_rule_pending: "等待管理员确认",
         ai_rule_invalid: "规则校验未通过",
         ai_result_invalid: "识别结果需修改",
@@ -121,6 +122,7 @@
       }
       function actions(row) {
         if (row.status === "model_running") return "<p>模型正在解析这一张面单，请稍候……</p>";
+        if (row.status === "approving") return "<p>规则正在校验并同步，请稍候……</p>";
         if (row.status === "approved") return "<p>已确认，新规则已经同步到系统。</p>";
         if (!["ai_rule_pending", "ai_rule_invalid", "ai_result_invalid"].includes(row.status)) return "";
         return [
@@ -149,7 +151,7 @@
             ${actions(row)}
           </article>
         `).join("");
-        if (rows.some((row) => row.status === "model_running")) pollTimer = setTimeout(load, 2000);
+        if (rows.some((row) => ["model_running", "approving"].includes(row.status))) pollTimer = setTimeout(load, 2000);
       }
       function readEditedRows(id) {
         const table = document.querySelector(`#result-${id}`);

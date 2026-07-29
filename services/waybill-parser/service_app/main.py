@@ -379,6 +379,8 @@ def overall_ai_status(diagnostics: list[dict[str, Any]]) -> str:
         return "ai_parse_failed"
     if "model_running" in reasons:
         return "model_running"
+    if "approving" in reasons:
+        return "approving"
     if "ai_result_invalid" in reasons:
         return "ai_result_invalid"
     if "ai_rule_invalid" in reasons:
@@ -420,7 +422,7 @@ def ai_fallback_response(payload: BatchParseRequest, deterministic_reason: str) 
     summary = order_row_draft_summary(parents)
     summary["needs_review_count"] = len(parents)
     summary["pending_rule_pack_count"] = sum(
-        diagnostic["reason"] in {"model_running", "ai_rule_pending", "ai_rule_invalid", "ai_result_invalid"}
+        diagnostic["reason"] in {"model_running", "approving", "ai_rule_pending", "ai_rule_invalid", "ai_result_invalid"}
         for diagnostic in diagnostics
     )
     return {
@@ -670,6 +672,7 @@ def parse_batch(payload: BatchParseRequest) -> dict[str, Any]:
         reasons = {diagnostic["reason"] for diagnostic in diagnostics if diagnostic["reason"]}
         ai_reasons = reasons & {
             "model_running",
+            "approving",
             "ai_rule_pending",
             "ai_rule_invalid",
             "ai_result_invalid",
@@ -689,7 +692,7 @@ def parse_batch(payload: BatchParseRequest) -> dict[str, Any]:
         summary = order_row_draft_summary(parents)
         summary["needs_review_count"] += unresolved_parent_count
         summary["pending_rule_pack_count"] = sum(
-            diagnostic["reason"] in {"model_running", "ai_rule_pending", "ai_rule_invalid", "ai_result_invalid"}
+            diagnostic["reason"] in {"model_running", "approving", "ai_rule_pending", "ai_rule_invalid", "ai_result_invalid"}
             for diagnostic in diagnostics
         )
         return {

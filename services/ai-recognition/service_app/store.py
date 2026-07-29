@@ -26,7 +26,7 @@ class SessionStore:
                     workspace_id INTEGER NOT NULL,
                     task_id INTEGER NOT NULL,
                     raw_record_id INTEGER NOT NULL,
-                    document_sequence INTEGER NOT NULL DEFAULT 1,
+                    document_sequence INTEGER NOT NULL,
                     source_component TEXT NOT NULL,
                     fingerprint TEXT NOT NULL,
                     deterministic_failure_reason TEXT NOT NULL,
@@ -36,6 +36,7 @@ class SessionStore:
                     platform_response TEXT,
                     status TEXT NOT NULL,
                     error TEXT,
+                    generation INTEGER NOT NULL DEFAULT 0,
                     model_calls INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
@@ -49,7 +50,12 @@ class SessionStore:
             if "document_sequence" not in columns:
                 db.execute(
                     "ALTER TABLE recognition_sessions "
-                    "ADD COLUMN document_sequence INTEGER NOT NULL DEFAULT 1"
+                    "ADD COLUMN document_sequence INTEGER NOT NULL DEFAULT 0"
+                )
+            if "generation" not in columns:
+                db.execute(
+                    "ALTER TABLE recognition_sessions "
+                    "ADD COLUMN generation INTEGER NOT NULL DEFAULT 0"
                 )
             db.commit()
 
@@ -94,8 +100,8 @@ class SessionStore:
                     INSERT INTO recognition_sessions(
                         session_id, request_key, workspace_id, task_id, raw_record_id,
                         document_sequence, source_component, fingerprint, deterministic_failure_reason,
-                        sanitized_payload, status, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'model_running', ?, ?)
+                        sanitized_payload, generation, status, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'model_running', ?, ?)
                     """,
                     (
                         session_id,
@@ -157,6 +163,7 @@ class SessionStore:
         self,
         session_id: str,
         *,
+        generation: int,
         candidate: dict[str, Any] | None,
         status: str,
         error: str | None = None,
@@ -166,7 +173,7 @@ class SessionStore:
                 """
                 UPDATE recognition_sessions
                 SET candidate = ?, status = ?, error = ?, model_calls = model_calls + 1, updated_at = ?
-                WHERE session_id = ?
+                WHERE session_id = ? AND generation = ? AND status = 'model_running'
                 """,
                 (
                     json.dumps(candidate, ensure_ascii=False) if candidate is not None else None,
@@ -174,6 +181,7 @@ class SessionStore:
                     error,
                     utc_now(),
                     session_id,
+                    generation,
                 ),
             )
             db.commit()
@@ -183,15 +191,22 @@ class SessionStore:
         return result
 
     def append_feedback(self, session_id: str, message: str) -> dict[str, Any]:
-        session = self.get(session_id)
-        if session is None:
-            raise KeyError(session_id)
-        feedback = [*session["feedback"], message]
         with closing(self.connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT feedback, status FROM recognition_sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(session_id)
+            if row["status"] in {"approved", "rejected", "approving"}:
+                raise ValueError("Recognition session is closed.")
+            feedback = [*json.loads(row["feedback"] or "[]"), message]
             db.execute(
                 """
                 UPDATE recognition_sessions
-                SET feedback = ?, status = 'model_running', error = NULL, updated_at = ?
+                SET feedback = ?, candidate = NULL, status = 'model_running',
+                    error = NULL, generation = generation + 1, updated_at = ?
                 WHERE session_id = ?
                 """,
                 (json.dumps(feedback, ensure_ascii=False), utc_now(), session_id),
@@ -202,6 +217,19 @@ class SessionStore:
             raise KeyError(session_id)
         return result
 
+    def claim_approval(self, session_id: str, generation: int) -> dict[str, Any] | None:
+        with closing(self.connect()) as db:
+            cursor = db.execute(
+                """
+                UPDATE recognition_sessions
+                SET status = 'approving', updated_at = ?
+                WHERE session_id = ? AND generation = ? AND status = 'ai_rule_pending'
+                """,
+                (utc_now(), session_id, generation),
+            )
+            db.commit()
+        return self.get(session_id) if cursor.rowcount == 1 else None
+
     def set_status(
         self,
         session_id: str,
@@ -209,25 +237,37 @@ class SessionStore:
         *,
         platform_response: dict[str, Any] | None = None,
         error: str | None = None,
+        generation: int | None = None,
+        expected_status: str | None = None,
     ) -> dict[str, Any]:
         with closing(self.connect()) as db:
-            db.execute(
-                """
+            conditions = ["session_id = ?"]
+            parameters: list[Any] = [
+                status,
+                json.dumps(platform_response, ensure_ascii=False)
+                if platform_response is not None
+                else None,
+                error,
+                utc_now(),
+                session_id,
+            ]
+            if generation is not None:
+                conditions.append("generation = ?")
+                parameters.append(generation)
+            if expected_status is not None:
+                conditions.append("status = ?")
+                parameters.append(expected_status)
+            cursor = db.execute(
+                f"""
                 UPDATE recognition_sessions
                 SET status = ?, platform_response = ?, error = ?, updated_at = ?
-                WHERE session_id = ?
+                WHERE {' AND '.join(conditions)}
                 """,
-                (
-                    status,
-                    json.dumps(platform_response, ensure_ascii=False)
-                    if platform_response is not None
-                    else None,
-                    error,
-                    utc_now(),
-                    session_id,
-                ),
+                parameters,
             )
             db.commit()
+        if cursor.rowcount != 1:
+            raise ValueError("Recognition session changed before the operation completed.")
         result = self.get(session_id)
         if result is None:
             raise KeyError(session_id)

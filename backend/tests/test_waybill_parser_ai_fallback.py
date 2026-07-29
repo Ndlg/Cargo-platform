@@ -252,6 +252,18 @@ def test_manual_parse_keeps_invalid_ai_rule_editable(monkeypatch) -> None:
     assert body["summary"]["pending_rule_pack_count"] == 1
 
 
+def test_manual_parse_keeps_rule_approval_in_progress(monkeypatch) -> None:
+    app, _rules = load_parser()
+    with fake_ai("approving") as (url, _requests):
+        monkeypatch.setenv("AI_RECOGNITION_URL", url)
+        with TestClient(app) as client:
+            body = parse(client, None, payload(), allow_ai=True)
+
+    assert body["status"] == "approving"
+    assert body["diagnostics"][0]["reason"] == "approving"
+    assert body["summary"]["pending_rule_pack_count"] == 1
+
+
 def test_complete_known_profile_does_not_call_ai(monkeypatch) -> None:
     app, rules = load_parser()
     value = payload()

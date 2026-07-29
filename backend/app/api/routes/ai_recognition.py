@@ -180,7 +180,7 @@ def approve_ai_rule(
                 )
             )
             if replay_record is None:
-                continue
+                raise ValueError("同类型面单的历史确认样本已不可用，未保存新规则。")
             document_sequence = int(learning_record.get("document_sequence") or 1)
             replay = preview_order_row_drafts_with_service(
                 task_id=int(learning_record.get("task_id") or replay_record.task_id or request.task_id),

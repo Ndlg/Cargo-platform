@@ -640,6 +640,41 @@ def test_new_rule_cannot_break_prior_confirmed_sample_of_same_fingerprint(monkey
             for item in persisted.payload["ai_learning_records"]
         ] == ["session-old"]
 
+        prior = db.get(RawCaptureRecord, 101)
+        assert prior is not None
+        prior.is_deleted = True
+        db.commit()
+        try:
+            ai_route.approve_ai_rule(
+                AiRuleApprovalRequest(
+                    session_id="session-new",
+                    workspace_id=1,
+                    task_id=61,
+                    raw_record_id=100,
+                    document_sequence=1,
+                    format_fingerprint=fingerprint,
+                    candidate_rule=candidate_profile(fingerprint, product_path="name"),
+                    candidate_output={
+                        "parents": [{
+                            "source": {"sanitized_payload": {"items": [{"name": "new shoe", "quantity": 1}]}},
+                            "rows": [{
+                                "product": "new shoe",
+                                "sales_attr1": "",
+                                "sales_attr2": "",
+                                "quantity": 1,
+                                "remark": "",
+                            }],
+                        }]
+                    },
+                ),
+                db,
+                "test-secret",
+            )
+        except Exception as exc:
+            assert getattr(exc, "status_code", None) == 422
+        else:
+            raise AssertionError("missing confirmed history must block rule approval")
+
     ai_route.get_settings.cache_clear()
 
 

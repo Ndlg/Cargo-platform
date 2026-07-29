@@ -170,6 +170,7 @@ def create_app(
             "feedback": session["feedback"],
             "platform_response": session["platform_response"],
             "error": session["error"],
+            "generation": session["generation"],
             "model_calls": session["model_calls"],
             "created_at": session["created_at"],
             "updated_at": session["updated_at"],
@@ -223,6 +224,7 @@ def create_app(
                     raise
                 updated = store.set_candidate(
                     session["session_id"],
+                    generation=session["generation"],
                     candidate=result,
                     status="ai_result_invalid",
                     error=(
@@ -244,6 +246,7 @@ def create_app(
                     validation_error = str(exc)[:2000]
             updated = store.set_candidate(
                 session["session_id"],
+                generation=session["generation"],
                 candidate=candidate_payload,
                 status="ai_rule_invalid" if validation_error else "ai_rule_pending",
                 error=validation_error,
@@ -251,6 +254,7 @@ def create_app(
         except Exception as exc:
             updated = store.set_candidate(
                 session["session_id"],
+                generation=session["generation"],
                 candidate=None,
                 status="ai_parse_failed",
                 error=str(exc)[:2000],
@@ -340,7 +344,9 @@ def create_app(
         session = store.get(session_id)
         if session is None:
             raise HTTPException(status_code=404, detail="Recognition session not found.")
-        if session["status"] in {"approved", "rejected"}:
+        if session["document_sequence"] < 1:
+            raise HTTPException(status_code=409, detail="旧会话无法确定所选面单，请重新创建识别会话。")
+        if session["status"] in {"approved", "rejected", "approving"}:
             raise HTTPException(status_code=409, detail="Recognition session is closed.")
         message = request.message.strip() or request.note.strip()
         if request.corrected_rows:
@@ -354,7 +360,10 @@ def create_app(
                 },
                 ensure_ascii=False,
             )
-        updated = store.append_feedback(session_id, message)
+        try:
+            updated = store.append_feedback(session_id, message)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         model_executor.submit(run_model, updated)
         return response_payload(updated)
 
@@ -363,23 +372,43 @@ def create_app(
         session = store.get(session_id)
         if session is None:
             raise HTTPException(status_code=404, detail="Recognition session not found.")
+        if session["document_sequence"] < 1:
+            raise HTTPException(status_code=409, detail="旧会话无法确定所选面单，请重新创建识别会话。")
         if session["status"] != "ai_rule_pending" or not session["candidate"]:
             raise HTTPException(status_code=409, detail="Recognition session has no approvable candidate.")
         if sender is None or not token:
             raise HTTPException(status_code=503, detail="Platform rule approval is not configured.")
-        candidate = session["candidate"]
+        claimed = store.claim_approval(session_id, session["generation"])
+        if claimed is None:
+            raise HTTPException(status_code=409, detail="Recognition session changed before approval.")
+        candidate = claimed["candidate"]
         try:
-            platform_response = sender(platform_rule_payload(session, candidate), token)
+            platform_response = sender(platform_rule_payload(claimed, candidate), token)
         except (ValueError, httpx.HTTPError) as exc:
+            store.set_status(
+                session_id,
+                "ai_rule_pending",
+                error=str(exc)[:2000],
+                generation=claimed["generation"],
+                expected_status="approving",
+            )
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return response_payload(store.set_status(session_id, "approved", platform_response=platform_response))
+        return response_payload(
+            store.set_status(
+                session_id,
+                "approved",
+                platform_response=platform_response,
+                generation=claimed["generation"],
+                expected_status="approving",
+            )
+        )
 
     @app.post("/api/v1/sessions/{session_id}/reject")
     def reject(session_id: str) -> dict[str, Any]:
         session = store.get(session_id)
         if session is None:
             raise HTTPException(status_code=404, detail="Recognition session not found.")
-        if session["status"] == "approved":
+        if session["status"] in {"approved", "approving"}:
             raise HTTPException(status_code=409, detail="Approved recognition session cannot be rejected.")
         return response_payload(store.set_status(session_id, "rejected"))
 
