@@ -17,9 +17,9 @@ items_path、text_path 和 fields 只能写点分隔字段路径，不能写 .sp
 同时生成 candidate_rule。结构化数据只能使用：
 {"strategy":"structured_items_v1","items_path":"数组路径[]","fields":{"product":"相对字段路径","sales_attr1":"相对字段路径","sales_attr2":"相对字段路径","quantity":"相对字段路径","remark":"相对字段路径"}}
 若 ITEM_INFO 为“商品名称 属性1;属性2 【1件】”，文本规则示例为：
-{"strategy":"text_pipeline_v1","text_path":"task.documents[].contents[].data.ITEM_INFO","steps":[{"op":"extract_between","source":"text","start":"【","end":"件】","target":"quantity","consume":true},{"op":"rsplit","source":"text","delimiter":";","targets":["product","sales_attr2"]},{"op":"rsplit","source":"product","delimiter":" ","targets":["product","sales_attr1"]},{"op":"to_positive_int","target":"quantity"}],"defaults":{"remark":"","image_match_text":""}}
+{"strategy":"text_pipeline_v1","text_path":"task.documents[].contents[].data.ITEM_INFO","steps":[{"op":"extract_between","source":"text","start":"【","end":"件】","target":"quantity","consume":true},{"op":"rsplit","source":"text","delimiter":";","targets":["product","sales_attr2"]},{"op":"rsplit","source":"product","delimiter":" ","targets":["product","sales_attr1"]},{"op":"to_positive_int","target":"quantity"}],"defaults":{"remark":""}}
 若 printXML 纯文本为“编号 商品，,属性，尺码*数量”，文本规则示例为：
-{"strategy":"text_pipeline_v1","text_path":"task.documents[].contents[].printXML","steps":[{"op":"split","source":"text","delimiter":"，","targets":["product","sales_attr1","sales_attr2"]},{"op":"split","source":"product","delimiter":" ","targets":["text","product"]},{"op":"trim","target":"sales_attr1","chars":","},{"op":"rsplit","source":"sales_attr2","delimiter":"*","targets":["sales_attr2","quantity"]},{"op":"to_positive_int","target":"quantity"}],"defaults":{"remark":"","image_match_text":""}}
+{"strategy":"text_pipeline_v1","text_path":"task.documents[].contents[].printXML","steps":[{"op":"split","source":"text","delimiter":"，","targets":["product","sales_attr1","sales_attr2"]},{"op":"split","source":"product","delimiter":" ","targets":["text","product"]},{"op":"trim","target":"sales_attr1","chars":","},{"op":"rsplit","source":"sales_attr2","delimiter":"*","targets":["sales_attr2","quantity"]},{"op":"to_positive_int","target":"quantity"}],"defaults":{"remark":""}}
 不得输出 operations、脚本、正则、文件或网络操作。"""
 
 ABSOLUTE_PATH_PATTERN = r"^[A-Za-z0-9_]+(?:\[\])?(?:\.[A-Za-z0-9_]+(?:\[\])?)*$"
@@ -31,7 +31,6 @@ ROW_FIELD_PROPERTIES = {
     "sales_attr2": {"type": "string"},
     "quantity": {"type": "string"},
     "remark": {"type": "string"},
-    "image_match_text": {"type": "string"},
 }
 
 RULE_FIELD_PROPERTIES = {
@@ -51,7 +50,6 @@ TEXT_STATE_FIELDS = [
     "sales_attr2",
     "quantity",
     "remark",
-    "image_match_text",
 ]
 
 TEXT_STEP_SCHEMA = {
@@ -180,7 +178,6 @@ ORDER_ROW_SCHEMA = {
         "sales_attr2",
         "quantity",
         "remark",
-        "image_match_text",
     ],
     "properties": {
         **ROW_FIELD_PROPERTIES,

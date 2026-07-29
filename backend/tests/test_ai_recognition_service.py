@@ -97,13 +97,6 @@ def candidate(product: str = "范74") -> dict[str, Any]:
                         "sales_attr2": "45",
                         "quantity": 1,
                         "remark": "",
-                        "image_match_text": f"{product} 5代白金 45",
-                        "source_trace": {
-                            "product": "task.documents[0].contents[0].data.productName",
-                            "sales_attr1": "task.documents[0].contents[0].data.sku",
-                            "sales_attr2": "task.documents[0].contents[0].data.sku",
-                            "quantity": "task.documents[0].contents[0].data.quantity",
-                        },
                     }
                 ],
             }
@@ -376,6 +369,24 @@ def test_invalid_ai_row_remains_editable_until_admin_corrects_it(tmp_path: Path)
     assert corrected["candidate"]["parents"][0]["rows"][0]["quantity"] == 1
 
 
+def test_field_labels_in_ai_values_are_rejected_as_editable_result(tmp_path: Path) -> None:
+    module = load_ai_service(tmp_path / "import-default.db")
+    invalid = candidate()
+    invalid["parents"][0]["rows"][0]["product"] = "商品是带木one帆布kw"
+    invalid["parents"][0]["rows"][0]["sales_attr1"] = "销售属性1是木村-3M反光"
+    app = module.create_app(
+        model_client=FakeModel(invalid),
+        db_path=tmp_path / "sessions.db",
+    )
+
+    with TestClient(app) as client:
+        session_id = client.post("/api/v1/recognize", json=raw_request()).json()["session_id"]
+        stored = wait_for_session(client, session_id, "ai_result_invalid")
+
+    assert stored["candidate"]["parents"][0]["rows"][0]["product"] == "商品是带木one帆布kw"
+    assert stored["error"] == "AI 返回的字段值包含字段名称，请修改后重新生成规则。"
+
+
 def test_structured_candidate_rule_paths_are_normalized_from_payload(tmp_path: Path) -> None:
     module = load_ai_service(tmp_path / "import-default.db")
     result = candidate()
@@ -585,6 +596,20 @@ def test_ollama_client_requests_schema_constrained_non_thinking_json(tmp_path: P
     assert request["format"]["properties"]["parents"]["maxItems"] == 1
     row_schema = request["format"]["properties"]["parents"]["items"]["properties"]["rows"]["items"]
     assert row_schema["additionalProperties"] is False
+    assert set(row_schema["required"]) == {
+        "product",
+        "sales_attr1",
+        "sales_attr2",
+        "quantity",
+        "remark",
+    }
+    assert set(row_schema["properties"]) == {
+        "product",
+        "sales_attr1",
+        "sales_attr2",
+        "quantity",
+        "remark",
+    }
     assert "字段名称" in row_schema["properties"]["product"]["description"]
     candidate_rule_schema = request["format"]["properties"]["candidate_rule"]
     assert [schema["properties"]["strategy"]["const"] for schema in candidate_rule_schema["oneOf"]] == [

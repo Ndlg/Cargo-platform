@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
 
 MAX_INPUT_BYTES = 2_000_000
@@ -82,14 +83,19 @@ class AiOrderRow(BaseModel):
     sales_attr2: str = Field(default="", max_length=512)
     quantity: int = Field(ge=1, le=100_000)
     remark: str = Field(default="", max_length=1000)
-    image_match_text: str = Field(default="", max_length=2000)
-    source_trace: dict[str, str] = Field(default_factory=dict)
 
-    @field_validator("source_trace")
+    @field_validator("product", "sales_attr1", "sales_attr2", "remark")
     @classmethod
-    def validate_source_trace(cls, value: dict[str, str]) -> dict[str, str]:
-        if len(value) > 20 or any(len(str(key)) > 128 or len(str(path)) > 1000 for key, path in value.items()):
-            raise ValueError("source_trace exceeds limits")
+    def reject_field_label_prefix(cls, value: str, info: ValidationInfo) -> str:
+        labels = {
+            "product": r"(?:商品(?:名称)?|产品(?:名称)?)",
+            "sales_attr1": r"销售属性\s*1",
+            "sales_attr2": r"销售属性\s*2",
+            "remark": r"备注",
+        }
+        label = labels[info.field_name]
+        if re.match(rf"^\s*{label}\s*(?:是|为|[:：])", value):
+            raise ValueError("field value contains its field name")
         return value
 
 

@@ -208,7 +208,7 @@ def create_app(
             )
             try:
                 candidate = AiCandidate.model_validate(result)
-            except ValidationError:
+            except ValidationError as exc:
                 parents = result.get("parents")
                 rows = [
                     row
@@ -223,7 +223,14 @@ def create_app(
                     session["session_id"],
                     candidate=result,
                     status="ai_result_invalid",
-                    error="AI 未完整识别商品或数量，请修改后重新生成规则。",
+                    error=(
+                        "AI 返回的字段值包含字段名称，请修改后重新生成规则。"
+                        if any(
+                            "field value contains its field name" in str(error.get("msg") or "")
+                            for error in exc.errors()
+                        )
+                        else "AI 未完整识别商品或数量，请修改后重新生成规则。"
+                    ),
                 )
                 return response_payload(updated)
             candidate_payload = candidate.model_dump(mode="json")
