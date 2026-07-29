@@ -11,8 +11,8 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse
 import httpx
 
-from .contracts import AiCandidate, FeedbackRequest, RecognizeRequest
-from .fingerprint import structural_fingerprint
+from .contracts import AiCandidate, FeedbackRequest, FingerprintInspectRequest, RecognizeRequest
+from .fingerprint import fingerprint_catalog, inspect_fingerprint, structural_fingerprint
 from .model_client import OllamaModelClient
 from .sanitizer import sanitize_payload
 from .store import SessionStore
@@ -177,6 +177,20 @@ def create_app(
             "service": "ai-recognition",
             "model": getattr(model, "model", "injected"),
         }
+
+    @app.get("/api/v1/fingerprints")
+    def list_fingerprints() -> dict[str, Any]:
+        return {
+            "contract_version": "waybill_fingerprint_catalog_v1",
+            "fingerprints": fingerprint_catalog(),
+        }
+
+    @app.post("/api/v1/fingerprints/inspect")
+    def inspect_waybill_fingerprint(request: FingerprintInspectRequest) -> dict[str, Any]:
+        result = inspect_fingerprint(request.payload, request.source_component)
+        if result is None:
+            raise HTTPException(status_code=422, detail="unsupported_fingerprint")
+        return result
 
     @app.post("/api/v1/recognize")
     def recognize(request: RecognizeRequest) -> dict[str, Any]:

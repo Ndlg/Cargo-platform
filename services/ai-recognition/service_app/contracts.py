@@ -63,6 +63,18 @@ class RecognizeRequest(BaseModel):
         return value
 
 
+class FingerprintInspectRequest(BaseModel):
+    source_component: str = Field(default="", max_length=128)
+    payload: dict[str, Any]
+
+    @field_validator("payload")
+    @classmethod
+    def validate_payload_size(cls, value: dict[str, Any]) -> dict[str, Any]:
+        if len(json.dumps(value, ensure_ascii=False).encode("utf-8")) > MAX_INPUT_BYTES:
+            raise ValueError("payload exceeds 2 MB")
+        return value
+
+
 class AiOrderRow(BaseModel):
     product: str = Field(min_length=1, max_length=512)
     sales_attr1: str = Field(default="", max_length=512)

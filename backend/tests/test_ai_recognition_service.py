@@ -442,3 +442,136 @@ def test_health_console_and_session_list_are_available(tmp_path: Path) -> None:
     assert "确定性规则失败原因" not in console.text
     assert "JSON.stringify(row.candidate" not in console.text
     assert sessions.json() == []
+
+
+def test_fingerprint_catalog_exposes_five_named_code_assets(tmp_path: Path) -> None:
+    module = load_ai_service(tmp_path / "import-default.db")
+    app = module.create_app(model_client=FakeModel(), db_path=tmp_path / "sessions.db")
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/fingerprints")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["contract_version"] == "waybill_fingerprint_catalog_v1"
+    assert [item["code"] for item in payload["fingerprints"]] == [
+        "CN-ITEM-INFO",
+        "CN-PRINT-XML",
+        "CN-CUSTOM-CONTENT",
+        "CN-PACKAGE-ITEMS",
+        "CLOUD-PRODUCT-INFO",
+    ]
+    assert payload["fingerprints"][0]["fields"] == [
+        {
+            "key": "item_info",
+            "label": "商品信息",
+            "path": "contents[].data.ITEM_INFO",
+            "default_selected": True,
+        },
+        {
+            "key": "seller_memo",
+            "label": "卖家备注",
+            "path": "contents[].data.SELLER_MEMO",
+            "default_selected": True,
+        },
+        {
+            "key": "buyer_memo",
+            "label": "买家备注",
+            "path": "contents[].data.BUYER_MEMO",
+            "default_selected": False,
+        },
+        {
+            "key": "item_total_count",
+            "label": "商品总数量",
+            "path": "contents[].data.ITEM_TOTAL_COUNT",
+            "default_selected": True,
+        },
+    ]
+
+
+def test_inspect_item_info_returns_configurable_fields_without_logistics_data(tmp_path: Path) -> None:
+    module = load_ai_service(tmp_path / "import-default.db")
+    app = module.create_app(model_client=FakeModel(), db_path=tmp_path / "sessions.db")
+    document = {
+        "contents": [
+            {"encryptedData": "AES:secret", "addData": {"receiver": {"name": "张三"}}},
+            {
+                "data": {
+                    "ITEM_INFO": "范74 5代白金 45",
+                    "SELLER_MEMO": "发白色",
+                    "BUYER_MEMO": "尽快发货",
+                    "ITEM_TOTAL_COUNT": "2",
+                    "ORDER_ID": "123456789",
+                }
+            },
+        ]
+    }
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/fingerprints/inspect",
+            json={"source_component": "cainiao-cnprint", "payload": document},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["fingerprint_code"] == "CN-ITEM-INFO"
+    assert {item["key"]: item["value"] for item in payload["fields"]} == {
+        "item_info": "范74 5代白金 45",
+        "seller_memo": "发白色",
+        "buyer_memo": "尽快发货",
+        "item_total_count": "2",
+    }
+    assert "张三" not in json.dumps(payload, ensure_ascii=False)
+    assert "123456789" not in json.dumps(payload, ensure_ascii=False)
+
+
+def test_inspect_print_xml_returns_only_human_readable_text(tmp_path: Path) -> None:
+    module = load_ai_service(tmp_path / "import-default.db")
+    app = module.create_app(model_client=FakeModel(), db_path=tmp_path / "sessions.db")
+    document = {
+        "contents": [
+            {
+                "printXML": (
+                    '<?xml version="1.0"?><layout style="overflow:hidden">'
+                    "<text><![CDATA[范33 带木one帆布kw，木村-3M反光，40*1]]></text>"
+                    "<text><![CDATA[白色 42]]></text></layout>"
+                )
+            }
+        ]
+    }
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/fingerprints/inspect",
+            json={"source_component": "cainiao-cnprint", "payload": document},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["fingerprint_code"] == "CN-PRINT-XML"
+    assert payload["fields"] == [
+        {
+            "key": "print_text",
+            "label": "打印文本",
+            "path": "contents[].printXML//text",
+            "default_selected": True,
+            "value": "范33 带木one帆布kw，木村-3M反光，40*1\n白色 42",
+        }
+    ]
+    assert "<?xml" not in json.dumps(payload, ensure_ascii=False)
+    assert "<layout" not in json.dumps(payload, ensure_ascii=False)
+
+
+def test_inspect_unknown_payload_returns_unsupported_fingerprint(tmp_path: Path) -> None:
+    module = load_ai_service(tmp_path / "import-default.db")
+    app = module.create_app(model_client=FakeModel(), db_path=tmp_path / "sessions.db")
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/fingerprints/inspect",
+            json={"source_component": "unknown-printer", "payload": {"data": {"value": "x"}}},
+        )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "unsupported_fingerprint"
