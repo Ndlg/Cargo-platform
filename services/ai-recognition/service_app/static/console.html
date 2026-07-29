@@ -97,7 +97,7 @@
             <td>${cell("sales_attr2", item.sales_attr2)}</td>
             <td>${cell("quantity", item.quantity ?? 1, "number")}</td>
             <td>${cell("remark", item.remark)}</td>
-            ${editable ? '<td><button type="button" onclick="this.closest(\'tr\').remove()">删除</button></td>' : ""}
+            ${editable ? '<td><button type="button" onclick="if (this.closest(\'tbody\').rows.length > 1) this.closest(\'tr\').remove()">删除</button></td>' : ""}
           </tr>`;
         return `
           <div class="result-table">

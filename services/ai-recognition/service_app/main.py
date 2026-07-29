@@ -410,7 +410,16 @@ def create_app(
             raise HTTPException(status_code=404, detail="Recognition session not found.")
         if session["status"] in {"approved", "approving"}:
             raise HTTPException(status_code=409, detail="Approved recognition session cannot be rejected.")
-        return response_payload(store.set_status(session_id, "rejected"))
+        try:
+            rejected = store.set_status(
+                session_id,
+                "rejected",
+                generation=session["generation"],
+                expected_status=session["status"],
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return response_payload(rejected)
 
     @app.get("/console", response_class=HTMLResponse)
     def console() -> HTMLResponse:

@@ -691,12 +691,66 @@ def test_feedback_is_rejected_while_rule_approval_is_running(tmp_path: Path) -> 
             f"/api/v1/sessions/{session_id}/feedback",
             json={"message": "不能在批准中修改"},
         )
+        rejection = client.post(f"/api/v1/sessions/{session_id}/reject")
         release_approval.set()
         thread.join(2)
 
     assert feedback.status_code == 409
+    assert rejection.status_code == 409
     assert result["approval"].status_code == 200
     assert result["approval"].json()["status"] == "approved"
+
+
+def test_reject_cannot_overwrite_concurrently_claimed_approval(tmp_path: Path) -> None:
+    module = load_ai_service(tmp_path / "import-default.db")
+    reject_update_started = Event()
+    release_reject_update = Event()
+    original_set_status = module.SessionStore.set_status
+
+    def delayed_set_status(
+        store,
+        session_id: str,
+        status: str,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        if status == "rejected":
+            reject_update_started.set()
+            release_reject_update.wait(2)
+        return original_set_status(store, session_id, status, **kwargs)
+
+    module.SessionStore.set_status = delayed_set_status
+    app = module.create_app(
+        model_client=FakeModel(),
+        db_path=tmp_path / "sessions.db",
+        internal_token="test-token",
+        approval_sender=lambda payload, _token: (
+            {"status": "valid"} if payload.get("validate_only") else {"status": "activated"}
+        ),
+    )
+    result: dict[str, Any] = {}
+    try:
+        with TestClient(app) as client:
+            session_id = client.post("/api/v1/recognize", json=raw_request()).json()["session_id"]
+            wait_for_session(client, session_id, "ai_rule_pending")
+            thread = Thread(
+                target=lambda: result.update(
+                    rejection=client.post(f"/api/v1/sessions/{session_id}/reject")
+                ),
+                daemon=True,
+            )
+            thread.start()
+            assert reject_update_started.wait(1)
+            approval = client.post(f"/api/v1/sessions/{session_id}/approve")
+            release_reject_update.set()
+            thread.join(2)
+            stored = client.get(f"/api/v1/sessions/{session_id}").json()
+    finally:
+        release_reject_update.set()
+        module.SessionStore.set_status = original_set_status
+
+    assert approval.status_code == 200
+    assert result["rejection"].status_code == 409
+    assert stored["status"] == "approved"
 
 
 def test_candidate_must_pass_platform_replay_before_it_can_be_approved(tmp_path: Path) -> None:
@@ -861,6 +915,7 @@ def test_health_console_and_session_list_are_available(tmp_path: Path) -> None:
     assert 'cell("product", item.product)' in console.text
     assert "添加商品行" in console.text
     assert "删除" in console.text
+    assert "rows.length > 1" in console.text
     assert "confirmAndSync" in console.text
     assert "onclick=\"post('/api/v1/sessions/${row.session_id}/approve')\"" not in console.text
     assert "ai_rule_invalid" in console.text

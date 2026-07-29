@@ -169,9 +169,18 @@ def approve_ai_rule(
             ):
                 continue
             raw_record_id = learning_record.get("raw_record_id")
+            document_sequence = learning_record.get("document_sequence")
             confirmed_rows = comparable_rows({"rows": learning_record.get("confirmed_rows")})
-            if not isinstance(raw_record_id, int) or not confirmed_rows:
-                continue
+            if (
+                not isinstance(raw_record_id, int)
+                or isinstance(raw_record_id, bool)
+                or raw_record_id < 1
+                or not isinstance(document_sequence, int)
+                or isinstance(document_sequence, bool)
+                or document_sequence < 1
+                or not confirmed_rows
+            ):
+                raise ValueError("同类型面单的历史确认样本信息不完整，未保存新规则。")
             replay_record = db.scalar(
                 select(RawCaptureRecord).where(
                     RawCaptureRecord.id == raw_record_id,
@@ -181,7 +190,6 @@ def approve_ai_rule(
             )
             if replay_record is None:
                 raise ValueError("同类型面单的历史确认样本已不可用，未保存新规则。")
-            document_sequence = int(learning_record.get("document_sequence") or 1)
             replay = preview_order_row_drafts_with_service(
                 task_id=int(learning_record.get("task_id") or replay_record.task_id or request.task_id),
                 raw_records=[parser_input_for_document(replay_record, document_sequence)],

@@ -1,3 +1,4 @@
+from copy import deepcopy
 import json
 
 from sqlalchemy import create_engine, select
@@ -524,6 +525,7 @@ def test_new_rule_cannot_break_prior_confirmed_sample_of_same_fingerprint(monkey
     monkeypatch.setenv("AI_RECOGNITION_INTERNAL_TOKEN", "test-secret")
     ai_route.get_settings.cache_clear()
     fingerprint = f"sha256:{'6' * 64}"
+    replayed_old_product = {"value": "broken old shoe"}
     monkeypatch.setattr(
         ai_route,
         "validate_rule_pack_with_service",
@@ -532,7 +534,7 @@ def test_new_rule_cannot_break_prior_confirmed_sample_of_same_fingerprint(monkey
 
     def replay_by_record(**kwargs) -> dict:
         raw_record_id = kwargs["raw_records"][0]["raw_record_id"]
-        product = "new shoe" if raw_record_id == 100 else "broken old shoe"
+        product = "new shoe" if raw_record_id == 100 else replayed_old_product["value"]
         return {
             "contract_version": "order_row_drafts_v1",
             "rows": [
@@ -595,34 +597,35 @@ def test_new_rule_cannot_break_prior_confirmed_sample_of_same_fingerprint(monkey
         )
         db.commit()
         old_pack_id = old_pack.id
+        approval_request = AiRuleApprovalRequest(
+            session_id="session-new",
+            workspace_id=1,
+            task_id=61,
+            raw_record_id=100,
+            document_sequence=1,
+            format_fingerprint=fingerprint,
+            candidate_rule=candidate_profile(fingerprint, product_path="name"),
+            candidate_output={
+                "parents": [
+                    {
+                        "source": {"sanitized_payload": {"items": [{"name": "new shoe", "quantity": 1}]}},
+                        "rows": [
+                            {
+                                "product": "new shoe",
+                                "sales_attr1": "",
+                                "sales_attr2": "",
+                                "quantity": 1,
+                                "remark": "",
+                            }
+                        ],
+                    }
+                ]
+            },
+        )
 
         try:
             ai_route.approve_ai_rule(
-                AiRuleApprovalRequest(
-                    session_id="session-new",
-                    workspace_id=1,
-                    task_id=61,
-                    raw_record_id=100,
-                    document_sequence=1,
-                    format_fingerprint=fingerprint,
-                    candidate_rule=candidate_profile(fingerprint, product_path="name"),
-                    candidate_output={
-                        "parents": [
-                            {
-                                "source": {"sanitized_payload": {"items": [{"name": "new shoe", "quantity": 1}]}},
-                                "rows": [
-                                    {
-                                        "product": "new shoe",
-                                        "sales_attr1": "",
-                                        "sales_attr2": "",
-                                        "quantity": 1,
-                                        "remark": "",
-                                    }
-                                ],
-                            }
-                        ]
-                    },
-                ),
+                approval_request,
                 db,
                 "test-secret",
             )
@@ -646,27 +649,7 @@ def test_new_rule_cannot_break_prior_confirmed_sample_of_same_fingerprint(monkey
         db.commit()
         try:
             ai_route.approve_ai_rule(
-                AiRuleApprovalRequest(
-                    session_id="session-new",
-                    workspace_id=1,
-                    task_id=61,
-                    raw_record_id=100,
-                    document_sequence=1,
-                    format_fingerprint=fingerprint,
-                    candidate_rule=candidate_profile(fingerprint, product_path="name"),
-                    candidate_output={
-                        "parents": [{
-                            "source": {"sanitized_payload": {"items": [{"name": "new shoe", "quantity": 1}]}},
-                            "rows": [{
-                                "product": "new shoe",
-                                "sales_attr1": "",
-                                "sales_attr2": "",
-                                "quantity": 1,
-                                "remark": "",
-                            }],
-                        }]
-                    },
-                ),
+                approval_request,
                 db,
                 "test-secret",
             )
@@ -674,6 +657,23 @@ def test_new_rule_cannot_break_prior_confirmed_sample_of_same_fingerprint(monkey
             assert getattr(exc, "status_code", None) == 422
         else:
             raise AssertionError("missing confirmed history must block rule approval")
+
+        prior = db.get(RawCaptureRecord, 101)
+        assert prior is not None
+        prior.is_deleted = False
+        persisted = db.get(RecognitionRulePack, old_pack_id)
+        assert persisted is not None
+        payload = deepcopy(persisted.payload)
+        payload["ai_learning_records"][0].pop("document_sequence")
+        persisted.payload = payload
+        db.commit()
+        replayed_old_product["value"] = "old shoe"
+        try:
+            ai_route.approve_ai_rule(approval_request, db, "test-secret")
+        except Exception as exc:
+            assert getattr(exc, "status_code", None) == 422
+        else:
+            raise AssertionError("confirmed history without document sequence must block approval")
 
     ai_route.get_settings.cache_clear()
 
