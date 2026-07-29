@@ -88,7 +88,7 @@ docker compose -f ops/validation-stages/20260728-night/docker-compose.yml up -d
 
 - backend：`cargo-platform-validation-backend:ai-5d5ec7b`
 - parser：`cargo-platform-validation-parser:ai-1cb51cc`
-- UI：`cargo-platform-validation-ui:ai-287ca3b`
+- UI：`cargo-platform-validation-ui:ai-7ac475c`
 - AI 识别：`cargo-platform-ai-recognition:ai-98ebbd8`
 - 本地模型：`qwen3.5:4b-q4_K_M`
 

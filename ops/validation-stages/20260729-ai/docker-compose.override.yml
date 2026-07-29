@@ -50,7 +50,7 @@ services:
       AI_RECOGNITION_INTERNAL_TOKEN: ${AI_RECOGNITION_INTERNAL_TOKEN:?set AI_RECOGNITION_INTERNAL_TOKEN}
 
   ui:
-    image: cargo-platform-validation-ui:ai-287ca3b
+    image: cargo-platform-validation-ui:ai-7ac475c
 
 volumes:
   validation-data:
