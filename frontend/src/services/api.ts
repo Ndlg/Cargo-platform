@@ -465,6 +465,7 @@ export interface RecognitionRulePackExportResponse extends ApiRecord {
 export interface TenantFingerprintField {
   key: string
   label: string
+  path: string
   default_selected: boolean
 }
 

@@ -13,6 +13,11 @@ const savingCode = ref('')
 const error = ref('')
 const fingerprints = ref<TenantFingerprintConfig[]>([])
 
+function originalFieldName(field: TenantFingerprintConfig['candidate_fields'][number]) {
+  const rawPath = field.path.split('//')[0]
+  return rawPath.split('.').pop()?.replace(/\[\]$/, '') || field.key
+}
+
 async function loadConfigs() {
   loading.value = true
   error.value = ''
@@ -97,7 +102,8 @@ onMounted(loadConfigs)
             :value="field.key"
             border
           >
-            {{ field.label }}
+            <span>{{ field.label }}</span>
+            <code>{{ originalFieldName(field) }}</code>
           </el-checkbox>
         </el-checkbox-group>
       </article>
@@ -162,6 +168,17 @@ p {
 .field-grid :deep(.el-checkbox) {
   width: 100%;
   margin: 0;
+}
+
+.field-grid :deep(.el-checkbox__label) {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.field-grid code {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
 }
 
 @media (max-width: 720px) {
