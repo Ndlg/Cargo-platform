@@ -342,7 +342,19 @@ def create_app(
             raise HTTPException(status_code=404, detail="Recognition session not found.")
         if session["status"] in {"approved", "rejected"}:
             raise HTTPException(status_code=409, detail="Recognition session is closed.")
-        updated = store.append_feedback(session_id, request.message.strip())
+        message = request.message.strip() or request.note.strip()
+        if request.corrected_rows:
+            message = json.dumps(
+                {
+                    "corrected_rows": [
+                        row.model_dump(mode="json")
+                        for row in request.corrected_rows
+                    ],
+                    "note": request.note.strip() or request.message.strip(),
+                },
+                ensure_ascii=False,
+            )
+        updated = store.append_feedback(session_id, message)
         model_executor.submit(run_model, updated)
         return response_payload(updated)
 

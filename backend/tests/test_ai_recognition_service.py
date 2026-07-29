@@ -526,6 +526,38 @@ def test_admin_corrected_rows_are_preserved_when_rule_is_regenerated(tmp_path: P
     assert model.calls[-1]["feedback"] == [message]
 
 
+def test_structured_correction_accepts_many_rows_without_message_limit(tmp_path: Path) -> None:
+    module = load_ai_service(tmp_path / "import-default.db")
+    model = FakeModel()
+    app = module.create_app(model_client=model, db_path=tmp_path / "sessions.db")
+    corrected_rows = [
+        {
+            "product": f"商品{i}-" + "长名称" * 30,
+            "sales_attr1": "颜色",
+            "sales_attr2": str(35 + i),
+            "quantity": 1,
+            "remark": "",
+        }
+        for i in range(30)
+    ]
+
+    with TestClient(app) as client:
+        session_id = client.post("/api/v1/recognize", json=raw_request()).json()["session_id"]
+        wait_for_session(client, session_id, "ai_rule_pending")
+        response = client.post(
+            f"/api/v1/sessions/{session_id}/feedback",
+            json={"corrected_rows": corrected_rows, "note": "管理员核对"},
+        )
+        stored = wait_for_session(client, session_id, "ai_rule_pending")
+
+    assert response.status_code == 200
+    assert stored["candidate"]["parents"][0]["rows"] == corrected_rows
+    assert json.loads(stored["feedback"][-1]) == {
+        "corrected_rows": corrected_rows,
+        "note": "管理员核对",
+    }
+
+
 def test_candidate_must_pass_platform_replay_before_it_can_be_approved(tmp_path: Path) -> None:
     module = load_ai_service(tmp_path / "import-default.db")
     validations: list[dict[str, Any]] = []
@@ -686,7 +718,10 @@ def test_health_console_and_session_list_are_available(tmp_path: Path) -> None:
     assert all(label in console.text for label in ("商品", "销售属性1", "销售属性2", "数量", "备注"))
     assert 'data-field="${field}"' in console.text
     assert 'cell("product", item.product)' in console.text
-    assert "按修改结果重新生成规则" in console.text
+    assert "添加商品行" in console.text
+    assert "删除" in console.text
+    assert "confirmAndSync" in console.text
+    assert "onclick=\"post('/api/v1/sessions/${row.session_id}/approve')\"" not in console.text
     assert "ai_rule_invalid" in console.text
     assert "ai_result_invalid" in console.text
     assert "本次传给 AI 的字段" in console.text

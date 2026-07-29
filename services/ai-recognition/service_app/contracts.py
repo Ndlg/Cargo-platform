@@ -4,7 +4,7 @@ import json
 import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, ValidationInfo, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
 
 MAX_INPUT_BYTES = 2_000_000
@@ -125,4 +125,12 @@ class AiCandidate(BaseModel):
 
 
 class FeedbackRequest(BaseModel):
-    message: str = Field(min_length=1, max_length=2000)
+    message: str = Field(default="", max_length=2000)
+    corrected_rows: list[AiOrderRow] | None = Field(default=None, min_length=1, max_length=100)
+    note: str = Field(default="", max_length=2000)
+
+    @model_validator(mode="after")
+    def require_feedback(self) -> FeedbackRequest:
+        if not self.message.strip() and not self.note.strip() and not self.corrected_rows:
+            raise ValueError("feedback is empty")
+        return self
