@@ -21,6 +21,53 @@ from .store import SessionStore
 ApprovalSender = Callable[[dict[str, Any], str], dict[str, Any]]
 
 
+def _dict_nodes(value: Any, path: tuple[str, ...] = ()) -> list[tuple[str, dict[str, Any]]]:
+    nodes: list[tuple[str, dict[str, Any]]] = []
+    if isinstance(value, dict):
+        if path:
+            nodes.append((".".join(path), value))
+        for key, item in value.items():
+            nodes.extend(_dict_nodes(item, (*path, str(key))))
+    elif isinstance(value, list) and path:
+        list_path = (*path[:-1], f"{path[-1]}[]")
+        for item in value[:10]:
+            nodes.extend(_dict_nodes(item, list_path))
+    return nodes
+
+
+def _has_relative_path(value: dict[str, Any], path: str) -> bool:
+    current: Any = value
+    for part in path.split("."):
+        if not isinstance(current, dict) or part not in current:
+            return False
+        current = current[part]
+    return True
+
+
+def normalize_candidate_rule(result: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    rule = result.get("candidate_rule")
+    if not isinstance(rule, dict) or rule.get("strategy") != "structured_items_v1":
+        return result
+    fields = rule.get("fields")
+    if not isinstance(fields, dict):
+        return result
+
+    normalized_fields = {
+        str(field): str(path).removeprefix("sanitized_payload.").lstrip(".")
+        for field, path in fields.items()
+    }
+    matching_paths = {
+        path
+        for path, item in _dict_nodes(payload)
+        if normalized_fields
+        and all(_has_relative_path(item, field_path) for field_path in normalized_fields.values())
+    }
+    normalized_rule = {**rule, "fields": normalized_fields}
+    if len(matching_paths) == 1:
+        normalized_rule["items_path"] = matching_paths.pop()
+    return {**result, "candidate_rule": normalized_rule}
+
+
 def default_approval_sender(platform_url: str) -> ApprovalSender:
     endpoint = f"{platform_url.rstrip('/')}/internal/ai-recognition/approve"
 
@@ -89,6 +136,7 @@ def create_app(
                 session["fingerprint"],
                 session["feedback"],
             )
+            result = normalize_candidate_rule(result, session["sanitized_payload"])
             candidate = AiCandidate.model_validate(result).model_copy(
                 update={"fingerprint": session["fingerprint"]}
             )

@@ -198,6 +198,36 @@ def test_invalid_model_candidate_becomes_business_failure(tmp_path: Path) -> Non
     assert response.json()["candidate"] is None
 
 
+def test_structured_candidate_rule_paths_are_normalized_from_payload(tmp_path: Path) -> None:
+    module = load_ai_service(tmp_path / "import-default.db")
+    result = candidate()
+    result["candidate_rule"] = {
+        "strategy": "structured_items_v1",
+        "items_path": "[0]",
+        "fields": {
+            "product": ".productName",
+            "sales_attr1": ".sku",
+            "quantity": ".quantity",
+        },
+    }
+    app = module.create_app(
+        model_client=FakeModel(result),
+        db_path=tmp_path / "sessions.db",
+    )
+
+    with TestClient(app) as client:
+        response = client.post("/api/v1/recognize", json=raw_request())
+
+    assert response.json()["status"] == "ai_rule_pending"
+    rule = response.json()["candidate"]["candidate_rule"]
+    assert rule["items_path"] == "task.documents[].contents[].data"
+    assert rule["fields"] == {
+        "product": "productName",
+        "sales_attr1": "sku",
+        "quantity": "quantity",
+    }
+
+
 def test_feedback_reruns_model_and_persists_session(tmp_path: Path) -> None:
     module = load_ai_service(tmp_path / "import-default.db")
     database = tmp_path / "sessions.db"
