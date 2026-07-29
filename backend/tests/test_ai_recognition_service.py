@@ -1204,6 +1204,24 @@ def test_ollama_client_requests_schema_constrained_non_thinking_json(tmp_path: P
         and "text" not in schema["properties"].get("targets", {}).get("items", {}).get("enum", [])
         for schema in structured_step_schemas
     )
+    split_schema = next(
+        schema for schema in structured_step_schemas if "rsplit" in schema["properties"]["op"].get("enum", [])
+    )
+    assert split_schema["properties"]["delimiter"] == {"type": "string", "minLength": 1, "maxLength": 64}
+    assert split_schema["properties"]["targets"]["uniqueItems"] is True
+    extract_schema = next(
+        schema for schema in structured_step_schemas if schema["properties"]["op"].get("const") == "extract_between"
+    )
+    assert extract_schema["properties"]["start"] == {"type": "string", "minLength": 1, "maxLength": 64}
+    assert extract_schema["properties"]["end"] == {"type": "string", "minLength": 1, "maxLength": 64}
+    trim_schema = next(schema for schema in structured_step_schemas if schema["properties"]["op"].get("const") == "trim")
+    assert trim_schema["properties"]["chars"] == {"type": "string", "maxLength": 64}
+    strip_schema = next(
+        schema
+        for schema in structured_step_schemas
+        if "strip_suffix" in schema["properties"]["op"].get("enum", [])
+    )
+    assert strip_schema["properties"]["literal"] == {"type": "string", "minLength": 1, "maxLength": 64}
     text_step_schema = candidate_rule_schema["oneOf"][1]["properties"]["steps"]["items"]["oneOf"]
     extract_schema = next(
         schema for schema in text_step_schema if schema["properties"]["op"].get("const") == "extract_between"

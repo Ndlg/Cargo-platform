@@ -67,11 +67,12 @@ def step_schema(state_fields: list[str]) -> dict[str, Any]:
             "properties": {
                 "op": {"type": "string", "enum": ["split", "rsplit"]},
                 "source": {"type": "string", "enum": state_fields},
-                "delimiter": {"type": "string"},
+                "delimiter": {"type": "string", "minLength": 1, "maxLength": 64},
                 "targets": {
                     "type": "array",
                     "minItems": 2,
                     "maxItems": 10,
+                    "uniqueItems": True,
                     "items": {"type": "string", "enum": state_fields},
                 },
             },
@@ -83,8 +84,8 @@ def step_schema(state_fields: list[str]) -> dict[str, Any]:
             "properties": {
                 "op": {"const": "extract_between"},
                 "source": {"type": "string", "enum": state_fields},
-                "start": {"type": "string"},
-                "end": {"type": "string"},
+                "start": {"type": "string", "minLength": 1, "maxLength": 64},
+                "end": {"type": "string", "minLength": 1, "maxLength": 64},
                 "target": {"type": "string", "enum": state_fields},
                 "consume": {"type": "boolean"},
                 "include_delimiters": {"type": "boolean"},
@@ -97,7 +98,7 @@ def step_schema(state_fields: list[str]) -> dict[str, Any]:
             "properties": {
                 "op": {"const": "trim"},
                 "target": {"type": "string", "enum": state_fields},
-                "chars": {"type": "string"},
+                "chars": {"type": "string", "maxLength": 64},
             },
         },
         {
@@ -107,7 +108,7 @@ def step_schema(state_fields: list[str]) -> dict[str, Any]:
             "properties": {
                 "op": {"type": "string", "enum": ["strip_prefix", "strip_suffix"]},
                 "target": {"type": "string", "enum": state_fields},
-                "literal": {"type": "string"},
+                "literal": {"type": "string", "minLength": 1, "maxLength": 64},
             },
         },
         {
