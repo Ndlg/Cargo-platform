@@ -37,6 +37,18 @@ const selectedTask = computed(() => sortedTasks.value.find((task) => task.id ===
 const allRows = computed(() => drafts.value?.rows ?? [])
 const reviewRows = computed(() => allRows.value.filter((row) => row.status === 'needs_review'))
 const rulePackMissing = computed(() => drafts.value?.status === 'rule_pack_missing')
+const aiStatus = computed(() =>
+  ['ai_rule_pending', 'ai_unavailable', 'ai_parse_failed'].includes(drafts.value?.status ?? '')
+    ? drafts.value?.status ?? ''
+    : '',
+)
+const aiSessionUrl = computed(() => drafts.value?.ai_sessions?.find((item) => item.console_url)?.console_url ?? '')
+const aiStatusText = computed(() => {
+  if (aiStatus.value === 'ai_rule_pending') return '新格式待管理员确认'
+  if (aiStatus.value === 'ai_unavailable') return 'AI 识别服务不可用，已固化规则仍可继续使用'
+  if (aiStatus.value === 'ai_parse_failed') return 'AI 未能生成完整候选规则'
+  return ''
+})
 const activeRulePackName = computed(() => drafts.value?.recognition_rule_pack?.name ?? '')
 const parentCount = computed(() => drafts.value?.summary.parent_waybill_count ?? waybillCountForTask(selectedTask.value))
 const childCount = computed(() => drafts.value?.summary.child_waybill_count ?? 0)
@@ -189,6 +201,10 @@ function emptyText(value: string | number | null | undefined): string {
   return String(value)
 }
 
+function openAiSession() {
+  if (aiSessionUrl.value) window.open(aiSessionUrl.value, '_blank', 'noopener,noreferrer')
+}
+
 async function loadTasks() {
   const records = await getRecords('/capture-tasks?limit=2000&include_waybill_counts=false')
   captureTasks.value = records as CaptureTaskRecord[]
@@ -310,6 +326,18 @@ onMounted(load)
   </section>
 
   <el-alert v-if="error" :closable="false" :title="error" type="error" />
+  <el-alert
+    v-else-if="aiStatus"
+    :closable="false"
+    :title="aiStatusText"
+    :type="aiStatus === 'ai_rule_pending' ? 'warning' : 'error'"
+    show-icon
+  >
+    <template #default>
+      当前结果不会进入商品匹配或正常导出。
+      <el-button v-if="aiSessionUrl" link type="primary" @click="openAiSession">查看 AI 识别会话</el-button>
+    </template>
+  </el-alert>
   <el-alert
     v-else-if="rulePackMissing"
     :closable="false"

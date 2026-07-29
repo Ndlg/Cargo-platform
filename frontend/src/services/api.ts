@@ -333,6 +333,14 @@ export interface OrderRowDraftsResponse extends ApiRecord {
   rule_pack_required?: boolean
   message?: string
   recognition_rule_pack?: RecognitionRulePackSummary | null
+  ai_sessions?: Array<{
+    session_id: string
+    status: string
+    console_url?: string
+    fingerprint?: string
+    deterministic_failure_reason?: string
+    error?: string
+  }>
   summary: {
     parent_waybill_count: number
     child_waybill_count: number

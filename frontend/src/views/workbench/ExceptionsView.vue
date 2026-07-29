@@ -5,10 +5,12 @@ import { Refresh, Right } from '@element-plus/icons-vue'
 
 import {
   getCaptureTaskRecognitionPreview,
+  getOrderRowDrafts,
   getRecords,
   type CaptureTaskRecord,
   type RecognitionPreviewResponse,
   type RecognitionPreviewRow,
+  type OrderRowDraftsResponse,
 } from '../../services/api'
 import { useSessionStore } from '../../stores/session'
 
@@ -101,10 +103,23 @@ const SELECTED_TASK_STORAGE_KEY = 'cargo-platform-exceptions-task-id'
 const captureTasks = ref<CaptureTaskRecord[]>([])
 const selectedTaskId = ref<number | null>(null)
 const recognitionPreview = ref<RecognitionPreviewResponse | null>(null)
+const orderDrafts = ref<OrderRowDraftsResponse | null>(null)
 const loading = ref(false)
 const previewLoading = ref(false)
 const error = ref('')
 const statusFilter = ref<'all' | ExceptionStatus>('all')
+const aiStatus = computed(() =>
+  ['ai_rule_pending', 'ai_unavailable', 'ai_parse_failed'].includes(orderDrafts.value?.status ?? '')
+    ? orderDrafts.value?.status ?? ''
+    : '',
+)
+const aiSessionUrl = computed(() => orderDrafts.value?.ai_sessions?.find((item) => item.console_url)?.console_url ?? '')
+const aiStatusText = computed(() => {
+  if (aiStatus.value === 'ai_rule_pending') return '新格式待管理员确认'
+  if (aiStatus.value === 'ai_unavailable') return 'AI 识别服务不可用，已固化规则仍可继续使用'
+  if (aiStatus.value === 'ai_parse_failed') return 'AI 未能生成完整候选规则'
+  return ''
+})
 
 const sortedTasks = computed(() => [...captureTasks.value].sort((a, b) => b.id - a.id))
 const selectedTask = computed(
@@ -304,6 +319,10 @@ function goToRepair(row: RecognitionPreviewRow) {
   if (target) void router.push(target)
 }
 
+function openAiSession() {
+  if (aiSessionUrl.value) window.open(aiSessionUrl.value, '_blank', 'noopener,noreferrer')
+}
+
 async function loadRecognitionPreview() {
   if (!selectedTaskId.value) {
     recognitionPreview.value = null
@@ -312,7 +331,12 @@ async function loadRecognitionPreview() {
   previewLoading.value = true
   error.value = ''
   try {
-    recognitionPreview.value = await getCaptureTaskRecognitionPreview(selectedTaskId.value)
+    const [preview, drafts] = await Promise.all([
+      getCaptureTaskRecognitionPreview(selectedTaskId.value),
+      getOrderRowDrafts(selectedTaskId.value, { limit: 5000 }),
+    ])
+    recognitionPreview.value = preview
+    orderDrafts.value = drafts
   } catch (err) {
     error.value = err instanceof Error ? err.message : '异常明细加载失败'
   } finally {
@@ -343,6 +367,7 @@ watch(
   () => {
     selectedTaskId.value = null
     recognitionPreview.value = null
+    orderDrafts.value = null
     void load()
   },
 )
@@ -391,6 +416,18 @@ onMounted(load)
   </section>
 
   <el-alert v-if="error" :closable="false" :title="error" type="error" />
+  <el-alert
+    v-else-if="aiStatus"
+    :closable="false"
+    :title="aiStatusText"
+    :type="aiStatus === 'ai_rule_pending' ? 'warning' : 'error'"
+    show-icon
+  >
+    <template #default>
+      当前面单保留为明确异常，不会进入正常导出。
+      <el-button v-if="aiSessionUrl" link type="primary" @click="openAiSession">查看 AI 识别会话</el-button>
+    </template>
+  </el-alert>
 
   <section class="stat-grid">
     <div class="stat-tile">
