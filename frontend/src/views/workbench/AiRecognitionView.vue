@@ -29,15 +29,6 @@ const error = ref('')
 const consoleUrl = ref('')
 const currentSessionLabel = ref('')
 const sessionError = ref('')
-const productSourceFields = new Set([
-  'iteminfo', 'itemdetail', 'itemname', 'itemtitle', 'simplename',
-  'product', 'productinfo', 'productname', 'producttitle',
-  'goods', 'goodsinfo', 'goodsname', 'goodstitle',
-  'sku', 'skuname', 'skufullname', 'spec', 'specname', 'specsimplename',
-  'color', 'colour', 'size', 'quantity', 'qty',
-  'customproducttext', 'customsalesattr1text', 'customsalesattr2text', 'customquantitytext',
-  '商品', '商品信息', '商品名称', '款式', '规格', '颜色', '尺码', '数量',
-])
 
 const sessionStatusText = computed(() => {
   if (startingSampleId.value) return '正在创建会话'
@@ -125,19 +116,6 @@ function reasonLabel(reason: string): string {
     missing_quantity: '未读到数量',
   }
   return labels[reason] ?? reason
-}
-
-function productText(item: QueueItem): string {
-  const lines = item.text_blocks
-    .filter((block) => block.block_kind !== 'derived_child')
-    .filter((block) => {
-      const fields = (block.source_path || '').replace(/\[\d+\]/g, '').split('.')
-      const field = fields[fields.length - 1] || ''
-      return productSourceFields.has(field.replace(/[^0-9a-z\u4e00-\u9fff]/gi, '').toLowerCase())
-    })
-    .map((block) => block.text.trim())
-    .filter(Boolean)
-  return [...new Set(lines)].join('\n')
 }
 
 async function loadTasks() {
@@ -317,7 +295,8 @@ onBeforeUnmount(() => window.removeEventListener('message', handleConsoleMessage
             <strong>面单 {{ item.parentSequence }}</strong>
             <el-tag type="warning">{{ reasonLabel(item.reason) }}</el-tag>
           </div>
-          <p>{{ productText(item) || '这张面单没有可安全展示的商品文字' }}</p>
+          <p>{{ item.sample_text || '这张面单没有可展示的原文' }}</p>
+          <small>{{ item.source_component || '未知打印平台' }}</small>
         </div>
         <el-button
           :loading="startingSampleId === item.sample_id"
