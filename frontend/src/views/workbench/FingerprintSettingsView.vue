@@ -53,13 +53,13 @@ onMounted(loadConfigs)
     <header class="page-header">
       <div>
         <h1>面单指纹配置</h1>
-        <p>选择每种已授权面单格式中允许展示并提供给 AI 解析的字段。</p>
+        <p>保存每种已授权面单格式的字段选择。</p>
       </div>
       <el-button @click="loadConfigs">刷新</el-button>
     </header>
 
     <el-alert
-      title="这里仅调整 AI 输入字段，不会修改已经保存的识别规则。"
+      title="配置独立保存，不会修改现有识别规则；本阶段尚未接入 AI 解析输入。"
       type="info"
       :closable="false"
       show-icon
