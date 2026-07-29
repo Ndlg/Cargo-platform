@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from .fingerprint import _print_text
+
 
 SENSITIVE_KEY_PARTS = {
     "address",
@@ -104,6 +106,10 @@ def sanitize_payload(value: Any, *, depth: int = 0, item_context: bool = False) 
         for index, (key, item) in enumerate(value.items()):
             if index >= 200:
                 break
+            if normalized_key(key) == "printxml" and isinstance(item, str):
+                if text := _print_text({"printXML": item}):
+                    sanitized[str(key)[:256]] = text
+                continue
             if sensitive_key(key):
                 continue
             child_context = item_context or item_container_key(key)

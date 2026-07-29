@@ -212,6 +212,9 @@ def test_recognize_sanitizes_pii_and_reuses_identical_session(tmp_path: Path) ->
     content["encryptedData"] = "AES:opaque-secret"
     content["templateURL"] = "https://example.invalid/template"
     content["addData"] = {"sender": {"name": "某店铺"}}
+    content["printXML"] = (
+        "<layout><text><![CDATA[范33 带木one帆布kw，木村-3M反光，40*1]]></text></layout>"
+    )
     content["data"]["SHOP_NAME"] = "某店铺"
     content["data"]["ITEM_INFO"] = "范74 5代白金 45 【1件】"
 
@@ -239,6 +242,8 @@ def test_recognize_sanitizes_pii_and_reuses_identical_session(tmp_path: Path) ->
     assert "某店铺" not in sent
     assert "范74" in sent
     assert "ITEM_INFO" in sent
+    assert "范33 带木one帆布kw，木村-3M反光，40*1" in sent
+    assert "<layout>" not in sent
 
 
 def test_rejected_identical_request_starts_a_new_session(tmp_path: Path) -> None:

@@ -9,6 +9,7 @@ from service_app.order_row_engine import (
     OrderRowDraft,
     ParentWaybillDraft,
     business_parent_label,
+    print_xml_text,
     text_value,
     values_at_structured_path,
 )
@@ -246,6 +247,11 @@ def positive_int(value: Any) -> int | None:
     return int(text) if text.isdigit() and int(text) > 0 else None
 
 
+def pipeline_text_value(value: Any) -> str:
+    text = text_value(value)
+    return print_xml_text(text) or text
+
+
 def row_from_values(
     values: dict[str, Any],
     traces: dict[str, str],
@@ -405,9 +411,9 @@ def text_parent(
 ) -> ParentWaybillDraft:
     parent_label = business_parent_label(source_index, raw_record_id, parent_sequence=parent_sequence)
     text_values = [
-        (text_value(value), path)
+        (text, path)
         for value, path in values_at_structured_path(payload, profile["text_path"])
-        if text_value(value)
+        if (text := pipeline_text_value(value))
     ]
     items: list[tuple[str, str]] = []
     item_split = profile.get("item_split")

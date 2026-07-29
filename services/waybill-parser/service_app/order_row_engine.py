@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 import re
 from typing import Any
+from xml.etree import ElementTree
 
 from service_app.douyin_product_info import (
     compact_spaces,
@@ -78,6 +79,25 @@ ATTRIBUTE_SUFFIX_TERMS = tuple(
         reverse=True,
     )
 )
+
+
+def print_xml_text(value: Any) -> str:
+    xml = text_value(value)
+    if not xml:
+        return ""
+    try:
+        root = ElementTree.fromstring(xml)
+        blocks = [
+            compact_spaces("".join(element.itertext()))
+            for element in root.iter()
+            if element.tag.rsplit("}", 1)[-1] == "text"
+        ]
+    except ElementTree.ParseError:
+        blocks = [
+            compact_spaces(item)
+            for item in re.findall(r"<!\[CDATA\[(.*?)\]\]>", xml, re.DOTALL)
+        ]
+    return "\n".join(block for block in blocks if block)
 
 
 @dataclass(frozen=True)
@@ -1277,11 +1297,7 @@ def iter_content_data(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 continue
             print_xml = content.get("printXML")
             if isinstance(print_xml, str):
-                cdata_values = [
-                    compact_spaces(value)
-                    for value in re.findall(r"<!\[CDATA\[(.*?)\]\]>", print_xml, re.DOTALL)
-                ]
-                business_text = "\n".join(value for value in cdata_values if value)
+                business_text = print_xml_text(print_xml)
                 if business_text:
                     content_data.append({"productShortInfo": business_text})
     return content_data

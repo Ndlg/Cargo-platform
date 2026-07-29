@@ -251,6 +251,60 @@ def test_text_pipeline_uses_literal_operations_and_multiple_item_lines() -> None
     ]
 
 
+def test_text_pipeline_reads_plain_text_from_print_xml() -> None:
+    app, rules = load_parser()
+    payload = {
+        "task": {
+            "documents": [
+                {
+                    "contents": [
+                        {
+                            "printXML": (
+                                "<layout><text><![CDATA["
+                                "范33 带木one帆布kw，木村-3M反光，40*1"
+                                "]]></text></layout>"
+                            )
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+    profile = {
+        "fingerprint": rules.structural_fingerprint(payload, "cainiao-cnprint"),
+        "strategy": "text_pipeline_v1",
+        "text_path": "task.documents[].contents[].printXML",
+        "steps": [
+            {"op": "rsplit", "source": "text", "delimiter": "*", "targets": ["text", "quantity"]},
+            {"op": "to_positive_int", "target": "quantity"},
+            {"op": "rsplit", "source": "text", "delimiter": "，", "targets": ["text", "sales_attr2"]},
+            {"op": "split", "source": "text", "delimiter": " ", "targets": ["product", "sales_attr1"]},
+        ],
+    }
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/parse/batch",
+            json={
+                "task_id": 61,
+                "raw_records": [raw_record(908, payload)],
+                "rule_pack": declarative_pack([profile]),
+            },
+        )
+
+    body = response.json()
+    assert body["status"] == "parsed"
+    assert [
+        (
+            row["product"],
+            row["sales_attr1"],
+            row["sales_attr2"],
+            row["quantity"],
+        )
+        for row in body["rows"]
+    ] == [("范33", "带木one帆布kw，木村-3M反光", "40", 1)]
+
+
 def test_rule_pack_validation_rejects_regex_script_and_unbounded_paths() -> None:
     app, _rules = load_parser()
     profiles = [
