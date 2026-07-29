@@ -23,6 +23,18 @@ def _xml(text: str) -> dict[str, object]:
     }
 
 
+def _xml_lines(*lines: str) -> dict[str, object]:
+    return {
+        "contents": [
+            {
+                "printXML": "<layout>"
+                + "".join(f"<text><![CDATA[{line}]]></text>" for line in lines)
+                + "</layout>",
+            }
+        ]
+    }
+
+
 def _package(items: list[dict[str, object]], **extra: object) -> dict[str, object]:
     return {
         "contents": [
@@ -52,6 +64,28 @@ def test_business_text_fingerprint_ignores_values_but_keeps_layout() -> None:
     )
     assert business_shape_fingerprint(xml_a, "cainiao-cnprint") != (
         business_shape_fingerprint(xml_other_layout, "cainiao-cnprint")
+    )
+
+
+def test_business_text_fingerprint_keeps_newline_and_space_layout() -> None:
+    space_layout = _xml_lines("范33 帆布鞋，42")
+    space_layout_new_values = _xml_lines("范74 运动鞋，39")
+    newline_layout = _xml_lines("范74\n运动鞋，39")
+
+    assert business_shape_fingerprint(space_layout, "cainiao-cnprint") == (
+        business_shape_fingerprint(space_layout_new_values, "cainiao-cnprint")
+    )
+    assert business_shape_fingerprint(space_layout, "cainiao-cnprint") != (
+        business_shape_fingerprint(newline_layout, "cainiao-cnprint")
+    )
+
+
+def test_business_text_fingerprint_ignores_repeated_same_shape_lines() -> None:
+    single_line = _xml_lines("范33 帆布鞋，42")
+    repeated_same_shape_lines = _xml_lines("范74 运动鞋，39", "范88 休闲鞋，41")
+
+    assert business_shape_fingerprint(single_line, "cainiao-cnprint") == (
+        business_shape_fingerprint(repeated_same_shape_lines, "cainiao-cnprint")
     )
 
 

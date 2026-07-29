@@ -116,6 +116,11 @@ def _field_value(values: list[Any]) -> Any:
     return "" if not values else values[0] if len(values) == 1 else values
 
 
+def _normalized_print_text(text: str) -> str:
+    text = re.sub(r"[^\S\r\n]+", " ", text.replace("\r\n", "\n").replace("\r", "\n"))
+    return text if text.strip() else ""
+
+
 def _print_text_blocks(payload: dict[str, Any]) -> list[str]:
     blocks: list[str] = []
     for node in _walk_dicts(payload):
@@ -128,16 +133,16 @@ def _print_text_blocks(payload: dict[str, Any]) -> list[str]:
                 text
                 for element in root.iter()
                 if element.tag.rsplit("}", 1)[-1] == "text"
-                for text in [" ".join("".join(element.itertext()).split())]
+                for text in [_normalized_print_text("".join(element.itertext()))]
                 if text
             )
         except ElementTree.ParseError:
-            blocks.extend(" ".join(text.split()) for text in re.findall(r"<!\[CDATA\[(.*?)\]\]>", xml, re.S) if text.strip())
+            blocks.extend(
+                text
+                for text in (_normalized_print_text(text) for text in re.findall(r"<!\[CDATA\[(.*?)\]\]>", xml, re.S))
+                if text
+            )
     return blocks
-
-
-def _print_text(payload: dict[str, Any]) -> str:
-    return "\n".join(dict.fromkeys(_print_text_blocks(payload)))
 
 
 def _item_nodes(data_nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -243,13 +248,13 @@ def _scalar_type(value: Any) -> str:
 
 
 def _text_grammar(text: str) -> str:
-    return re.sub(r"\s+", " ", "".join(char for char in text if char.isspace() or unicodedata.category(char).startswith("P"))).strip()
+    return _normalized_print_text("".join(char for char in text if char.isspace() or unicodedata.category(char).startswith("P")))
 
 
 def _business_signature(payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     code, data_nodes, item_nodes, print_blocks = _detected(payload)
     if code == "CN-PRINT-XML":
-        return code, {"text": [_text_grammar(block) for block in print_blocks]}
+        return code, {"text": sorted({_text_grammar(block) for block in print_blocks})}
     if code == "CN-PACKAGE-ITEMS":
         fields = {FIELD_SOURCE_KEYS[field["key"]] for field in _definition(code)["fields"]}
         layouts = {
