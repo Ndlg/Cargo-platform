@@ -11,7 +11,7 @@ services:
           - local-model
 
   ai-recognition:
-    image: cargo-platform-ai-recognition:printxml-rule-777ce89
+    image: cargo-platform-ai-recognition:editable-invalid-40727a5
     container_name: cargo-platform-validation-ai-recognition
     depends_on:
       - local-model
