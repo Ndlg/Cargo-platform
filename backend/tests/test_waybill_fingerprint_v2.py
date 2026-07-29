@@ -1,0 +1,106 @@
+from __future__ import annotations
+
+from services.shared.waybill_fingerprint import (
+    business_shape_fingerprint,
+    fingerprint_catalog,
+    fingerprint_for_payload,
+    inspect_fingerprint,
+    legacy_structural_fingerprint,
+)
+
+
+def _xml(text: str) -> dict[str, object]:
+    return {
+        "contents": [
+            {
+                "printXML": (
+                    '<layout><text x="12" y="8"><![CDATA['
+                    f"{text}"
+                    "]]></text><text>颜色：白色</text></layout>"
+                )
+            }
+        ]
+    }
+
+
+def _package(items: list[dict[str, object]], **extra: object) -> dict[str, object]:
+    return {
+        "contents": [
+            {
+                "data": {
+                    "packageItemDetail": items,
+                    **extra,
+                }
+            }
+        ]
+    }
+
+
+def test_business_text_fingerprint_ignores_values_but_keeps_layout() -> None:
+    xml_a = _xml("范33 帆布鞋，42")
+    xml_a_new_values = _xml("范74 运动鞋，39")
+    xml_other_layout = {
+        "contents": [
+            {
+                "printXML": "<layout><text>范74 运动鞋</text><line/><text>39</text></layout>",
+            }
+        ]
+    }
+
+    assert business_shape_fingerprint(xml_a, "cainiao-cnprint") == (
+        business_shape_fingerprint(xml_a_new_values, "cainiao-cnprint")
+    )
+    assert business_shape_fingerprint(xml_a, "cainiao-cnprint") != (
+        business_shape_fingerprint(xml_other_layout, "cainiao-cnprint")
+    )
+
+
+def test_business_package_fingerprint_ignores_values_counts_and_unrelated_keys() -> None:
+    package_payload_a = _package(
+        [{"itemName": "范33", "skuFullName": "白色 42", "itemNum": 1}]
+    )
+    package_payload_with_unrelated_keys = _package(
+        [
+            {"itemName": "范74", "skuFullName": "黑色 39", "itemNum": 2},
+            {"itemName": "范88", "skuFullName": "红色 38", "itemNum": 3},
+        ],
+        receiverName="张三",
+        internalTrace={"requestId": "hidden"},
+    )
+
+    assert business_shape_fingerprint(package_payload_a, "cainiao-cnprint") == (
+        business_shape_fingerprint(package_payload_with_unrelated_keys, "cainiao-cnprint")
+    )
+
+
+def test_package_scalar_type_and_unknown_layout_do_not_collide() -> None:
+    package = _package([{"itemName": "范33", "itemNum": 1}])
+    item_num_as_text = _package([{"itemName": "范33", "itemNum": "1"}])
+    unknown_a = {"data": {"shape": {"left": "x"}}}
+    unknown_b = {"data": {"shape": ["x"]}}
+
+    assert business_shape_fingerprint(package, "cainiao-cnprint") != (
+        business_shape_fingerprint(item_num_as_text, "cainiao-cnprint")
+    )
+    unknown_a_fingerprint = business_shape_fingerprint(unknown_a, "unknown-printer")
+    assert unknown_a_fingerprint.startswith("v2:UNKNOWN:sha256:")
+    assert unknown_a_fingerprint != business_shape_fingerprint(unknown_b, "unknown-printer")
+
+
+def test_catalog_inspection_and_strategy_keep_legacy_compatible() -> None:
+    payload = _package([{"itemName": "范33", "itemNum": 1}])
+
+    assert [item["code"] for item in fingerprint_catalog()] == [
+        "CN-ITEM-INFO",
+        "CN-PRINT-XML",
+        "CN-CUSTOM-CONTENT",
+        "CN-PACKAGE-ITEMS",
+        "CLOUD-PRODUCT-INFO",
+    ]
+    assert inspect_fingerprint(payload, "cainiao-cnprint")["fingerprint_code"] == "CN-PACKAGE-ITEMS"
+    assert fingerprint_for_payload(payload, "cainiao-cnprint", "legacy_structure_v1") == legacy_structural_fingerprint(
+        payload, "cainiao-cnprint"
+    )
+    assert fingerprint_for_payload(payload, "cainiao-cnprint", "business_shape_v2") == business_shape_fingerprint(
+        payload, "cainiao-cnprint"
+    )
