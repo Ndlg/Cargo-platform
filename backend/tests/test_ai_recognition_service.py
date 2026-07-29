@@ -241,6 +241,23 @@ def test_recognize_sanitizes_pii_and_reuses_identical_session(tmp_path: Path) ->
     assert "ITEM_INFO" in sent
 
 
+def test_rejected_identical_request_starts_a_new_session(tmp_path: Path) -> None:
+    module = load_ai_service(tmp_path / "import-default.db")
+    model = FakeModel()
+    app = module.create_app(model_client=model, db_path=tmp_path / "sessions.db")
+
+    with TestClient(app) as client:
+        first = client.post("/api/v1/recognize", json=raw_request()).json()
+        wait_for_session(client, first["session_id"], "ai_rule_pending")
+        client.post(f"/api/v1/sessions/{first['session_id']}/reject")
+        second = client.post("/api/v1/recognize", json=raw_request()).json()
+        wait_for_session(client, second["session_id"], "ai_rule_pending")
+
+    assert second["status"] == "model_running"
+    assert second["session_id"] != first["session_id"]
+    assert len(model.calls) == 2
+
+
 def test_fingerprint_is_value_stable_but_changes_with_structure(tmp_path: Path) -> None:
     module = load_ai_service(tmp_path / "import-default.db")
     app = module.create_app(model_client=FakeModel(), db_path=tmp_path / "sessions.db")

@@ -111,6 +111,17 @@ class SessionStore:
         decoded = self.decode(row)
         if decoded is None:
             raise RuntimeError("failed to reserve recognition session")
+        if not created and decoded["status"] in {"approved", "rejected", "ai_parse_failed"}:
+            return self.reserve(
+                request_key=f"{request_key}:{uuid4().hex}",
+                workspace_id=workspace_id,
+                task_id=task_id,
+                raw_record_id=raw_record_id,
+                source_component=source_component,
+                fingerprint=fingerprint,
+                deterministic_failure_reason=deterministic_failure_reason,
+                sanitized_payload=sanitized_payload,
+            )
         return decoded, created
 
     def get(self, session_id: str) -> dict[str, Any] | None:
