@@ -137,9 +137,20 @@ def create_app(
                 session["feedback"],
             )
             result = normalize_candidate_rule(result, session["sanitized_payload"])
-            candidate = AiCandidate.model_validate(result).model_copy(
-                update={"fingerprint": session["fingerprint"]}
+            for parent in result.get("parents") or []:
+                if isinstance(parent, dict):
+                    parent["source"] = {"sanitized_payload": session["sanitized_payload"]}
+            result.update(
+                {
+                    "contract_version": "ai_waybill_candidate_v1",
+                    "fingerprint": session["fingerprint"],
+                    "rule_evidence": [
+                        json.dumps(session["sanitized_payload"], ensure_ascii=False, sort_keys=True)
+                    ],
+                    "warnings": [],
+                }
             )
+            candidate = AiCandidate.model_validate(result)
             updated = store.set_candidate(
                 session["session_id"],
                 candidate=candidate.model_dump(mode="json"),

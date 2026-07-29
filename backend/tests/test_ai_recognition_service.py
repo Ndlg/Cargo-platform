@@ -331,6 +331,9 @@ def test_ollama_client_requests_schema_constrained_non_thinking_json(tmp_path: P
     assert request["options"]["temperature"] == 0
     assert request["options"]["num_ctx"] == 4096
     assert request["format"]["properties"]["parents"]
+    assert request["format"]["required"] == ["parents", "candidate_rule"]
+    row_schema = request["format"]["properties"]["parents"]["items"]["properties"]["rows"]["items"]
+    assert row_schema["additionalProperties"] is False
     candidate_rule_schema = request["format"]["properties"]["candidate_rule"]
     assert candidate_rule_schema["properties"]["strategy"]["enum"] == [
         "structured_items_v1",
