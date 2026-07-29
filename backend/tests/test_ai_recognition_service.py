@@ -838,6 +838,114 @@ def test_invalid_rule_is_retried_once_after_admin_correction(tmp_path: Path) -> 
     assert len(stored["feedback"]) == 1
 
 
+def test_admin_correction_can_compile_a_value_independent_text_rule(tmp_path: Path) -> None:
+    module = load_ai_service(tmp_path / "import-default.db")
+    request = raw_request()
+    request["source_component"] = "cloud-print-client"
+    request["payload"] = {
+        "task": {
+            "documents": [
+                {
+                    "contents": [
+                        {
+                            "data": {
+                                "productInfo": (
+                                    "【2026户外登山鞋男女徒步鞋防滑防水越野跑鞋】"
+                                    "紫色 42.5 1 件"
+                                )
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+    corrected_rows = [{
+        "product": "【2026户外登山鞋男女徒步鞋防滑防水越野跑鞋】",
+        "sales_attr1": "紫色",
+        "sales_attr2": "42.5",
+        "quantity": 1,
+        "remark": "",
+    }]
+    validations: list[dict[str, Any]] = []
+
+    def validate_rule(payload: dict[str, Any], _token: str) -> dict[str, Any]:
+        validations.append(payload)
+        first_step = payload["candidate_rule"].get("steps", [{}])[0]
+        if first_step.get("include_delimiters") is True:
+            return {"status": "valid"}
+        raise module.RuleValidationRejected("AI 规则不能复现管理员确认行。")
+
+    model = FakeModel()
+    app = module.create_app(
+        model_client=model,
+        db_path=tmp_path / "sessions.db",
+        internal_token="test-shared-token",
+        approval_sender=validate_rule,
+    )
+
+    with TestClient(app) as client:
+        session_id = client.post("/api/v1/recognize", json=request).json()["session_id"]
+        wait_for_session(client, session_id, "ai_rule_invalid")
+        client.post(
+            f"/api/v1/sessions/{session_id}/feedback",
+            json={"corrected_rows": corrected_rows},
+        )
+        stored = wait_for_session(client, session_id, "ai_rule_pending")
+
+    rule = stored["candidate"]["candidate_rule"]
+    encoded_rule = json.dumps(rule, ensure_ascii=False)
+    assert stored["candidate"]["parents"][0]["rows"] == corrected_rows
+    assert rule == {
+        "strategy": "text_pipeline_v1",
+        "text_path": "task.documents[].contents[].data.productInfo",
+        "steps": [
+            {
+                "op": "extract_between",
+                "source": "text",
+                "start": "【",
+                "end": "】",
+                "target": "product",
+                "consume": True,
+                "include_delimiters": True,
+            },
+            {"op": "strip_suffix", "target": "text", "literal": " 件"},
+            {
+                "op": "rsplit",
+                "source": "text",
+                "delimiter": " ",
+                "targets": ["text", "quantity"],
+            },
+            {"op": "rsplit", "source": "text", "delimiter": " ", "targets": ["sales_attr1", "sales_attr2"]},
+            {"op": "to_positive_int", "target": "quantity"},
+        ],
+        "defaults": {"remark": ""},
+    }
+    assert all(value not in encoded_rule for value in ("2026户外登山鞋", "紫色", "42.5"))
+    assert len(model.calls) == 2
+    assert len(validations) == 3
+
+
+def test_corrected_text_rule_does_not_capture_unconfirmed_dynamic_literals(tmp_path: Path) -> None:
+    module = load_ai_service(tmp_path / "import-default.db")
+    rows = [{
+        "product": "【登山鞋】",
+        "sales_attr1": "紫色",
+        "sales_attr2": "42.5",
+        "quantity": 1,
+        "remark": "",
+    }]
+
+    assert module.compile_corrected_text_rule(
+        {"productInfo": "【登山鞋】紫色 SKU-20260730 42.5 1 件"},
+        rows,
+    ) is None
+    assert module.compile_corrected_text_rule(
+        {"productInfo": "【登山鞋】紫色 42.5 1 批次A"},
+        rows,
+    ) is None
+
+
 def test_non_rule_sender_error_is_not_retried_after_admin_correction(tmp_path: Path) -> None:
     module = load_ai_service(tmp_path / "import-default.db")
     model = FakeModel()
@@ -960,6 +1068,7 @@ def test_ollama_client_requests_schema_constrained_non_thinking_json(tmp_path: P
     assert "corrected_rows" in request["messages"][0]["content"]
     assert "printXML 是文本字段，只能使用 text_pipeline_v1" in request["messages"][0]["content"]
     assert "编号 商品，,属性，尺码*数量" in request["messages"][0]["content"]
+    assert "include_delimiters" in request["messages"][0]["content"]
     assert request["format"]["required"] == ["parents", "candidate_rule"]
     assert request["format"]["properties"]["parents"]["maxItems"] == 1
     row_schema = request["format"]["properties"]["parents"]["items"]["properties"]["rows"]["items"]
@@ -987,6 +1096,11 @@ def test_ollama_client_requests_schema_constrained_non_thinking_json(tmp_path: P
         "text_pipeline_v1",
     ]
     assert all(schema["additionalProperties"] is False for schema in candidate_rule_schema["oneOf"])
+    text_step_schema = candidate_rule_schema["oneOf"][1]["properties"]["steps"]["items"]["oneOf"]
+    extract_schema = next(
+        schema for schema in text_step_schema if schema["properties"]["op"].get("const") == "extract_between"
+    )
+    assert extract_schema["properties"]["include_delimiters"] == {"type": "boolean"}
     assert all(
         schema["properties"]["defaults"]["properties"]["quantity"]["minimum"] == 1
         for schema in candidate_rule_schema["oneOf"]

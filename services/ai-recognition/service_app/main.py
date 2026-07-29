@@ -20,6 +20,7 @@ from .store import SessionStore
 
 
 ApprovalSender = Callable[[dict[str, Any], str], dict[str, Any]]
+QUANTITY_SUFFIX_UNITS = {"件", "个", "双", "套", "份", "盒", "包", "组"}
 
 
 class RuleValidationRejected(ValueError):
@@ -71,6 +72,116 @@ def normalize_candidate_rule(result: dict[str, Any], payload: dict[str, Any]) ->
     if len(matching_paths) == 1:
         normalized_rule["items_path"] = matching_paths.pop()
     return {**result, "candidate_rule": normalized_rule}
+
+
+def _text_leaves(value: Any, path: tuple[str, ...] = ()) -> list[tuple[str, str]]:
+    leaves: list[tuple[str, str]] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            leaves.extend(_text_leaves(item, (*path, str(key))))
+    elif isinstance(value, list) and path:
+        list_path = (*path[:-1], f"{path[-1]}[]")
+        for item in value:
+            leaves.extend(_text_leaves(item, list_path))
+    elif isinstance(value, str) and path and value.strip():
+        leaves.append((".".join(path), value.strip()))
+    return leaves
+
+
+def compile_corrected_text_rule(
+    payload: dict[str, Any],
+    corrected_rows: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    # ponytail: compile one literal text row; add repeated-segment synthesis when a real rejected sample needs it.
+    if len(corrected_rows) != 1 or corrected_rows[0]["remark"]:
+        return None
+    row = corrected_rows[0]
+    product = row["product"].strip()
+    if len(product) < 3 or product[0].isalnum() or product[-1].isalnum():
+        return None
+    field_values = [
+        (field, str(row[field]).strip())
+        for field in ("sales_attr1", "sales_attr2")
+        if str(row[field]).strip()
+    ]
+    field_values.append(("quantity", str(row["quantity"])))
+    if len(field_values) < 2:
+        return None
+
+    for text_path, text in _text_leaves(payload):
+        if not text.startswith(product) or text.count(product) != 1:
+            continue
+        start, end = product[0], product[-1]
+        if text.find(end, len(start)) != len(product) - len(end):
+            continue
+        remainder = text[len(product) :].strip()
+        cursor = 0
+        gaps: list[str] = []
+        for index, (_field, field_value) in enumerate(field_values):
+            value_index = remainder.find(field_value, cursor)
+            if value_index < 0 or (index == 0 and value_index != 0):
+                break
+            if _field == "quantity":
+                value_end = value_index + len(field_value)
+                if (
+                    (value_index and remainder[value_index - 1].isdigit())
+                    or (value_end < len(remainder) and remainder[value_end].isdigit())
+                ):
+                    break
+            if index:
+                gap = remainder[cursor:value_index]
+                if not gap or len(gap) > 64 or any(char.isalnum() for char in gap):
+                    break
+                gaps.append(gap)
+            cursor = value_index + len(field_value)
+        else:
+            suffix = remainder[cursor:]
+            suffix_value = suffix.strip()
+            if len(suffix) > 8 or (
+                suffix_value
+                and any(char.isalnum() for char in suffix_value)
+                and suffix_value not in QUANTITY_SUFFIX_UNITS
+            ):
+                continue
+            steps: list[dict[str, Any]] = [
+                {
+                    "op": "extract_between",
+                    "source": "text",
+                    "start": start,
+                    "end": end,
+                    "target": "product",
+                    "consume": True,
+                    "include_delimiters": True,
+                }
+            ]
+            if suffix:
+                steps.append({"op": "strip_suffix", "target": "text", "literal": suffix})
+            names = [field for field, _value in field_values]
+            for index in range(len(gaps) - 1, -1, -1):
+                steps.append(
+                    {
+                        "op": "rsplit",
+                        "source": "text",
+                        "delimiter": gaps[index],
+                        "targets": [
+                            "text" if index else names[0],
+                            names[index + 1],
+                        ],
+                    }
+                )
+            steps.append({"op": "to_positive_int", "target": "quantity"})
+            defaults = {
+                field: ""
+                for field in ("sales_attr1", "sales_attr2", "remark")
+                if not str(row[field]).strip()
+            }
+            return {
+                "strategy": "text_pipeline_v1",
+                "text_path": text_path,
+                "steps": steps,
+                "defaults": defaults,
+            }
+    return None
 
 
 def administrator_corrected_rows(feedback: list[str]) -> list[dict[str, Any]] | None:
@@ -257,6 +368,47 @@ def create_app(
                     except (ValueError, httpx.HTTPError) as exc:
                         validation_error = str(exc)[:2000]
                 if validation_error and corrected_rows and repairable and attempt == 0:
+                    compiled_rule = compile_corrected_text_rule(
+                        session["sanitized_payload"],
+                        corrected_rows,
+                    )
+                    if compiled_rule:
+                        compiled_candidate = {
+                            **candidate_payload,
+                            "candidate_rule": compiled_rule,
+                        }
+                        try:
+                            sender(
+                                platform_rule_payload(session, compiled_candidate, validate_only=True),
+                                token,
+                            )
+                        except RuleValidationRejected as exc:
+                            validation_error = str(exc)[:2000]
+                        except (ValueError, httpx.HTTPError) as exc:
+                            validation_error = str(exc)[:2000]
+                            repairable = False
+                        else:
+                            candidate_payload = compiled_candidate
+                            validation_error = None
+                            repairable = False
+                    if not validation_error:
+                        updated = store.set_candidate(
+                            session["session_id"],
+                            generation=session["generation"],
+                            candidate=candidate_payload,
+                            status="ai_rule_pending",
+                            error=None,
+                        )
+                        return response_payload(updated)
+                    if not repairable:
+                        updated = store.set_candidate(
+                            session["session_id"],
+                            generation=session["generation"],
+                            candidate=candidate_payload,
+                            status="ai_rule_invalid",
+                            error=validation_error,
+                        )
+                        return response_payload(updated)
                     model_feedback = [
                         *model_feedback,
                         json.dumps(

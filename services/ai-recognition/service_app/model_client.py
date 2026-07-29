@@ -14,13 +14,15 @@ SYSTEM_PROMPT = """你是面单商品订单行解析器。只处理提供的脱�
 若 administrator_feedback 包含 rule_validation_error，必须修复该规则错误；defaults.quantity 只能省略或使用大于等于 1 的整数。
 candidate_rule 必须能在当前脱敏数据上重放出与 parents 完全相同的订单行。text_path 必须是从根开始的完整路径，数组段写成 []，例如 task.documents[].contents[].data.ITEM_INFO。
 items_path、text_path 和 fields 只能写点分隔字段路径，不能写 .split()、数组下标、表达式或代码。printXML 是文本字段，只能使用 text_pipeline_v1，路径通常为 task.documents[].contents[].printXML。
-文本规则按顺序执行，初始只有 text 和 defaults；后续步骤只能读取 text、defaults 或前一步已写入的字段。
+文本规则按顺序执行，初始只有 text 和 defaults；后续步骤只能读取 text、defaults 或前一步已写入的字段。extract_between 默认不保留 start/end；若确认后的字段值包含这两个边界符，必须设置 include_delimiters:true。
 同时生成 candidate_rule。结构化数据只能使用：
 {"strategy":"structured_items_v1","items_path":"数组路径[]","fields":{"product":"相对字段路径","sales_attr1":"相对字段路径","sales_attr2":"相对字段路径","quantity":"相对字段路径","remark":"相对字段路径"}}
 若 ITEM_INFO 为“商品名称 属性1;属性2 【1件】”，文本规则示例为：
 {"strategy":"text_pipeline_v1","text_path":"task.documents[].contents[].data.ITEM_INFO","steps":[{"op":"extract_between","source":"text","start":"【","end":"件】","target":"quantity","consume":true},{"op":"rsplit","source":"text","delimiter":";","targets":["product","sales_attr2"]},{"op":"rsplit","source":"product","delimiter":" ","targets":["product","sales_attr1"]},{"op":"to_positive_int","target":"quantity"}],"defaults":{"remark":""}}
 若 printXML 纯文本为“编号 商品，,属性，尺码*数量”，文本规则示例为：
 {"strategy":"text_pipeline_v1","text_path":"task.documents[].contents[].printXML","steps":[{"op":"split","source":"text","delimiter":"，","targets":["product","sales_attr1","sales_attr2"]},{"op":"split","source":"product","delimiter":" ","targets":["text","product"]},{"op":"trim","target":"sales_attr1","chars":","},{"op":"rsplit","source":"sales_attr2","delimiter":"*","targets":["sales_attr2","quantity"]},{"op":"to_positive_int","target":"quantity"}],"defaults":{"remark":""}}
+若商品文本为“【商品标题】紫色 42.5 1 件”，且商品值需要保留书名号，文本规则示例为：
+{"strategy":"text_pipeline_v1","text_path":"task.documents[].contents[].data.productInfo","steps":[{"op":"extract_between","source":"text","start":"【","end":"】","target":"product","consume":true,"include_delimiters":true},{"op":"strip_suffix","target":"text","literal":" 件"},{"op":"rsplit","source":"text","delimiter":" ","targets":["sales_attr1","sales_attr2","quantity"]},{"op":"to_positive_int","target":"quantity"}],"defaults":{"remark":""}}
 不得输出 operations、脚本、正则、文件或网络操作。"""
 
 ABSOLUTE_PATH_PATTERN = r"^[A-Za-z0-9_]+(?:\[\])?(?:\.[A-Za-z0-9_]+(?:\[\])?)*$"
@@ -82,6 +84,7 @@ TEXT_STEP_SCHEMA = {
                 "end": {"type": "string"},
                 "target": {"type": "string", "enum": TEXT_STATE_FIELDS},
                 "consume": {"type": "boolean"},
+                "include_delimiters": {"type": "boolean"},
             },
         },
         {

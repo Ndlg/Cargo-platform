@@ -18,6 +18,7 @@ from service_app.order_row_engine import (
 PATH_PATTERN = re.compile(r"^[A-Za-z0-9_]+(?:\[\])?(?:\.[A-Za-z0-9_]+(?:\[\])?)*$")
 FIELD_PATH_PATTERN = re.compile(r"^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*$")
 FINGERPRINT_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+MAX_QUANTITY = 100_000
 ROW_FIELDS = {"product", "sales_attr1", "sales_attr2", "quantity", "remark", "image_match_text"}
 STATE_FIELDS = ROW_FIELDS | {"text"}
 STRUCTURED_PROFILE_KEYS = {
@@ -94,7 +95,9 @@ def validate_defaults(defaults: object, prefix: str) -> list[str]:
         errors.append(f"{prefix}.defaults")
     quantity = defaults.get("quantity")
     if quantity is not None and (
-        not isinstance(quantity, int) or isinstance(quantity, bool) or quantity <= 0
+        not isinstance(quantity, int)
+        or isinstance(quantity, bool)
+        or not 1 <= quantity <= MAX_QUANTITY
     ):
         errors.append(f"{prefix}.defaults.quantity")
     for field, value in defaults.items():
@@ -118,7 +121,7 @@ def validate_structured_profile(profile: dict[str, Any], prefix: str) -> list[st
             isinstance(defaults, dict)
             and isinstance(defaults.get("quantity"), int)
             and not isinstance(defaults.get("quantity"), bool)
-            and defaults["quantity"] > 0
+            and 1 <= defaults["quantity"] <= MAX_QUANTITY
         )
         if set(fields) - ROW_FIELDS or "product" not in fields or (
             "quantity" not in fields and not has_quantity_default
@@ -138,7 +141,15 @@ def validate_text_step(step: object, prefix: str) -> list[str]:
     allowed: dict[str, set[str]] = {
         "split": {"op", "source", "delimiter", "targets"},
         "rsplit": {"op", "source", "delimiter", "targets"},
-        "extract_between": {"op", "source", "start", "end", "target", "consume"},
+        "extract_between": {
+            "op",
+            "source",
+            "start",
+            "end",
+            "target",
+            "consume",
+            "include_delimiters",
+        },
         "trim": {"op", "target", "chars"},
         "strip_prefix": {"op", "target", "literal"},
         "strip_suffix": {"op", "target", "literal"},
@@ -173,6 +184,8 @@ def validate_text_step(step: object, prefix: str) -> list[str]:
                 errors.append(f"{prefix}.{field}")
         if "consume" in step and not isinstance(step.get("consume"), bool):
             errors.append(f"{prefix}.consume")
+        if "include_delimiters" in step and not isinstance(step.get("include_delimiters"), bool):
+            errors.append(f"{prefix}.include_delimiters")
     if op == "trim" and "chars" in step:
         chars = step.get("chars")
         if not isinstance(chars, str) or len(chars) > 64:
@@ -242,9 +255,9 @@ def positive_int(value: Any) -> int | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
-        return value if value > 0 else None
+        return value if 1 <= value <= MAX_QUANTITY else None
     text = text_value(value)
-    return int(text) if text.isdigit() and int(text) > 0 else None
+    return int(text) if text.isdigit() and 1 <= int(text) <= MAX_QUANTITY else None
 
 
 def pipeline_text_value(value: Any) -> str:
@@ -378,11 +391,12 @@ def apply_text_step(state: dict[str, Any], step: dict[str, Any]) -> None:
         end = step["end"]
         start_index = value.find(start)
         end_index = value.find(end, start_index + len(start)) if start_index >= 0 else -1
-        extracted = (
-            value[start_index + len(start) : end_index].strip()
-            if start_index >= 0 and end_index >= 0
-            else ""
-        )
+        if start_index >= 0 and end_index >= 0:
+            extracted_start = start_index if step.get("include_delimiters") else start_index + len(start)
+            extracted_end = end_index + len(end) if step.get("include_delimiters") else end_index
+            extracted = value[extracted_start:extracted_end].strip()
+        else:
+            extracted = ""
         state[target] = extracted
         if extracted and step.get("consume"):
             state[source_field] = (value[:start_index] + value[end_index + len(end) :]).strip()

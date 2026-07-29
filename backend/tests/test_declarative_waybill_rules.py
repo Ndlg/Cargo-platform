@@ -305,6 +305,126 @@ def test_text_pipeline_reads_plain_text_from_print_xml() -> None:
     ] == [("范33", "带木one帆布kw，木村-3M反光", "40", 1)]
 
 
+def test_text_pipeline_extract_between_can_preserve_business_delimiters() -> None:
+    app, rules = load_parser()
+
+    def payload(product: str, color: str, size: str, quantity: int) -> dict[str, Any]:
+        return {
+            "task": {
+                "documents": [
+                    {
+                        "contents": [
+                            {
+                                "data": {
+                                    "productInfo": f"【{product}】{color} {size} {quantity} 件",
+                                }
+                            }
+                        ]
+                    }
+                ]
+            }
+        }
+
+    baseline = payload("2026 户外登山鞋", "紫色", "42.5", 1)
+    profile = {
+        "fingerprint": rules.structural_fingerprint(baseline, "cloud-print-client"),
+        "strategy": "text_pipeline_v1",
+        "text_path": "task.documents[].contents[].data.productInfo",
+        "steps": [
+            {
+                "op": "extract_between",
+                "source": "text",
+                "start": "【",
+                "end": "】",
+                "target": "product",
+                "consume": True,
+                "include_delimiters": True,
+            },
+            {"op": "strip_suffix", "target": "text", "literal": " 件"},
+            {
+                "op": "rsplit",
+                "source": "text",
+                "delimiter": " ",
+                "targets": ["sales_attr1", "sales_attr2", "quantity"],
+            },
+            {"op": "to_positive_int", "target": "quantity"},
+        ],
+        "defaults": {"remark": ""},
+    }
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/parse/batch",
+            json={
+                "task_id": 61,
+                "raw_records": [
+                    {
+                        **raw_record(909, baseline),
+                        "source_component": "cloud-print-client",
+                    },
+                    {
+                        **raw_record(910, payload("夏季透气跑鞋", "二代灰黑", "39", 2)),
+                        "source_component": "cloud-print-client",
+                    },
+                ],
+                "rule_pack": declarative_pack([profile]),
+            },
+        )
+
+    body = response.json()
+    assert body["status"] == "parsed"
+    assert [
+        (
+            row["product"],
+            row["sales_attr1"],
+            row["sales_attr2"],
+            row["quantity"],
+            row["remark"],
+        )
+        for row in body["rows"]
+    ] == [
+        ("【2026 户外登山鞋】", "紫色", "42.5", 1, ""),
+        ("【夏季透气跑鞋】", "二代灰黑", "39", 2, ""),
+    ]
+
+    with TestClient(app) as client:
+        too_many = client.post(
+            "/api/v1/parse/batch",
+            json={
+                "task_id": 61,
+                "raw_records": [
+                    {
+                        **raw_record(911, payload("夏季透气跑鞋", "二代灰黑", "39", 100_001)),
+                        "source_component": "cloud-print-client",
+                    }
+                ],
+                "rule_pack": declarative_pack([profile]),
+            },
+        )
+    assert too_many.json()["status"] == "format_profile_incomplete"
+    assert too_many.json()["rows"] == []
+    assert too_many.json()["diagnostics"][0]["reason"] == "missing_quantity"
+
+    profile["steps"][0]["include_delimiters"] = "yes"
+    with TestClient(app) as client:
+        invalid = client.post(
+            "/api/v1/rule-packs/validate",
+            json={"rule_pack": declarative_pack([profile])},
+        )
+    assert invalid.json()["status"] == "invalid"
+    assert any("include_delimiters" in error for error in invalid.json()["errors"])
+
+    profile["steps"][0]["include_delimiters"] = True
+    profile["defaults"]["quantity"] = 100_001
+    with TestClient(app) as client:
+        invalid_default = client.post(
+            "/api/v1/rule-packs/validate",
+            json={"rule_pack": declarative_pack([profile])},
+        )
+    assert invalid_default.json()["status"] == "invalid"
+    assert any("defaults.quantity" in error for error in invalid_default.json()["errors"])
+
+
 def test_rule_pack_validation_rejects_regex_script_and_unbounded_paths() -> None:
     app, _rules = load_parser()
     profiles = [
