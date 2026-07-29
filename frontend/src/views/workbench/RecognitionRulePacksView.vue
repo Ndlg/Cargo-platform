@@ -38,6 +38,7 @@ const editingPayload = ref<RecognitionRulePackPayload | null>(null)
 const formatProfiles = ref<RecognitionFormatProfile[]>([])
 const learningRecords = ref<RecognitionLearningRecord[]>([])
 const selectedFingerprint = ref('')
+const editorError = ref('')
 
 const hasImportPayload = computed(() => importText.value.trim().length > 0)
 const selectedProfile = computed(() => (
@@ -253,6 +254,7 @@ async function editPackRules(pack: RecognitionRulePackSummary) {
       ? jsonCopy(payload.ai_learning_records)
       : []
     selectedFingerprint.value = formatProfiles.value[0]?.fingerprint ?? ''
+    editorError.value = ''
     ruleEditorVisible.value = true
   } catch (err) {
     error.value = err instanceof Error ? err.message : '规则包读取失败'
@@ -312,6 +314,7 @@ async function savePackRules() {
 
   savingRules.value = true
   error.value = ''
+  editorError.value = ''
   try {
     await importRecognitionRulePack({
       payload: nextPayload,
@@ -324,6 +327,7 @@ async function savePackRules() {
   } catch (err) {
     const message = err instanceof Error ? err.message : '子规则保存失败'
     error.value = message
+    editorError.value = message
     ElMessage.error(message)
   } finally {
     savingRules.value = false
@@ -464,6 +468,7 @@ onMounted(loadPacks)
   </section>
 
   <el-dialog v-model="ruleEditorVisible" title="AI识别规则包" width="min(1280px, 96vw)" top="4vh">
+    <el-alert v-if="editorError" :closable="false" :title="editorError" type="error" show-icon />
     <el-alert
       v-if="!formatProfiles.length"
       :closable="false"
