@@ -12,12 +12,16 @@ SYSTEM_PROMPT = """你是面单商品订单行解析器。只处理提供的脱�
 商品、销售属性1、销售属性2、数量和备注只填写字段值，不得包含字段名称或“商品是”“销售属性1是”等说明文字。
 若 administrator_feedback 包含 corrected_rows，parents 必须逐字段原样复制 corrected_rows，不得改写；只重新生成能复现这些正确订单行的 candidate_rule。
 candidate_rule 必须能在当前脱敏数据上重放出与 parents 完全相同的订单行。text_path 必须是从根开始的完整路径，数组段写成 []，例如 task.documents[].contents[].data.ITEM_INFO。
+items_path、text_path 和 fields 只能写点分隔字段路径，不能写 .split()、数组下标、表达式或代码。printXML 是文本字段，只能使用 text_pipeline_v1，路径通常为 task.documents[].contents[].printXML。
 文本规则按顺序执行，初始只有 text 和 defaults；后续步骤只能读取 text、defaults 或前一步已写入的字段。
 同时生成 candidate_rule。结构化数据只能使用：
 {"strategy":"structured_items_v1","items_path":"数组路径[]","fields":{"product":"相对字段路径","sales_attr1":"相对字段路径","sales_attr2":"相对字段路径","quantity":"相对字段路径","remark":"相对字段路径"}}
 若 ITEM_INFO 为“商品名称 属性1;属性2 【1件】”，文本规则示例为：
 {"strategy":"text_pipeline_v1","text_path":"task.documents[].contents[].data.ITEM_INFO","steps":[{"op":"extract_between","source":"text","start":"【","end":"件】","target":"quantity","consume":true},{"op":"rsplit","source":"text","delimiter":";","targets":["product","sales_attr2"]},{"op":"rsplit","source":"product","delimiter":" ","targets":["product","sales_attr1"]},{"op":"to_positive_int","target":"quantity"}],"defaults":{"remark":"","image_match_text":""}}
 不得输出 operations、脚本、正则、文件或网络操作。"""
+
+ABSOLUTE_PATH_PATTERN = r"^[A-Za-z0-9_]+(?:\[\])?(?:\.[A-Za-z0-9_]+(?:\[\])?)*$"
+RELATIVE_PATH_PATTERN = r"^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*$"
 
 ROW_FIELD_PROPERTIES = {
     "product": {"type": "string"},
@@ -26,6 +30,11 @@ ROW_FIELD_PROPERTIES = {
     "quantity": {"type": "string"},
     "remark": {"type": "string"},
     "image_match_text": {"type": "string"},
+}
+
+RULE_FIELD_PROPERTIES = {
+    field: {"type": "string", "pattern": RELATIVE_PATH_PATTERN}
+    for field in ROW_FIELD_PROPERTIES
 }
 
 DEFAULT_PROPERTIES = {
@@ -114,12 +123,12 @@ STRUCTURED_RULE_SCHEMA = {
         "strategy": {"const": "structured_items_v1"},
         "name": {"type": "string"},
         "description": {"type": "string"},
-        "items_path": {"type": "string"},
+        "items_path": {"type": "string", "pattern": ABSOLUTE_PATH_PATTERN},
         "fields": {
             "type": "object",
             "additionalProperties": False,
             "required": ["product", "quantity"],
-            "properties": ROW_FIELD_PROPERTIES,
+            "properties": RULE_FIELD_PROPERTIES,
         },
         "defaults": {
             "type": "object",
@@ -137,7 +146,7 @@ TEXT_RULE_SCHEMA = {
         "strategy": {"const": "text_pipeline_v1"},
         "name": {"type": "string"},
         "description": {"type": "string"},
-        "text_path": {"type": "string"},
+        "text_path": {"type": "string", "pattern": ABSOLUTE_PATH_PATTERN},
         "item_split": {"type": "string"},
         "steps": {
             "type": "array",

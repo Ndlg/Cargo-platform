@@ -386,6 +386,31 @@ def test_admin_corrected_rows_are_preserved_when_rule_is_regenerated(tmp_path: P
     assert model.calls[-1]["feedback"] == [message]
 
 
+def test_candidate_must_pass_platform_replay_before_it_can_be_approved(tmp_path: Path) -> None:
+    module = load_ai_service(tmp_path / "import-default.db")
+    validations: list[dict[str, Any]] = []
+
+    def reject_invalid_rule(payload: dict[str, Any], _token: str) -> dict[str, Any]:
+        validations.append(payload)
+        raise ValueError("AI 生成的规则无法复现你确认的订单行，尚未保存。")
+
+    app = module.create_app(
+        model_client=FakeModel(),
+        db_path=tmp_path / "sessions.db",
+        internal_token="test-shared-token",
+        approval_sender=reject_invalid_rule,
+    )
+    with TestClient(app) as client:
+        session_id = client.post("/api/v1/recognize", json=raw_request()).json()["session_id"]
+        stored = wait_for_session(client, session_id, "ai_rule_invalid")
+        approval = client.post(f"/api/v1/sessions/{session_id}/approve")
+
+    assert validations[0]["validate_only"] is True
+    assert stored["candidate"]["parents"][0]["rows"]
+    assert stored["error"] == "AI 生成的规则无法复现你确认的订单行，尚未保存。"
+    assert approval.status_code == 409
+
+
 def test_approve_calls_platform_with_shared_token_and_reject_is_local(tmp_path: Path) -> None:
     module = load_ai_service(tmp_path / "import-default.db")
     approvals: list[tuple[dict[str, Any], str]] = []
@@ -414,9 +439,32 @@ def test_approve_calls_platform_with_shared_token_and_reject_is_local(tmp_path: 
     assert approvals[0][1] == "test-shared-token"
     assert approvals[0][0]["session_id"] == approved_id
     assert approvals[0][0]["candidate_rule"]["strategy"] == "structured_items_v1"
+    assert approvals[0][0]["validate_only"] is True
+    assert approvals[1][0]["validate_only"] is False
+    assert approvals[2][0]["session_id"] == rejected_id
+    assert approvals[2][0]["validate_only"] is True
     assert rejected.status_code == 200
     assert rejected.json()["status"] == "rejected"
-    assert len(approvals) == 1
+    assert len(approvals) == 3
+
+
+def test_platform_validation_error_keeps_business_detail(tmp_path: Path) -> None:
+    module = load_ai_service(tmp_path / "import-default.db")
+    response = httpx.Response(
+        422,
+        json={"detail": "AI 生成的规则无法复现你确认的订单行，尚未保存。"},
+        request=httpx.Request("POST", "http://backend/api/v1/internal/ai-recognition/approve"),
+    )
+    original_post = module.httpx.post
+    module.httpx.post = lambda *_args, **_kwargs: response
+    try:
+        module.default_approval_sender("http://backend")({}, "token")
+    except ValueError as exc:
+        assert str(exc) == "AI 生成的规则无法复现你确认的订单行，尚未保存。"
+    else:
+        raise AssertionError("platform validation failure must keep its business detail")
+    finally:
+        module.httpx.post = original_post
 
 
 def test_ollama_client_requests_schema_constrained_non_thinking_json(tmp_path: Path) -> None:
@@ -450,6 +498,7 @@ def test_ollama_client_requests_schema_constrained_non_thinking_json(tmp_path: P
     assert request["format"]["properties"]["parents"]
     assert "不得包含字段名称" in request["messages"][0]["content"]
     assert "corrected_rows" in request["messages"][0]["content"]
+    assert "printXML 是文本字段，只能使用 text_pipeline_v1" in request["messages"][0]["content"]
     assert request["format"]["required"] == ["parents", "candidate_rule"]
     assert request["format"]["properties"]["parents"]["maxItems"] == 1
     row_schema = request["format"]["properties"]["parents"]["items"]["properties"]["rows"]["items"]
@@ -482,6 +531,9 @@ def test_health_console_and_session_list_are_available(tmp_path: Path) -> None:
     assert 'data-field="${field}"' in console.text
     assert 'cell("product", item.product)' in console.text
     assert "按修改结果重新生成规则" in console.text
+    assert "ai_rule_invalid" in console.text
+    assert "row.error" in console.text
+    assert "window.alert(error?.detail" not in console.text
     assert "格式指纹" not in console.text
     assert "确定性规则失败原因" not in console.text
     assert "JSON.stringify(row.candidate" not in console.text

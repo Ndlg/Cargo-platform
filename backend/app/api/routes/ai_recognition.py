@@ -34,6 +34,7 @@ class AiRuleApprovalRequest(BaseModel):
     candidate_rule: dict[str, Any]
     rule_evidence: list[str] = Field(default_factory=list)
     candidate_output: dict[str, Any] = Field(default_factory=dict)
+    validate_only: bool = False
 
 
 BUSINESS_ROW_FIELDS = (
@@ -138,7 +139,13 @@ def approve_ai_rule(
             rule_pack=pack.payload,
         )
         if not rows_cover_expected(comparable_rows(replay), expected_rows):
-            raise ValueError("AI candidate rule cannot reproduce the confirmed order rows.")
+            raise ValueError("AI 生成的规则无法复现你确认的订单行，尚未保存。请按修改结果重新生成规则。")
+        if request.validate_only:
+            db.rollback()
+            return {
+                "status": "valid",
+                "format_fingerprint": request.format_fingerprint,
+            }
         db.commit()
         db.refresh(pack)
     except ValueError as exc:

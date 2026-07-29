@@ -233,6 +233,92 @@ def test_internal_approval_activates_validated_revision(monkeypatch) -> None:
     ]
 
 
+def test_internal_validation_replays_candidate_without_persisting_pack(monkeypatch) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    monkeypatch.setenv("AI_RECOGNITION_ENABLED", "true")
+    monkeypatch.setenv("AI_RECOGNITION_INTERNAL_TOKEN", "test-secret")
+    ai_route.get_settings.cache_clear()
+    monkeypatch.setattr(
+        ai_route,
+        "validate_rule_pack_with_service",
+        lambda **_kwargs: {"status": "valid", "errors": []},
+    )
+    monkeypatch.setattr(
+        ai_route,
+        "preview_order_row_drafts_with_service",
+        lambda **_kwargs: {
+            "contract_version": "order_row_drafts_v1",
+            "rows": [
+                {
+                    "product": "shoe",
+                    "sales_attr1": "",
+                    "sales_attr2": "",
+                    "quantity": 1,
+                    "remark": "",
+                    "image_match_text": "shoe",
+                }
+            ],
+        },
+    )
+
+    with Session(engine) as db:
+        db.add(Workspace(id=1, tenant_id=1, name="test", code="test"))
+        db.add(
+            RawCaptureRecord(
+                id=100,
+                tenant_id=1,
+                workspace_id=1,
+                task_id=61,
+                document_id="doc",
+                source_component="test",
+                source_index="1",
+                payload_format="json",
+                raw_payload='{"items":[{"name":"shoe","quantity":1}]}',
+                status="pending",
+            )
+        )
+        db.commit()
+        response = ai_route.approve_ai_rule(
+            AiRuleApprovalRequest(
+                session_id="session-validate",
+                workspace_id=1,
+                task_id=61,
+                raw_record_id=100,
+                format_fingerprint=f"sha256:{'4' * 64}",
+                candidate_rule=candidate_profile(f"sha256:{'0' * 64}"),
+                candidate_output={
+                    "parents": [
+                        {
+                            "source": {"sanitized_payload": {"items": [{"name": "shoe", "quantity": 1}]}},
+                            "rows": [
+                                {
+                                    "product": "shoe",
+                                    "sales_attr1": "",
+                                    "sales_attr2": "",
+                                    "quantity": 1,
+                                    "remark": "",
+                                    "image_match_text": "",
+                                }
+                            ],
+                        }
+                    ]
+                },
+                validate_only=True,
+            ),
+            db,
+            "test-secret",
+        )
+
+        assert response == {
+            "status": "valid",
+            "format_fingerprint": f"sha256:{'4' * 64}",
+        }
+        assert db.scalar(select(RecognitionRulePack)) is None
+
+    ai_route.get_settings.cache_clear()
+
+
 def test_internal_approval_rejects_rule_that_cannot_reproduce_candidate(monkeypatch) -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)

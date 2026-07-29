@@ -18,6 +18,7 @@
       th, td { padding: 10px 12px; border: 1px solid #e5e7eb; text-align: left; vertical-align: top; }
       th { background: #f8fafc; color: #475569; white-space: nowrap; }
       .muted { color: #6b7280; }
+      .error { color: #b91c1c; }
     </style>
   </head>
   <body>
@@ -26,6 +27,7 @@
         <h1>本地 AI 面单识别会话</h1>
         <p class="muted">这里只确认陌生面单格式和候选解析规则，不维护商品、SKU、图片或档口。</p>
       </header>
+      <p id="operation-error" class="error" role="alert"></p>
       <section id="sessions"></section>
     </main>
     <script>
@@ -36,6 +38,7 @@
       const statusText = (status) => ({
         model_running: "正在解析",
         ai_rule_pending: "等待管理员确认",
+        ai_rule_invalid: "规则校验未通过",
         ai_parse_failed: "解析失败",
         approved: "已确认并同步",
         rejected: "已拒绝",
@@ -46,7 +49,7 @@
         if (!rows.length) return session.status === "model_running"
           ? '<p class="muted">模型正在解析，完成后会在这里显示结果。</p>'
           : '<p class="muted">本次没有生成可确认的商品行。</p>';
-        const editable = session.status === "ai_rule_pending";
+        const editable = ["ai_rule_pending", "ai_rule_invalid"].includes(session.status);
         const cell = (field, value, type = "text") => editable
           ? `<input data-field="${field}" type="${type}"${type === "number" ? ' min="1" step="1"' : ""} value="${escapeHtml(value)}" />`
           : displayValue(value);
@@ -70,9 +73,10 @@
         const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
         if (!response.ok) {
           const error = await response.json().catch(() => null);
-          window.alert(error?.detail || "操作失败，请稍后重试。");
+          document.querySelector("#operation-error").textContent = error?.detail || "操作失败，请稍后重试。";
           return;
         }
+        document.querySelector("#operation-error").textContent = "";
         const payload = await response.json();
         await load();
         if (payload.status === "approved") window.parent.postMessage({ type: "cargo-ai-rule-approved" }, "*");
@@ -80,12 +84,14 @@
       function actions(row) {
         if (row.status === "model_running") return "<p>模型正在解析这一张面单，请稍候……</p>";
         if (row.status === "approved") return "<p>已确认，新规则已经同步到系统。</p>";
-        if (row.status !== "ai_rule_pending") return "";
+        if (!["ai_rule_pending", "ai_rule_invalid"].includes(row.status)) return "";
         return [
           `<textarea id="feedback-${row.session_id}" placeholder="可选：补充说明这类面单应如何读取"></textarea>`,
           "<p>",
           `<button onclick="sendCorrection('${row.session_id}')">按修改结果重新生成规则</button>`,
-          `<button class="primary" onclick="post('/api/v1/sessions/${row.session_id}/approve')">确认并同步为规则</button>`,
+          row.status === "ai_rule_pending"
+            ? `<button class="primary" onclick="post('/api/v1/sessions/${row.session_id}/approve')">确认并同步为规则</button>`
+            : "",
           `<button onclick="post('/api/v1/sessions/${row.session_id}/reject')">拒绝候选</button>`,
           "</p>",
         ].join("");
@@ -100,6 +106,7 @@
         document.querySelector("#sessions").innerHTML = rows.map((row) => `
           <article>
             <h2>识别结果 · ${statusText(row.status)}</h2>
+            ${row.error ? `<p class="error">${escapeHtml(row.error)}</p>` : ""}
             ${candidateResult(row)}
             ${actions(row)}
           </article>

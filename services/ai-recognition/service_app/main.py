@@ -89,13 +89,37 @@ def default_approval_sender(platform_url: str) -> ApprovalSender:
             headers={"X-AI-Recognition-Token": token},
             timeout=30,
         )
-        response.raise_for_status()
+        if not response.is_success:
+            try:
+                detail = response.json().get("detail")
+            except (AttributeError, ValueError):
+                detail = None
+            raise ValueError(detail or f"平台规则校验失败（HTTP {response.status_code}）。")
         result = response.json()
         if not isinstance(result, dict):
             raise ValueError("platform approval response is not an object")
         return result
 
     return send
+
+
+def platform_rule_payload(
+    session: dict[str, Any],
+    candidate: dict[str, Any],
+    *,
+    validate_only: bool = False,
+) -> dict[str, Any]:
+    return {
+        "session_id": session["session_id"],
+        "workspace_id": session["workspace_id"],
+        "task_id": session["task_id"],
+        "raw_record_id": session["raw_record_id"],
+        "format_fingerprint": session["fingerprint"],
+        "candidate_rule": candidate["candidate_rule"],
+        "rule_evidence": candidate["rule_evidence"],
+        "candidate_output": candidate,
+        "validate_only": validate_only,
+    }
 
 
 def create_app(
@@ -171,10 +195,18 @@ def create_app(
                 }
             )
             candidate = AiCandidate.model_validate(result)
+            candidate_payload = candidate.model_dump(mode="json")
+            validation_error = None
+            if sender is not None and token:
+                try:
+                    sender(platform_rule_payload(session, candidate_payload, validate_only=True), token)
+                except (ValueError, httpx.HTTPError) as exc:
+                    validation_error = str(exc)[:2000]
             updated = store.set_candidate(
                 session["session_id"],
-                candidate=candidate.model_dump(mode="json"),
-                status="ai_rule_pending",
+                candidate=candidate_payload,
+                status="ai_rule_invalid" if validation_error else "ai_rule_pending",
+                error=validation_error,
             )
         except Exception as exc:
             updated = store.set_candidate(
@@ -270,20 +302,10 @@ def create_app(
         if sender is None or not token:
             raise HTTPException(status_code=503, detail="Platform rule approval is not configured.")
         candidate = session["candidate"]
-        payload = {
-            "session_id": session_id,
-            "workspace_id": session["workspace_id"],
-            "task_id": session["task_id"],
-            "raw_record_id": session["raw_record_id"],
-            "format_fingerprint": session["fingerprint"],
-            "candidate_rule": candidate["candidate_rule"],
-            "rule_evidence": candidate["rule_evidence"],
-            "candidate_output": candidate,
-        }
         try:
-            platform_response = sender(payload, token)
+            platform_response = sender(platform_rule_payload(session, candidate), token)
         except (ValueError, httpx.HTTPError) as exc:
-            raise HTTPException(status_code=502, detail=f"Platform rule approval failed: {exc}") from exc
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         return response_payload(store.set_status(session_id, "approved", platform_response=platform_response))
 
     @app.post("/api/v1/sessions/{session_id}/reject")
