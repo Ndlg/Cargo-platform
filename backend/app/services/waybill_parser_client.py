@@ -87,6 +87,7 @@ def parse_order_row_drafts_with_service(
             "waybill_samples": waybill_samples or [],
             "rule_pack": rule_pack,
         },
+        timeout=180.0,
     )
     if payload.get("contract_version") != ORDER_ROW_DRAFTS_CONTRACT_VERSION:
         raise RuntimeError(
