@@ -807,7 +807,7 @@ def test_invalid_rule_is_retried_once_after_admin_correction(tmp_path: Path) -> 
     def validate_rule(payload: dict[str, Any], _token: str) -> dict[str, Any]:
         validations.append(payload)
         if payload["candidate_rule"]["defaults"]["quantity"] != 1:
-            raise ValueError("AI candidate rule is invalid: defaults.quantity")
+            raise module.RuleValidationRejected("AI candidate rule is invalid: defaults.quantity")
         return {"status": "valid"}
 
     app = module.create_app(
@@ -836,6 +836,38 @@ def test_invalid_rule_is_retried_once_after_admin_correction(tmp_path: Path) -> 
     assert stored["candidate"]["candidate_rule"]["defaults"]["quantity"] == 1
     assert len(validations) == 3
     assert len(stored["feedback"]) == 1
+
+
+def test_non_rule_sender_error_is_not_retried_after_admin_correction(tmp_path: Path) -> None:
+    module = load_ai_service(tmp_path / "import-default.db")
+    model = FakeModel()
+    app = module.create_app(
+        model_client=model,
+        db_path=tmp_path / "sessions.db",
+        internal_token="test-shared-token",
+        approval_sender=lambda _payload, _token: (_ for _ in ()).throw(
+            ValueError("platform approval response is not an object")
+        ),
+    )
+    corrected_rows = [{
+        "product": "登山鞋",
+        "sales_attr1": "紫色",
+        "sales_attr2": "42.5",
+        "quantity": 1,
+        "remark": "",
+    }]
+
+    with TestClient(app) as client:
+        session_id = client.post("/api/v1/recognize", json=raw_request()).json()["session_id"]
+        wait_for_session(client, session_id, "ai_rule_invalid")
+        client.post(
+            f"/api/v1/sessions/{session_id}/feedback",
+            json={"corrected_rows": corrected_rows},
+        )
+        stored = wait_for_session(client, session_id, "ai_rule_invalid")
+
+    assert len(model.calls) == 2
+    assert stored["error"] == "platform approval response is not an object"
 
 
 def test_approve_calls_platform_with_shared_token_and_reject_is_local(tmp_path: Path) -> None:
@@ -887,7 +919,7 @@ def test_platform_validation_error_keeps_business_detail(tmp_path: Path) -> None
     module.httpx.post = lambda *_args, **_kwargs: response
     try:
         module.default_approval_sender("http://backend")({}, "token")
-    except ValueError as exc:
+    except module.RuleValidationRejected as exc:
         assert str(exc) == "AI 生成的规则无法复现你确认的订单行，尚未保存。"
     else:
         raise AssertionError("platform validation failure must keep its business detail")

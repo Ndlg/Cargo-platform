@@ -22,6 +22,10 @@ from .store import SessionStore
 ApprovalSender = Callable[[dict[str, Any], str], dict[str, Any]]
 
 
+class RuleValidationRejected(ValueError):
+    pass
+
+
 def _dict_nodes(value: Any, path: tuple[str, ...] = ()) -> list[tuple[str, dict[str, Any]]]:
     nodes: list[tuple[str, dict[str, Any]]] = []
     if isinstance(value, dict):
@@ -90,12 +94,13 @@ def default_approval_sender(platform_url: str) -> ApprovalSender:
             headers={"X-AI-Recognition-Token": token},
             timeout=30,
         )
-        if not response.is_success:
+        if response.status_code == 422:
             try:
                 detail = response.json().get("detail")
             except (AttributeError, ValueError):
                 detail = None
-            raise ValueError(detail or f"平台规则校验失败（HTTP {response.status_code}）。")
+            raise RuleValidationRejected(detail or "平台拒绝了候选识别规则。")
+        response.raise_for_status()
         result = response.json()
         if not isinstance(result, dict):
             raise ValueError("platform approval response is not an object")
@@ -246,10 +251,10 @@ def create_app(
                 if sender is not None and token:
                     try:
                         sender(platform_rule_payload(session, candidate_payload, validate_only=True), token)
-                    except ValueError as exc:
+                    except RuleValidationRejected as exc:
                         validation_error = str(exc)[:2000]
                         repairable = True
-                    except httpx.HTTPError as exc:
+                    except (ValueError, httpx.HTTPError) as exc:
                         validation_error = str(exc)[:2000]
                 if validation_error and corrected_rows and repairable and attempt == 0:
                     model_feedback = [
@@ -459,4 +464,4 @@ def create_app(
 app = create_app()
 
 
-__all__ = ["OllamaModelClient", "app", "create_app"]
+__all__ = ["OllamaModelClient", "RuleValidationRejected", "app", "create_app"]
