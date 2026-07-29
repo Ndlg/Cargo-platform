@@ -86,13 +86,13 @@ docker compose -f ops/validation-stages/20260728-night/docker-compose.yml up -d
 
 ## 当前 6173 镜像
 
-- backend：`cargo-platform-validation-backend:manual-ai-ad6f1c5`
+- backend：`cargo-platform-validation-backend:single-ai-pack-0a1a18d`
 - parser：`cargo-platform-validation-parser:manual-ai-0a7b184`
-- UI：`cargo-platform-validation-ui:manual-ai-0a7b184`
+- UI：`cargo-platform-validation-ui:single-ai-pack-9ae024b`
 - AI 识别：`cargo-platform-ai-recognition:manual-ai-1d11168`
 - 本地模型：`qwen3.5:4b-q4_K_M`
 
-## 阶段 3：管理员手动单张学习
+## 阶段 3（历史，已被阶段 4 替代）：管理员手动单张学习
 
 业务页面不再触发 AI。管理员在
 `http://127.0.0.1:6173/admin/ai-recognition` 手动选择一张陌生面单：
@@ -142,6 +142,29 @@ docker compose `
 备份分别恢复到验证数据卷和 AI 会话卷；不得操作 `cargo-platform-data` 或任何
 5173 容器。
 
+## 阶段 4：单一 AI 识别规则包
+
+当前 AI 学习只维护一个稳定规则包：
+
+- 包名：`AI识别规则包`
+- 包代码：`ai-recognition-main`
+- AI 每确认一种陌生格式，就在包内新增一条格式子规则。
+- 同一格式指纹再次确认时只替换对应子规则，不新增规则包。
+- 管理员可在“查看/微调规则”中查看学习样本、确认结果和结构化解析步骤。
+- 保存前由独立 parser 校验完整规则包；无效规则不会写入数据库。
+- 删除规则包后再次学习或同名导入，会恢复同一数据库记录但使用全新内容，
+  不带回旧子规则、学习样本或说明。
+
+本阶段验证：
+
+- 后端完整测试：`224 passed`。
+- 前端 `vue-tsc --noEmit` 通过。
+- 浏览器验证单包显示、子规则微调、确认样本展示、有效保存和无效规则拦截。
+- 无效规则的校验错误固定显示在保存按钮旁，弹窗保持打开。
+- 6173 实机完成“删除 → 同名重建 → 再删除”，最终保持 `0` 个规则包，
+  供管理员从第一张陌生面单重新学习。
+- 仅重建 6173 backend 和 UI；parser、AI、本地模型与 5173 均未调整。
+
 ## 验收结果
 
 2026-07-29 使用 `scripts/verify_ai_recognition_e2e.py` 完成冷启动验收，报告保存在
@@ -176,7 +199,7 @@ python scripts/verify_ai_recognition_e2e.py `
 2026-07-29 已实际执行整套回退和恢复：6173 成功切回 `stage-17`/`stage-14`
 及原数据卷，健康检查通过；随后恢复本目录 AI 镜像和冷库卷，完整验收再次通过。
 
-## 5173 未变快照
+## 既有 5173 快照（阶段 4 未重新访问）
 
 验收前后均为：
 

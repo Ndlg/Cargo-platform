@@ -39,18 +39,18 @@ services:
       AI_RECOGNITION_URL: http://ai-recognition:8011
 
   backend:
-    image: cargo-platform-validation-backend:manual-ai-ad6f1c5
+    image: cargo-platform-validation-backend:single-ai-pack-0a1a18d
     depends_on:
       - redis
       - waybill-parser
       - ai-recognition
     environment:
-      APP_VERSION: manual-ai-ad6f1c5
+      APP_VERSION: single-ai-pack-0a1a18d
       AI_RECOGNITION_ENABLED: "true"
       AI_RECOGNITION_INTERNAL_TOKEN: ${AI_RECOGNITION_INTERNAL_TOKEN:?set AI_RECOGNITION_INTERNAL_TOKEN}
 
   ui:
-    image: cargo-platform-validation-ui:manual-ai-0a7b184
+    image: cargo-platform-validation-ui:single-ai-pack-9ae024b
 
 volumes:
   validation-data:
