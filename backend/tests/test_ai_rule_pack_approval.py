@@ -109,7 +109,7 @@ def test_internal_approval_activates_validated_revision(monkeypatch) -> None:
                     "sales_attr2": "",
                     "quantity": 1,
                     "remark": "",
-                    "image_match_text": "",
+                    "image_match_text": "shoe",
                 }
             ],
         }

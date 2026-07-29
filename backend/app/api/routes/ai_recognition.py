@@ -42,7 +42,6 @@ BUSINESS_ROW_FIELDS = (
     "sales_attr2",
     "quantity",
     "remark",
-    "image_match_text",
 )
 
 
