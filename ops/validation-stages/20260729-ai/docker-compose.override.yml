@@ -11,7 +11,7 @@ services:
           - local-model
 
   ai-recognition:
-    image: cargo-platform-ai-recognition:editable-invalid-40727a5
+    image: cargo-platform-ai-recognition:input-fields-465eb3b
     container_name: cargo-platform-validation-ai-recognition
     depends_on:
       - local-model
