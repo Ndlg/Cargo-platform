@@ -168,12 +168,13 @@ class FakeModel:
 
 def wait_for_session(client: TestClient, session_id: str, status: str) -> dict[str, Any]:
     deadline = time.monotonic() + 2
+    payload: dict[str, Any] = {}
     while time.monotonic() < deadline:
         payload = client.get(f"/api/v1/sessions/{session_id}").json()
         if payload["status"] == status:
             return payload
         time.sleep(0.01)
-    raise AssertionError(f"session {session_id} did not reach {status}")
+    raise AssertionError(f"session {session_id} did not reach {status}; last={payload}")
 
 
 def test_recognize_returns_running_session_before_slow_model_finishes(tmp_path: Path) -> None:
@@ -1077,6 +1078,103 @@ def test_admin_correction_can_compile_a_value_independent_text_rule(tmp_path: Pa
         "defaults": {"remark": ""},
     }
     assert all(value not in encoded_rule for value in ("2026户外登山鞋", "紫色", "42.5"))
+    assert len(model.calls) == 2
+    assert len(validations) == 3
+
+
+def test_admin_correction_can_compile_text_rule_when_product_follows_attributes(tmp_path: Path) -> None:
+    module = load_ai_service(tmp_path / "text-correction-source-order.db")
+    request = raw_request()
+    request["payload"] = {
+        "task": {
+            "documents": [
+                {
+                    "contents": [
+                        {
+                            "printXML": (
+                                "<layout><text><![CDATA[5.0二代灰黑，38 "
+                                "2026网面女鞋男鞋情侣透气跑步鞋休闲赤足时尚运动鞋健身一脚蹬*1"
+                                "]]></text></layout>"
+                            )
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+    request["field_selections"] = {"CN-PRINT-XML": ["print_text"]}
+    corrected_rows = [
+        {
+            "product": "2026网面女鞋男鞋情侣透气跑步鞋休闲赤足时尚运动鞋健身一脚蹬",
+            "sales_attr1": "5.0二代灰黑",
+            "sales_attr2": "38",
+            "quantity": 1,
+            "remark": "",
+        }
+    ]
+    expected_rule = {
+        "strategy": "text_pipeline_v1",
+        "text_path": "task.documents[].contents[].printXML",
+        "steps": [
+            {
+                "op": "split",
+                "source": "text",
+                "delimiter": "，",
+                "targets": ["sales_attr1", "text"],
+            },
+            {
+                "op": "split",
+                "source": "text",
+                "delimiter": " ",
+                "targets": ["sales_attr2", "text"],
+            },
+            {
+                "op": "split",
+                "source": "text",
+                "delimiter": "*",
+                "targets": ["product", "quantity"],
+            },
+            {"op": "to_positive_int", "target": "quantity"},
+        ],
+        "defaults": {"remark": ""},
+    }
+    validations: list[dict[str, Any]] = []
+
+    def validate_rule(payload: dict[str, Any], _token: str) -> dict[str, Any]:
+        validations.append(payload)
+        if payload["candidate_rule"] == expected_rule:
+            return {"status": "valid"}
+        raise module.RuleValidationRejected("AI 规则不能复现管理员确认行。")
+
+    model = FakeModel()
+    app = module.create_app(
+        model_client=model,
+        db_path=tmp_path / "sessions.db",
+        internal_token="test-shared-token",
+        approval_sender=validate_rule,
+    )
+
+    with TestClient(app) as client:
+        session_id = client.post("/api/v1/recognize", json=request).json()["session_id"]
+        wait_for_session(client, session_id, "ai_rule_invalid")
+        client.post(
+            f"/api/v1/sessions/{session_id}/feedback",
+            json={"corrected_rows": corrected_rows},
+        )
+        stored = wait_for_session(client, session_id, "ai_rule_pending")
+
+    rule = stored["candidate"]["candidate_rule"]
+    encoded_rule = json.dumps(rule, ensure_ascii=False)
+    assert stored["candidate"]["parents"][0]["rows"] == corrected_rows
+    assert rule == expected_rule
+    assert all(
+        value not in encoded_rule
+        for value in (
+            "2026网面女鞋男鞋情侣透气跑步鞋休闲赤足时尚运动鞋健身一脚蹬",
+            "5.0二代灰黑",
+            '"38"',
+        )
+    )
     assert len(model.calls) == 2
     assert len(validations) == 3
 

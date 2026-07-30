@@ -6,6 +6,7 @@ from hashlib import sha256
 import json
 import os
 from pathlib import Path
+import re
 from typing import Any, Callable
 
 from fastapi import FastAPI, HTTPException, Query
@@ -201,16 +202,97 @@ def _text_leaves(value: Any, path: tuple[str, ...] = ()) -> list[tuple[str, str]
     return leaves
 
 
+def compile_source_order_text_rule(
+    text_path: str,
+    text: str,
+    row: dict[str, Any],
+) -> dict[str, Any] | None:
+    segments: list[tuple[int, int, str, str]] = []
+    for field in ("product", "sales_attr1", "sales_attr2", "quantity"):
+        field_value = str(row[field]).strip()
+        if not field_value:
+            continue
+        positions = []
+        for match in re.finditer(re.escape(field_value), text):
+            if field == "quantity" and (
+                (match.start() and text[match.start() - 1].isdigit())
+                or (match.end() < len(text) and text[match.end()].isdigit())
+            ):
+                continue
+            positions.append((match.start(), match.end()))
+        if len(positions) != 1:
+            return None
+        start, end = positions[0]
+        segments.append((start, end, field, field_value))
+
+    segments.sort()
+    if len(segments) < 3 or any(left[1] > right[0] for left, right in zip(segments, segments[1:])):
+        return None
+
+    prefix = text[: segments[0][0]]
+    suffix = text[segments[-1][1] :]
+    if (
+        len(prefix) > 8
+        or any(char.isalnum() for char in prefix)
+        or len(suffix) > 8
+        or (
+            suffix.strip()
+            and any(char.isalnum() for char in suffix.strip())
+            and suffix.strip() not in QUANTITY_SUFFIX_UNITS
+        )
+    ):
+        return None
+
+    gaps = [text[left[1] : right[0]] for left, right in zip(segments, segments[1:])]
+    if any(
+        not gap
+        or len(gap) > 64
+        or any(char.isalnum() for char in gap)
+        or gap in left[3]
+        for left, gap in zip(segments, gaps)
+    ):
+        return None
+
+    steps: list[dict[str, Any]] = []
+    if prefix:
+        steps.append({"op": "strip_prefix", "target": "text", "literal": prefix})
+    if suffix:
+        steps.append({"op": "strip_suffix", "target": "text", "literal": suffix})
+    for index, gap in enumerate(gaps):
+        steps.append(
+            {
+                "op": "split",
+                "source": "text",
+                "delimiter": gap,
+                "targets": [
+                    segments[index][2],
+                    segments[index + 1][2] if index == len(gaps) - 1 else "text",
+                ],
+            }
+        )
+    steps.append({"op": "to_positive_int", "target": "quantity"})
+    return {
+        "strategy": "text_pipeline_v1",
+        "text_path": text_path,
+        "steps": steps,
+        "defaults": {
+            field: ""
+            for field in ("sales_attr1", "sales_attr2", "remark")
+            if not str(row[field]).strip()
+        },
+    }
+
+
 def compile_corrected_text_rule(
     payload: dict[str, Any],
     corrected_rows: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
-    # ponytail: compile one literal text row; add repeated-segment synthesis when a real rejected sample needs it.
+    # ponytail: compile one text row; add repeated-segment synthesis when a real rejected sample needs it.
     if len(corrected_rows) != 1 or corrected_rows[0]["remark"]:
         return None
     row = corrected_rows[0]
     product = row["product"].strip()
-    if len(product) < 3 or product[0].isalnum() or product[-1].isalnum():
+    if len(product) < 3:
         return None
     field_values = [
         (field, str(row[field]).strip())
@@ -222,6 +304,9 @@ def compile_corrected_text_rule(
         return None
 
     for text_path, text in _text_leaves(payload):
+        ordered_rule = compile_source_order_text_rule(text_path, text, row)
+        if ordered_rule:
+            return ordered_rule
         if not text.startswith(product) or text.count(product) != 1:
             continue
         start, end = product[0], product[-1]
