@@ -376,15 +376,36 @@ def _compile_text_rule(
     corrected_rows: list[dict[str, Any]],
     text_sources: list[tuple[str, str, dict[str, Any] | None]],
 ) -> dict[str, Any] | None:
-    # ponytail: one corrected text row is enough for delimiter programs;
-    # repeated text needs a real failed sample before adding another primitive.
-    if len(corrected_rows) != 1 or corrected_rows[0]["remark"]:
+    if any(row["remark"] for row in corrected_rows):
         return None
-    row = corrected_rows[0]
     for text_path, text, selector in text_sources:
-        rule = _compile_source_order_text_rule(text_path, text, row, selector)
-        if rule:
-            return rule
+        if len(corrected_rows) == 1:
+            rule = _compile_source_order_text_rule(
+                text_path, text, corrected_rows[0], selector
+            )
+            if rule:
+                return rule
+            continue
+        separators = {
+            char for char in text if not char.isalnum() and not char.isspace()
+        }
+        separators.update(
+            separator
+            for separator in ("\r\n", "\n", "\r", "\t")
+            if separator in text
+        )
+        for separator in sorted(
+            separators, key=lambda value: (-len(value), value)
+        ):
+            parts = [part.strip() for part in text.split(separator)]
+            if len(parts) != len(corrected_rows) or any(not part for part in parts):
+                continue
+            rules = [
+                _compile_source_order_text_rule(text_path, part, row, selector)
+                for part, row in zip(parts, corrected_rows)
+            ]
+            if rules[0] and all(rule == rules[0] for rule in rules[1:]):
+                return {**rules[0], "item_split": separator}
     return None
 
 

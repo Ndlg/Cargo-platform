@@ -102,6 +102,29 @@ def test_synthesizer_compiles_source_order_without_model_rule() -> None:
     ]
 
 
+def test_synthesizer_compiles_delimited_items_into_one_reusable_rule() -> None:
+    result = synthesize_rule(
+        payload=item_info("【商品甲】红色 42.5 1 件;【商品甲】红色 42 1 件"),
+        source_component="cainiao-cnprint",
+        corrected_rows=[
+            row("商品甲", "红色", "42.5", 1),
+            row("商品甲", "红色", "42", 1),
+        ],
+        gold_samples=[],
+        negative_samples=[],
+    )
+
+    assert result["status"] == "compiled"
+    assert result["rule"]["item_split"] == ";"
+    assert replay_rule(
+        result["rule"],
+        item_info("【商品乙】蓝色 40.5 2 件;【商品丙】绿色 41 1 件"),
+    ) == [
+        row("商品乙", "蓝色", "40.5", 2),
+        row("商品丙", "绿色", "41", 1),
+    ]
+
+
 def test_synthesizer_prefers_direct_structured_paths_and_preserves_duplicates() -> None:
     payload = structured_items(
         {"itemName": "商品甲", "skuFullName": "灰黑", "skuSize": "38", "itemNum": 1},
