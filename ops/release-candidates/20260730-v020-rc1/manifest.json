@@ -1,0 +1,84 @@
+{
+  "candidate": "0.2.0-rc.1",
+  "created_at": "2026-07-30T18:17:19+08:00",
+  "source": {
+    "pre_closeout_commit": "acdb6480a6e318518932d13639cb5de2f8401b2f",
+    "pre_closeout_tag": "validation-6173-pre-release-closeout-20260730",
+    "plan_commit": "f5f7373",
+    "branch": "codex/local-ai-waybill-recognition"
+  },
+  "validation_runtime": {
+    "backend": {
+      "container_id": "32ee12ef3af5c52f07625d9b22295a551ddec037078d1b02154d21c4a08646b0",
+      "image": "cargo-platform-validation-backend:delivery-905b0a5-20260730-133456",
+      "started_at": "2026-07-30T05:37:55.717539771Z",
+      "restart_count": 0
+    },
+    "parser": {
+      "container_id": "2fbb9b2da1bd816962947ce3254332cb29709b3225ae619e86c5488f7b037f90",
+      "image": "cargo-platform-validation-parser:delivery-905b0a5-20260730-133456",
+      "started_at": "2026-07-30T05:37:55.488468222Z",
+      "restart_count": 0
+    },
+    "ui": {
+      "container_id": "b8b56ed0181abb2a945eb566ccb41f724158c726086ff731058117c6fe49d340",
+      "image": "cargo-platform-validation-ui:delivery-905b0a5-20260730-133456",
+      "started_at": "2026-07-30T05:37:55.946010014Z",
+      "restart_count": 0
+    },
+    "ai_recognition": {
+      "container_id": "3e6a3dc9294167425e4ef2b94619bdd3a511979857c2bcbba2275b25d253589f",
+      "image": "cargo-platform-ai-recognition:confirm-lock-acdb648-20260730-175714",
+      "started_at": "2026-07-30T09:58:13.982771953Z",
+      "restart_count": 0
+    },
+    "platform_data_volume": "cargo-platform-validation-ai-data-20260729-110409",
+    "ai_session_volume": "cargo-platform-validation-ai-sessions-20260729"
+  },
+  "field_runtime_frozen": {
+    "backend": {
+      "container_id": "eb42223185ae60de5c9b24c1752e23f2e5e63f12db1b48b9e9ba5591fe64b05c",
+      "started_at": "2026-07-28T15:34:32.389249457Z"
+    },
+    "tenant_ui": {
+      "container_id": "5ed09f8a74fc36a65eaf68f222998620487b1cb73c63ac66ae2aac414f069d07",
+      "started_at": "2026-07-28T15:34:32.394243809Z"
+    },
+    "parser": {
+      "container_id": "5d76b24c504043c44da77962a50ca2dc42744550ec4a1666ecc8af63fc452bec",
+      "started_at": "2026-07-28T15:34:32.387000492Z"
+    },
+    "admin_ui": {
+      "container_id": "ea7b3ad8827d28f363e03ff0bc169c942b09eeb68b92e8ab16c1a18ea4f533ed",
+      "started_at": "2026-07-28T15:34:32.39865917Z"
+    },
+    "redis": {
+      "container_id": "d702409461c6c1a1991a5af843330ce4cb0a53f1a51f77cd29e78dd52ea12905",
+      "started_at": "2026-07-28T15:34:32.396390428Z"
+    },
+    "data_volume": "cargo-platform-data"
+  },
+  "backups": [
+    {
+      "kind": "ai_sessions",
+      "path": "C:\\Users\\ndlgx\\Documents\\Projects\\GitHub\\Ndlg\\cargo-platform\\.worktrees\\local-ai-waybill-recognition\\ops\\validation-stages\\20260729-ai\\runtime\\release-closeout-20260730-181719\\ai-recognition-pre-release.db",
+      "bytes": 90112,
+      "sha256": "5F7762DDFF3C5EBDFCE572638F4A0E7BDC65BF16168344384C7F44243511DEE8",
+      "integrity_check": "ok"
+    },
+    {
+      "kind": "platform",
+      "path": "C:\\Users\\ndlgx\\Documents\\Projects\\GitHub\\Ndlg\\cargo-platform\\.worktrees\\local-ai-waybill-recognition\\ops\\validation-stages\\20260729-ai\\runtime\\release-closeout-20260730-181719\\cargo-platform-pre-release.db",
+      "bytes": 66306048,
+      "sha256": "6CA1A7EC52D1D74ED92CD72F13295DD300452C23EC4AB0427A7DD2CDE59EA1F1",
+      "integrity_check": "ok"
+    }
+  ],
+  "verification": {
+    "implementation_complete": false,
+    "full_tests_passed": false,
+    "browser_passed": false,
+    "coverage_invariant_passed": false,
+    "field_runtime_unchanged": false
+  }
+}
