@@ -251,55 +251,67 @@ def migrate_rule_pack(
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for sample in samples:
         groups[sample["v2_fingerprint"]].append(sample)
-    report["counts"]["groups_total"] = len(groups)
 
     learning_by_v2: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for item in source.get("ai_learning_records", []):
+    learning_records = source.get("ai_learning_records", [])
+    learning_evidence_unlocatable = "ai_learning_records" in source and not isinstance(learning_records, list)
+    for item in learning_records if isinstance(learning_records, list) else []:
         if not isinstance(item, dict):
+            learning_evidence_unlocatable = True
             continue
         learning_payload = item.get("sample_payload")
         source_component = item.get("source_component")
-        expected_rows = _business_rows(item.get("confirmed_rows"))
-        declared_fingerprint = item.get("fingerprint")
         document_sequence = item.get("document_sequence", 1)
         if (
             not isinstance(learning_payload, dict)
             or not isinstance(source_component, str)
             or not source_component.strip()
-            or expected_rows is None
-            or not isinstance(declared_fingerprint, str)
-            or not declared_fingerprint
             or not isinstance(document_sequence, int)
             or isinstance(document_sequence, bool)
             or document_sequence < 1
         ):
+            learning_evidence_unlocatable = True
             continue
+        document_payload = _select_document(learning_payload, document_sequence)
+        if document_payload is None:
+            learning_evidence_unlocatable = True
+            continue
+        expected_rows = _business_rows(item.get("confirmed_rows"))
+        declared_fingerprint = item.get("fingerprint")
+        evidence_error = (
+            ""
+            if expected_rows is not None and isinstance(declared_fingerprint, str) and declared_fingerprint
+            else "learning_evidence_missing"
+        )
         learning_sample = {
             "source_component": source_component.strip(),
             "document_sequence": document_sequence,
-            "payload": learning_payload,
-            "expected_rows": expected_rows,
+            "payload": document_payload,
+            "expected_rows": expected_rows or [],
             "sample_hash": _hash(
                 {
                     "source_component": source_component.strip(),
-                    "payload": learning_payload,
-                    "expected_rows": expected_rows,
+                    "document_sequence": document_sequence,
+                    "payload": document_payload,
+                    "confirmed_rows": item.get("confirmed_rows"),
                 }
             ),
             "legacy_fingerprint": fingerprint_for_payload(
-                learning_payload, source_component, "legacy_structure_v1"
+                document_payload, source_component, "legacy_structure_v1"
             ),
             "declared_fingerprint": declared_fingerprint,
             "v2_fingerprint": fingerprint_for_payload(
-                learning_payload, source_component, "business_shape_v2"
+                document_payload, source_component, "business_shape_v2"
             ),
+            "evidence_error": evidence_error,
         }
         learning_by_v2[learning_sample["v2_fingerprint"]].append(learning_sample)
 
+    report["counts"]["groups_total"] = len(set(groups) | set(learning_by_v2))
     verified_profiles: list[dict[str, Any]] = []
     verified_samples: list[dict[str, Any]] = []
     fatal_preview_failure = False
-    for v2_fingerprint in sorted(groups):
+    for v2_fingerprint in sorted(set(groups) | set(learning_by_v2)):
         group_samples = groups[v2_fingerprint]
         learning_samples = learning_by_v2.get(v2_fingerprint, [])
         all_group_samples = [*group_samples, *learning_samples]
@@ -313,9 +325,20 @@ def migrate_rule_pack(
             "sample_hashes": sorted(sample["sample_hash"] for sample in all_group_samples),
         }
         report["counts"]["learning_samples_checked"] += len(learning_samples)
-        reason = ""
+        reason = (
+            "validation_evidence_missing"
+            if not group_samples
+            else next(
+                (
+                    sample["evidence_error"]
+                    for sample in learning_samples
+                    if sample["evidence_error"]
+                ),
+                "",
+            )
+        )
         bodies: dict[bytes, dict[str, Any]] = {}
-        for sample in all_group_samples:
+        for sample in all_group_samples if not reason else []:
             if (
                 "declared_fingerprint" in sample
                 and sample["declared_fingerprint"] != sample["legacy_fingerprint"]
@@ -399,11 +422,24 @@ def migrate_rule_pack(
     reasons: list[str] = []
     if fatal_preview_failure:
         reasons.append("preview_validation_failed")
+    if learning_evidence_unlocatable:
+        reasons.append("learning_evidence_unlocatable")
+        report["diagnostics"].append(
+            {
+                "fingerprint": "",
+                "status": "unresolved",
+                "reason": "learning_evidence_unlocatable",
+                "validation_sample_count": 0,
+                "learning_sample_count": 1,
+                "source_profile_body_count": 0,
+                "sample_hashes": [],
+            }
+        )
     if not verified_profiles:
         reasons.append("no_verified_groups")
     if report["counts"]["groups_unresolved"]:
         reasons.append("unresolved_groups_present")
-    if fatal_preview_failure or not verified_profiles:
+    if fatal_preview_failure or learning_evidence_unlocatable or not verified_profiles:
         report["reasons"] = reasons
         return None, report
 

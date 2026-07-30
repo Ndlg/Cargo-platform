@@ -40,6 +40,26 @@ def package_profile(payload: dict, *, product_path: str) -> dict:
     }
 
 
+def selected_document(payload: dict, document_sequence: int) -> dict:
+    return {
+        **payload,
+        "task": {
+            **payload["task"],
+            "documents": [payload["task"]["documents"][document_sequence - 1]],
+        },
+    }
+
+
+def document_profile(payload: dict, document_sequence: int, *, product_path: str = "itemName") -> dict:
+    selected = selected_document(payload, document_sequence)
+    return {
+        "fingerprint": fingerprint_for_payload(selected, "cainiao-cnprint", "legacy_structure_v1"),
+        "strategy": "structured_items_v1",
+        "items_path": "task.documents[].contents[].data.packageItemDetail[]",
+        "fields": {"product": product_path, "quantity": "itemNum"},
+    }
+
+
 def pack(profiles: list[dict], *, learning_records: list[dict] | None = None) -> dict:
     result = {
         "contract_version": "recognition_rule_pack_v1",
@@ -245,7 +265,7 @@ def test_learning_record_profile_body_participates_in_group_conflict_check() -> 
     assert report["diagnostics"][0]["source_profile_body_count"] == 2
 
 
-def test_incomplete_learning_record_is_not_treated_as_replay_evidence() -> None:
+def test_locatable_incomplete_learning_record_makes_its_group_unresolved() -> None:
     payload = {"items": [{"name": "shoe", "quantity": 1}]}
     source = pack(
         [profile(payload)],
@@ -255,7 +275,7 @@ def test_incomplete_learning_record_is_not_treated_as_replay_evidence() -> None:
                 "source_component": "collector",
                 "sample_payload": payload,
                 "confirmed_rows": [row("shoe")],
-                "document_sequence": "not-an-integer",
+                "document_sequence": 1,
             }
         ],
     )
@@ -267,9 +287,134 @@ def test_incomplete_learning_record_is_not_treated_as_replay_evidence() -> None:
         candidate_version="2.0.0",
     )
 
+    assert candidate is None
+    assert report["candidate_ready"] is False
+    assert report["diagnostics"][0]["reason"] == "learning_evidence_missing"
+
+
+def test_unlocatable_learning_record_blocks_the_whole_candidate() -> None:
+    payload = {"items": [{"name": "shoe", "quantity": 1}]}
+    source = pack([profile(payload)], learning_records=[{"session_id": "unknown-record"}])
+
+    candidate, report = migrate_rule_pack(
+        source,
+        [validation(payload, [row("shoe")])],
+        candidate_code="source-pack-v2-candidate",
+        candidate_version="2.0.0",
+    )
+
+    assert candidate is None
+    assert report["candidate_ready"] is False
+    assert "learning_evidence_unlocatable" in report["reasons"]
+
+
+def test_learning_record_selects_document_sequence_before_fingerprint_and_replay() -> None:
+    payload = {
+        "task": {
+            "documents": [
+                {
+                    "contents": [
+                        {"data": {"packageItemDetail": [{"itemName": "first", "itemNum": 1}]}}
+                    ]
+                },
+                {
+                    "contents": [
+                        {"data": {"packageItemDetail": [{"itemName": "second", "itemNum": 2}]}}
+                    ]
+                },
+            ]
+        }
+    }
+    selected = selected_document(payload, 2)
+    source = pack(
+        [document_profile(payload, 2)],
+        learning_records=[
+            {
+                "session_id": "session-doc-2",
+                "fingerprint": fingerprint_for_payload(
+                    selected, "cainiao-cnprint", "legacy_structure_v1"
+                ),
+                "source_component": "cainiao-cnprint",
+                "sample_payload": payload,
+                "document_sequence": 2,
+                "confirmed_rows": [row("second", 2)],
+            }
+        ],
+    )
+
+    candidate, report = migrate_rule_pack(
+        source,
+        [
+            {
+                **validation(payload, [row("second", 2)], "cainiao-cnprint"),
+                "document_sequence": 2,
+            }
+        ],
+        candidate_code="source-pack-v2-candidate",
+        candidate_version="2.0.0",
+    )
+
     assert candidate is not None
     assert report["candidate_ready"] is True
-    assert report["counts"]["learning_samples_checked"] == 0
+    assert report["counts"]["learning_samples_checked"] == 1
+
+
+def test_selected_learning_document_profile_body_can_conflict_with_validation_group() -> None:
+    validation_payload = {
+        "task": {
+            "documents": [
+                {
+                    "contents": [
+                        {
+                            "data": {
+                                "packageItemDetail": [
+                                    {"itemName": "shoe", "simpleName": "shoe", "itemNum": 1}
+                                ]
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+    learning_payload = deepcopy(validation_payload)
+    learning_payload["task"]["documents"].insert(0, {"contents": [{"data": {"ignored": "first"}}]})
+    learning_payload["task"]["documents"][1]["contents"][0]["data"]["unrelated"] = "legacy-only"
+    learning_selected = selected_document(learning_payload, 2)
+    source = pack(
+        [
+            document_profile(validation_payload, 1, product_path="itemName"),
+            document_profile(learning_payload, 2, product_path="simpleName"),
+        ],
+        learning_records=[
+            {
+                "session_id": "session-doc-2-conflict",
+                "fingerprint": fingerprint_for_payload(
+                    learning_selected, "cainiao-cnprint", "legacy_structure_v1"
+                ),
+                "source_component": "cainiao-cnprint",
+                "sample_payload": learning_payload,
+                "document_sequence": 2,
+                "confirmed_rows": [row("shoe")],
+            }
+        ],
+    )
+
+    candidate, report = migrate_rule_pack(
+        source,
+        [
+            {
+                **validation(validation_payload, [row("shoe")], "cainiao-cnprint"),
+                "document_sequence": 1,
+            }
+        ],
+        candidate_code="source-pack-v2-candidate",
+        candidate_version="2.0.0",
+    )
+
+    assert candidate is None
+    assert report["candidate_ready"] is False
+    assert report["diagnostics"][0]["reason"] == "profile_body_conflict"
 
 
 def test_candidate_code_guard_and_missing_evidence_do_not_forge_candidate() -> None:
