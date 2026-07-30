@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
 
 
 BUSINESS_HEADERS = (
@@ -39,8 +40,18 @@ def _sheet_rows(sheet: Any) -> list[list[str | int | float | bool | None]]:
     return rows
 
 
-def _image_hashes(sheet: Any) -> list[str]:
-    return [sha256(image._data()).hexdigest() for image in sheet._images]
+def _image_anchor(image: Any) -> str:
+    anchor = image.anchor
+    if isinstance(anchor, str):
+        return anchor
+    return f"{get_column_letter(anchor._from.col + 1)}{anchor._from.row + 1}"
+
+
+def _image_hashes(sheet: Any) -> list[dict[str, str]]:
+    return [
+        {"anchor": _image_anchor(image), "sha256": sha256(image._data()).hexdigest()}
+        for image in sheet._images
+    ]
 
 
 def workbook_manifest(path: Path) -> dict[str, Any]:

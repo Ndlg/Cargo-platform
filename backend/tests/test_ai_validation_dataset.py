@@ -11,6 +11,7 @@ from typing import Iterator
 
 import pytest
 
+import scripts.ai_validation_dataset as validation_dataset
 from scripts.ai_validation_dataset import (
     build_cold_start_database,
     export_answer_set,
@@ -296,12 +297,15 @@ def test_export_answer_set_uses_active_pack_and_records_manifest(tmp_path: Path)
     assert "ai_sessions" not in rows[0]["response"]
 
 
-def test_export_gold_rows_keeps_raw_payloads_and_excludes_rule_payloads(tmp_path: Path) -> None:
+def test_export_gold_rows_keeps_raw_payloads_and_excludes_rule_payloads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     source = tmp_path / "source.db"
     output = tmp_path / "gold-rows.jsonl"
     create_source_database(source)
 
     with fake_parser() as (parser_url, requests):
+        monkeypatch.setattr(validation_dataset, "ORACLE_PARSER_URL", parser_url)
         manifest = export_gold_rows(
             source,
             parser_url,
@@ -346,3 +350,24 @@ def test_export_gold_rows_keeps_raw_payloads_and_excludes_rule_payloads(tmp_path
     assert "recognition_rule_packs" not in output.read_text(encoding="utf-8")
     assert manifest["gold_output_sha256"] == sha256_file(output)
     assert json.loads((tmp_path / "oracle-manifest.json").read_text(encoding="utf-8")) == manifest
+
+
+def test_export_gold_rows_rejects_non_oracle_before_sending_rule_pack(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source.db"
+    output = tmp_path / "gold-rows.jsonl"
+    create_source_database(source)
+    monkeypatch.setattr(validation_dataset, "ORACLE_PARSER_URL", "http://127.0.0.1:8010")
+
+    with fake_parser() as (non_oracle_url, requests), pytest.raises(ValueError, match="5173 oracle"):
+        export_gold_rows(
+            source,
+            non_oracle_url,
+            output,
+            task_ids=[12],
+            exclude_rule_tables=True,
+        )
+
+    assert requests == []
+    assert not output.exists()

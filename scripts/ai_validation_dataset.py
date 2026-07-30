@@ -51,6 +51,7 @@ CLEARED_TABLES = {
 }
 
 IGNORED_TABLES = {"alembic_version", "sqlite_sequence"}
+ORACLE_PARSER_URL = "http://127.0.0.1:8010"
 
 
 def sha256_file(path: Path) -> str:
@@ -454,6 +455,8 @@ def export_gold_rows(
     gold_output.parent.mkdir(parents=True, exist_ok=True)
 
     parser_base = parser_url.rstrip("/")
+    if parser_base != ORACLE_PARSER_URL:
+        raise ValueError(f"gold row export only reads the 5173 oracle parser at {ORACLE_PARSER_URL}")
     parser_health = request_json(f"{parser_base}/health")
     source_sha = sha256_file(source)
     temporary = gold_output.with_name(f".{gold_output.name}.{uuid4().hex}.tmp")
