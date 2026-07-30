@@ -261,6 +261,23 @@ def test_candidate_groups_are_stable_span_id_lists() -> None:
     assert len(first["candidate_groups"]["repeated_line_or_array_group"]) == 1
 
 
+def test_repeated_quantity_instances_bound_model_row_capacity() -> None:
+    evidence = build_evidence(
+        item_info("商品甲，红色，42*1；商品乙，蓝色，43*1"),
+        "cainiao-cnprint",
+    )
+    quantity_ids = {
+        span["span_id"]
+        for span in evidence["spans"]
+        if span["token_class"] == "positive_integer_quantity"
+    }
+
+    assert any(
+        len(group) == 2 and set(group) <= quantity_ids
+        for group in evidence["candidate_groups"]["repeated_line_or_array_group"]
+    )
+
+
 def test_parser_analyze_endpoint_returns_evidence() -> None:
     with TestClient(app) as client:
         response = client.post(

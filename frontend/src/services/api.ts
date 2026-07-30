@@ -376,7 +376,10 @@ export interface RecognitionRulePackSummary extends ApiRecord {
   updated_at?: string | null
 }
 
-export type RecognitionRuleStrategy = 'structured_items_v1' | 'text_pipeline_v1'
+export type RecognitionRuleStrategy =
+  | 'structured_items_v1'
+  | 'text_pipeline_v1'
+  | 'source_projection_v1'
 
 export type RecognitionBusinessField =
   | 'product'
@@ -410,6 +413,8 @@ export interface RecognitionFormatProfile extends ApiRecord {
   text_path?: string
   item_split?: string
   steps?: RecognitionTextStep[]
+  selected_fields?: string[]
+  rows?: Array<Partial<Record<RecognitionBusinessField, ApiRecord[]>>>
 }
 
 export interface RecognitionLearningRecord extends ApiRecord {

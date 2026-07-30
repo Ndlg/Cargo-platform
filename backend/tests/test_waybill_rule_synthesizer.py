@@ -13,7 +13,14 @@ PARSER_ROOT = REPO_ROOT / "services" / "waybill-parser"
 if str(PARSER_ROOT) not in sys.path:
     sys.path.insert(0, str(PARSER_ROOT))
 
-from service_app.rule_synthesizer import replay_rule, synthesize_rule  # noqa: E402
+from service_app.declarative_rules import projection_grammar_signature  # noqa: E402
+from service_app.evidence import build_evidence  # noqa: E402
+import service_app.rule_synthesizer as rule_synthesizer  # noqa: E402
+from service_app.rule_synthesizer import (  # noqa: E402
+    _projection_candidates,
+    replay_rule,
+    synthesize_rule,
+)
 from service_app.main import app  # noqa: E402
 
 
@@ -123,6 +130,415 @@ def test_synthesizer_compiles_delimited_items_into_one_reusable_rule() -> None:
         row("商品乙", "蓝色", "40.5", 2),
         row("商品丙", "绿色", "41", 1),
     ]
+
+
+def test_synthesizer_compiles_repeated_text_values_with_wrapped_quantities() -> None:
+    payload = {
+        "contents": [
+            {"data": {"ITEM_INFO": "商品甲 红色;42 【1件】"}},
+            {"data": {"ITEM_INFO": "商品甲 红色;42 【1件】"}},
+        ]
+    }
+    result = synthesize_rule(
+        payload=payload,
+        source_component="cainiao-cnprint",
+        corrected_rows=[
+            row("商品甲", "红色", "42", 1),
+            row("商品甲", "红色", "42", 1),
+        ],
+        gold_samples=[],
+        negative_samples=[],
+    )
+
+    assert result["status"] == "compiled"
+    assert replay_rule(
+        result["rule"],
+        {
+            "contents": [
+                {"data": {"ITEM_INFO": "商品乙 蓝色;43 【2件】"}},
+                {"data": {"ITEM_INFO": "商品丙 绿色;44 【3件】"}},
+            ]
+        },
+    ) == [
+        row("商品乙", "蓝色", "43", 2),
+        row("商品丙", "绿色", "44", 3),
+    ]
+
+
+def test_synthesizer_compiles_lines_in_one_value_as_distinct_rows() -> None:
+    result = synthesize_rule(
+        payload=item_info(
+            "商品甲 红色;42 【1件】\n"
+            "商品乙 蓝色;43 【2件】"
+        ),
+        source_component="cainiao-cnprint",
+        corrected_rows=[
+            row("商品甲", "红色", "42", 1),
+            row("商品乙", "蓝色", "43", 2),
+        ],
+        gold_samples=[],
+        negative_samples=[],
+    )
+
+    assert result["status"] == "compiled"
+    assert replay_rule(
+        result["rule"],
+        item_info(
+            "商品丙 绿色;44 【3件】\n"
+            "商品丁 黄色;45 【4件】"
+        ),
+    ) == [
+        row("商品丙", "绿色", "44", 3),
+        row("商品丁", "黄色", "45", 4),
+    ]
+
+
+def test_synthesizer_projects_multiple_safe_sources_and_reuses_one_source() -> None:
+    payload = {
+        "contents": [
+            {
+                "data": {
+                    "ITEM_INFO": "补差价",
+                    "ITEM_TOTAL_COUNT": "180",
+                }
+            }
+        ]
+    }
+    result = synthesize_rule(
+        payload=payload,
+        source_component="cainiao-cnprint",
+        corrected_rows=[row("补差价", "补差价", "", 180)],
+        gold_samples=[],
+        negative_samples=[],
+    )
+
+    assert result["status"] == "compiled"
+    assert result["rule"]["strategy"] == "source_projection_v1"
+    assert replay_rule(
+        result["rule"],
+        {
+            "contents": [
+                {
+                    "data": {
+                        "ITEM_INFO": "另一个补差商品",
+                        "ITEM_TOTAL_COUNT": "2",
+                    }
+                }
+            ]
+        },
+    ) == [row("另一个补差商品", "另一个补差商品", "", 2)]
+
+
+def test_synthesizer_projects_xml_lines_and_replays_same_grammar() -> None:
+    result = synthesize_rule(
+        payload=print_xml("黄色，43\n商品甲*1"),
+        source_component="cainiao-cnprint",
+        corrected_rows=[row("商品甲", "黄色", "43", 1)],
+        gold_samples=[
+            {
+                "raw_payload": print_xml("蓝色，42\n商品乙*2"),
+                "source_component": "cainiao-cnprint",
+                "rows": [row("商品乙", "蓝色", "42", 2)],
+            }
+        ],
+        negative_samples=[],
+    )
+
+    assert result["status"] == "compiled"
+    assert result["rule"]["strategy"] == "source_projection_v1"
+    assert replay_rule(
+        result["rule"],
+        print_xml("绿色，44\n商品丙*3"),
+    ) == [row("商品丙", "绿色", "44", 3)]
+
+
+def test_synthesizer_projects_multiple_rows_without_deduplicating() -> None:
+    result = synthesize_rule(
+        payload=print_xml(
+            "低帮深卡其，42.5\n"
+            "商品甲*1\n"
+            "属性乙\n"
+            "商品乙*1"
+        ),
+        source_component="cainiao-cnprint",
+        corrected_rows=[
+            row("商品甲", "低帮深卡其", "42.5", 1),
+            row("属性乙 商品乙", "属性乙", "商品乙", 1),
+        ],
+        gold_samples=[],
+        negative_samples=[],
+    )
+
+    assert result["status"] == "compiled"
+    assert replay_rule(result["rule"], print_xml(
+        "低帮黑白色，43.5\n"
+        "商品丙*2\n"
+        "属性丁\n"
+        "商品丁*2"
+    )) == [
+        row("商品丙", "低帮黑白色", "43.5", 2),
+        row("属性丁 商品丁", "属性丁", "商品丁", 2),
+    ]
+
+
+def test_synthesizer_projects_safe_transforms_and_concatenation() -> None:
+    result = synthesize_rule(
+        payload=print_xml(
+            "秒67 175，,灰色，默认*1\n"
+            "秒67 175，,默认，默认*1\n"
+            "颜色分类:C6全黑;鞋码:44"
+        ),
+        source_component="cainiao-cnprint",
+        corrected_rows=[
+            row(
+                "秒67 175，灰色，默认*1 秒67 175",
+                "C6全黑",
+                "44",
+                1,
+            )
+        ],
+        gold_samples=[],
+        negative_samples=[],
+    )
+
+    assert result["status"] == "compiled"
+    assert replay_rule(
+        result["rule"],
+        print_xml(
+            "秒45 按跑，,白色，默认*2\n"
+            "秒45 按跑，,默认，默认*2\n"
+            "颜色分类:Cloud黑灰;鞋码:43"
+        ),
+    ) == [
+        row(
+            "秒45 按跑，白色，默认*2 秒45 按跑",
+            "Cloud黑灰",
+            "43",
+            2,
+        )
+    ]
+
+
+def test_projection_synthesis_rejects_ambiguous_same_path_occurrences() -> None:
+    result = synthesize_rule(
+        payload=print_xml("商品甲\n商品甲\n1"),
+        source_component="cainiao-cnprint",
+        corrected_rows=[row("商品甲", "", "", 1)],
+        gold_samples=[],
+        negative_samples=[],
+    )
+
+    assert result["status"] == "compiler_capability_missing"
+    assert result["rule"] is None
+
+
+def test_projection_synthesis_rejects_ambiguous_concatenations() -> None:
+    result = synthesize_rule(
+        payload=print_xml("商品甲\n商品甲\n属性乙*1"),
+        source_component="cainiao-cnprint",
+        corrected_rows=[row("商品甲 属性乙", "", "", 1)],
+        gold_samples=[],
+        negative_samples=[],
+    )
+
+    assert result["status"] == "compiler_capability_missing"
+    assert result["rule"] is None
+
+
+def test_projection_uses_a_unique_parallel_field_to_resolve_occurrences() -> None:
+    def payload(products: str, attributes: str) -> dict[str, object]:
+        return {
+            "contents": [
+                {
+                    "printXML": (
+                        '<layout id="CUSTOM_AREA">'
+                        f"<text><![CDATA[{products}]]></text>"
+                        f"<text><![CDATA[{attributes}]]></text>"
+                        "</layout>"
+                    )
+                }
+            ]
+        }
+
+    result = synthesize_rule(
+        payload=payload(
+            "款式甲，,灰色，默认*1\n款式甲，,默认，默认*1",
+            "颜色分类:红色;鞋码:42\n颜色分类:红色;鞋码:43",
+        ),
+        source_component="cainiao-cnprint",
+        corrected_rows=[row("款式甲，灰色，默认*1 款式甲", "红色", "42", 1)],
+        gold_samples=[],
+        negative_samples=[],
+    )
+
+    assert result["status"] == "compiled"
+    assert replay_rule(
+        result["rule"],
+        payload(
+            "款式乙，,蓝色，默认*2\n款式乙，,默认，默认*2",
+            "颜色分类:绿色;鞋码:44\n颜色分类:绿色;鞋码:45",
+        ),
+    ) == [row("款式乙，蓝色，默认*2 款式乙", "绿色", "44", 2)]
+
+
+def test_projection_grammar_includes_source_paths_and_occurrences() -> None:
+    evidence = build_evidence(print_xml("商品甲*1"), "cainiao-cnprint")
+    changed = json.loads(json.dumps(evidence))
+    changed["spans"][0]["source_path"] = "contents[0].data.ITEM_INFO"
+
+    assert projection_grammar_signature(evidence) != projection_grammar_signature(changed)
+
+
+def test_projection_alignment_requires_a_shared_repeated_axis() -> None:
+    axis = rule_synthesizer._projection_alignment_axis
+
+    assert axis("task.documents[].contents[].printXML.text[0]") == axis(
+        "task.documents[].contents[].printXML.text[1]"
+    )
+    assert axis("task.documents[].contents[].data.ITEM_INFO") == axis(
+        "task.documents[].contents[].data.SELLER_MEMO"
+    )
+    assert axis("left.values[].item") != axis("right.values[].attribute")
+    assert axis("left.item") is None
+
+
+def test_projection_does_not_align_unrelated_repeated_paths() -> None:
+    evidence = {
+        "spans": [
+            {
+                "token_class": "text",
+                "source_path": "left.values[0].product",
+                "original_text": "主商品*1",
+            },
+            {
+                "token_class": "text",
+                "source_path": "left.values[1].product",
+                "original_text": "附加商品*1",
+            },
+            {
+                "token_class": "text",
+                "source_path": "right.values[0].attribute",
+                "original_text": "红色",
+            },
+            {
+                "token_class": "text",
+                "source_path": "right.values[1].attribute",
+                "original_text": "红色",
+            },
+        ]
+    }
+
+    assert rule_synthesizer._compile_projection_rule(
+        evidence,
+        [row("主商品 附加商品", "红色", "", 1)],
+        None,
+    ) is None
+
+    single_product = {
+        "spans": [
+            {
+                "token_class": "text",
+                "source_path": "left.values[1].product",
+                "original_text": "目标商品*1",
+            },
+            *evidence["spans"][2:],
+        ]
+    }
+    assert rule_synthesizer._compile_projection_rule(
+        single_product,
+        [row("目标商品", "红色", "", 1)],
+        None,
+    ) is None
+
+
+def test_projection_candidate_enumeration_is_bounded() -> None:
+    evidence = build_evidence(
+        print_xml("商品" + "，".join(str(index) for index in range(25))),
+        "cainiao-cnprint",
+    )
+
+    assert _projection_candidates(evidence) is None
+
+
+def test_projection_operation_and_search_budgets_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evidence = build_evidence(print_xml("商品甲*1"), "cainiao-cnprint")
+    monkeypatch.setattr(
+        rule_synthesizer,
+        "MAX_PROJECTION_OPERATION_VARIANTS",
+        5,
+    )
+    assert _projection_candidates(evidence) is None
+
+    monkeypatch.setattr(rule_synthesizer, "MAX_PROJECTION_SEARCH_NODES", 1)
+    candidates = [
+        {
+            "order": index,
+            "value": value,
+            "part": {
+                "source_path": f"contents[].data.FIELD{index}",
+                "token_class": "text",
+                "occurrence": 0,
+            },
+        }
+        for index, value in enumerate(("商品甲", "红色"))
+    ]
+    assert rule_synthesizer._find_projection_parts(
+        "product",
+        "商品甲 红色",
+        candidates,
+        -1,
+        remaining_occurrences=1,
+    ) is None
+
+
+def test_structured_synthesis_reuses_equivalent_specs_and_collapses_whitespace() -> None:
+    def payload(*, reverse_specs: bool = False) -> dict[str, object]:
+        specs = (
+            {"specName": "雾蓝 42", "skuFullName": "雾蓝 42"}
+            if reverse_specs
+            else {"skuFullName": "雾蓝 42", "specName": "雾蓝 42"}
+        )
+        return structured_items(
+            {
+                "itemName": "商品  甲",
+                **specs,
+                "skuSize": "42",
+                "itemNum": 1,
+            }
+        )
+
+    expected = [row("商品 甲", "雾蓝", "42", 1)]
+    first = synthesize_rule(
+        payload=payload(),
+        source_component="cainiao-cnprint",
+        corrected_rows=expected,
+        gold_samples=[],
+        negative_samples=[],
+    )
+    second = synthesize_rule(
+        payload=payload(reverse_specs=True),
+        source_component="cainiao-cnprint",
+        corrected_rows=expected,
+        gold_samples=[],
+        negative_samples=[],
+    )
+
+    assert first["status"] == second["status"] == "compiled"
+    assert first["rule"] == second["rule"]
+    assert replay_rule(
+        first["rule"],
+        structured_items(
+            {
+                "itemName": "另一个   商品",
+                "skuFullName": "深蓝 43",
+                "specName": "错误值 99",
+                "skuSize": "43",
+                "itemNum": 2,
+            }
+        ),
+    ) == [row("另一个 商品", "深蓝", "43", 2)]
 
 
 def test_synthesizer_prefers_direct_structured_paths_and_preserves_duplicates() -> None:

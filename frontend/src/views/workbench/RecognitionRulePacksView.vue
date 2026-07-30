@@ -57,6 +57,12 @@ function packDisplayName(pack: RecognitionRulePackSummary): string {
   return `${pack.name} (${pack.code} / ${pack.version})`
 }
 
+function profileStrategyLabel(profile: RecognitionFormatProfile): string {
+  if (profile.strategy === 'structured_items_v1') return '结构化字段'
+  if (profile.strategy === 'source_projection_v1') return '自动来源绑定'
+  return '文本拆分'
+}
+
 function recordValue(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -491,7 +497,7 @@ onMounted(loadPacks)
           @click="selectedFingerprint = profile.fingerprint"
         >
           <strong>{{ profile.name || `规则 ${index + 1}` }}</strong>
-          <span>{{ profile.strategy === 'structured_items_v1' ? '结构化字段' : '文本拆分' }}</span>
+          <span>{{ profileStrategyLabel(profile) }}</span>
           <small>{{ learningRecords.find((record) => record.fingerprint === profile.fingerprint)?.source_component || '导入规则' }}</small>
         </button>
       </aside>

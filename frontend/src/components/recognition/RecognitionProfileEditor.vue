@@ -28,9 +28,11 @@ const businessFields: Array<{ key: RecognitionBusinessField; label: string }> = 
 
 const stateFields = ['text', 'product', 'sales_attr1', 'sales_attr2', 'quantity', 'remark']
 
-const strategyLabel = computed(() => (
-  props.modelValue.strategy === 'structured_items_v1' ? '结构化字段规则' : '文本拆分规则'
-))
+const strategyLabel = computed(() => {
+  if (props.modelValue.strategy === 'structured_items_v1') return '结构化字段规则'
+  if (props.modelValue.strategy === 'source_projection_v1') return '自动来源绑定规则'
+  return '文本拆分规则'
+})
 
 function patchProfile(values: Partial<RecognitionFormatProfile>) {
   emit('update:modelValue', { ...props.modelValue, ...values })
@@ -176,7 +178,7 @@ function sampleText(): string {
         </el-table>
       </template>
 
-      <template v-else>
+      <template v-else-if="modelValue.strategy === 'text_pipeline_v1'">
         <div class="two-column">
           <el-form-item label="商品文本路径">
             <el-input
@@ -266,6 +268,15 @@ function sampleText(): string {
           </div>
         </article>
       </template>
+
+      <el-alert
+        v-else
+        type="info"
+        :closable="false"
+        show-icon
+        title="这条规则由已确认样本自动生成"
+        :description="`已绑定 ${modelValue.rows?.length ?? 0} 个商品行模板并通过当前样本回放；有历史样本时会同时校验。识别有误时请回到 AI 面单解析重新学习。`"
+      />
     </el-form>
 
     <div class="learning-grid">

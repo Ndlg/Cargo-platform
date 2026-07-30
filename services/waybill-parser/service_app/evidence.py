@@ -279,8 +279,11 @@ def _candidate_groups(
     structured: dict[str, list[str]] = {}
     arrays: dict[str, list[str]] = {}
     repeated: dict[tuple[str, str], list[str]] = {}
+    quantities: dict[str, list[str]] = {}
     for record in records:
         span = record.span
+        if span.token_class == "positive_integer_quantity":
+            quantities.setdefault(span.source_path, []).append(span.span_id)
         if span.token_class != "text":
             continue
         item_arrays = [
@@ -325,6 +328,7 @@ def _candidate_groups(
             [
                 *arrays.values(),
                 *(span_ids for span_ids in repeated.values() if len(span_ids) > 1),
+                *(span_ids for span_ids in quantities.values() if len(span_ids) > 1),
             ]
         ),
     }

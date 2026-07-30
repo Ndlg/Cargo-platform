@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from hashlib import sha256
+import json
 import re
 from typing import Any
 
@@ -7,17 +9,28 @@ from services.shared.waybill_fingerprint import (
     fingerprint_for_payload,
     grammar_signature_for_texts,
 )
+from service_app.douyin_product_info import (
+    compact_spaces,
+    quantity_from_text,
+    strip_trailing_quantity_text,
+)
+from service_app.evidence import build_evidence
 from service_app.order_row_engine import (
     OrderRowDraft,
     ParentWaybillDraft,
     business_parent_label,
     print_xml_text,
+    remove_field_label,
     text_value,
     values_at_structured_path,
 )
 
 
 PATH_PATTERN = re.compile(r"^[A-Za-z0-9_]+(?:\[\])?(?:\.[A-Za-z0-9_]+(?:\[\])?)*$")
+PROJECTION_PATH_PATTERN = re.compile(
+    r"^[A-Za-z0-9_]+(?:\[\])?"
+    r"(?:\.[A-Za-z0-9_]+(?:\[\]|\[\d+\])?)*$"
+)
 FIELD_PATH_PATTERN = re.compile(r"^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*$")
 FINGERPRINT_PATTERN = re.compile(r"^(?:sha256|v2:[A-Za-z0-9_-]+:sha256):[0-9a-f]{64}$")
 GRAMMAR_SIGNATURE_PATTERN = re.compile(r"^grammar-v1:sha256:[0-9a-f]{64}$")
@@ -47,6 +60,28 @@ TEXT_PROFILE_KEYS = {
     "steps",
     "defaults",
 }
+SOURCE_PROJECTION_PROFILE_KEYS = {
+    "fingerprint",
+    "strategy",
+    "name",
+    "description",
+    "grammar_signature",
+    "selected_fields",
+    "rows",
+}
+PROJECTION_TOKEN_CLASSES = {"text"}
+PROJECTION_OPERATIONS = {
+    "collapse_adjacent_delimiters",
+    "extract_quantity",
+    "split_part",
+    "strip_field_label",
+    "strip_trailing_quantity",
+}
+PROJECTION_DELIMITER_PATTERN = re.compile(r"^[^A-Za-z0-9\u4e00-\u9fff]{1,64}$")
+ARRAY_INDEX_PATTERN = re.compile(r"\[\d+\]")
+ADJACENT_DELIMITERS_PATTERN = re.compile(
+    r"([,，;；|/、])(?:\s*[,，;；|/、])+"
+)
 
 
 def structural_fingerprint(payload: dict[str, Any], source_component: str | None) -> str:
@@ -142,6 +177,7 @@ def validate_text_step(
         "trim": {"op", "target", "chars"},
         "strip_prefix": {"op", "target", "literal"},
         "strip_suffix": {"op", "target", "literal"},
+        "collapse_whitespace": {"op", "target"},
         "to_positive_int": {"op", "target"},
     }
     if op not in allowed or set(step) - allowed.get(str(op), set()):
@@ -151,7 +187,14 @@ def validate_text_step(
     target = step.get("target")
     if op in {"split", "rsplit", "extract_between"} and source not in state_fields:
         errors.append(f"{prefix}.source")
-    if op in {"extract_between", "trim", "strip_prefix", "strip_suffix", "to_positive_int"}:
+    if op in {
+        "extract_between",
+        "trim",
+        "strip_prefix",
+        "strip_suffix",
+        "collapse_whitespace",
+        "to_positive_int",
+    }:
         if target not in state_fields:
             errors.append(f"{prefix}.target")
     if op in {"split", "rsplit"}:
@@ -224,6 +267,116 @@ def validate_text_profile(profile: dict[str, Any], prefix: str) -> list[str]:
     return errors
 
 
+def validate_projection_part(part: object, prefix: str) -> list[str]:
+    if not isinstance(part, dict):
+        return [prefix]
+    if set(part) - {"source_path", "token_class", "occurrence", "operations"}:
+        return [prefix]
+    errors: list[str] = []
+    source_path = part.get("source_path")
+    if (
+        not isinstance(source_path, str)
+        or len(source_path) > 512
+        or not PROJECTION_PATH_PATTERN.fullmatch(source_path)
+    ):
+        errors.append(f"{prefix}.source_path")
+    if part.get("token_class") not in PROJECTION_TOKEN_CLASSES:
+        errors.append(f"{prefix}.token_class")
+    occurrence = part.get("occurrence")
+    if (
+        isinstance(occurrence, bool)
+        or not isinstance(occurrence, int)
+        or not 0 <= occurrence <= 10_000
+    ):
+        errors.append(f"{prefix}.occurrence")
+    operations = part.get("operations", [])
+    if not isinstance(operations, list) or len(operations) > 4:
+        errors.append(f"{prefix}.operations")
+    else:
+        for index, operation in enumerate(operations):
+            operation_prefix = f"{prefix}.operations[{index}]"
+            if not isinstance(operation, dict):
+                errors.append(operation_prefix)
+                continue
+            op = operation.get("op")
+            allowed = (
+                {"op", "delimiter", "index"}
+                if op == "split_part"
+                else {"op"}
+            )
+            if op not in PROJECTION_OPERATIONS or set(operation) != allowed:
+                errors.append(operation_prefix)
+                continue
+            if op == "split_part":
+                if (
+                    not isinstance(operation.get("delimiter"), str)
+                    or not PROJECTION_DELIMITER_PATTERN.fullmatch(
+                        operation["delimiter"]
+                    )
+                ):
+                    errors.append(f"{operation_prefix}.delimiter")
+                index_value = operation.get("index")
+                if (
+                    isinstance(index_value, bool)
+                    or not isinstance(index_value, int)
+                    or not 0 <= index_value <= 20
+                ):
+                    errors.append(f"{operation_prefix}.index")
+    return errors
+
+
+def validate_source_projection_profile(
+    profile: dict[str, Any],
+    prefix: str,
+) -> list[str]:
+    errors: list[str] = []
+    if set(profile) - SOURCE_PROJECTION_PROFILE_KEYS:
+        errors.append(prefix)
+    grammar_signature = profile.get("grammar_signature")
+    if (
+        not isinstance(grammar_signature, str)
+        or not GRAMMAR_SIGNATURE_PATTERN.fullmatch(grammar_signature)
+    ):
+        errors.append(f"{prefix}.grammar_signature")
+    selected_fields = profile.get("selected_fields")
+    if selected_fields is not None and (
+        not isinstance(selected_fields, list)
+        or len(selected_fields) > 100
+        or len(selected_fields) != len(set(selected_fields))
+        or any(
+            not isinstance(field, str)
+            or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", field)
+            for field in selected_fields
+        )
+    ):
+        errors.append(f"{prefix}.selected_fields")
+    rows = profile.get("rows")
+    if not isinstance(rows, list) or not 1 <= len(rows) <= 100:
+        return [*errors, f"{prefix}.rows"]
+    for row_index, row in enumerate(rows):
+        row_prefix = f"{prefix}.rows[{row_index}]"
+        if not isinstance(row, dict) or set(row) != ROW_FIELDS - {"image_match_text"}:
+            errors.append(row_prefix)
+            continue
+        for field, parts in row.items():
+            field_prefix = f"{row_prefix}.{field}"
+            if (
+                not isinstance(parts, list)
+                or len(parts) > 4
+                or (field in {"product", "quantity"} and not parts)
+            ):
+                errors.append(field_prefix)
+                continue
+            for part_index, part in enumerate(parts):
+                errors.extend(
+                    validate_projection_part(
+                        part,
+                        f"{field_prefix}[{part_index}]",
+                    )
+                )
+    return errors
+
+
 def validate_format_profiles(value: object) -> list[str]:
     if not isinstance(value, list) or not 1 <= len(value) <= 100:
         return ["parser_policy.format_profiles"]
@@ -245,6 +398,8 @@ def validate_format_profiles(value: object) -> list[str]:
             errors.extend(validate_structured_profile(profile, prefix))
         elif strategy == "text_pipeline_v1":
             errors.extend(validate_text_profile(profile, prefix))
+        elif strategy == "source_projection_v1":
+            errors.extend(validate_source_projection_profile(profile, prefix))
         else:
             errors.append(f"{prefix}.strategy")
     return list(dict.fromkeys(errors))
@@ -448,6 +603,8 @@ def apply_text_step(state: dict[str, Any], step: dict[str, Any]) -> None:
     elif op == "strip_suffix":
         literal = step["literal"]
         state[target] = value[: -len(literal)].strip() if value.endswith(literal) else value
+    elif op == "collapse_whitespace":
+        state[target] = " ".join(value.split())
     elif op == "to_positive_int":
         state[target] = positive_int(value)
 
@@ -504,6 +661,157 @@ def text_parent(
     )
 
 
+def projection_source_path(source_path: str) -> str:
+    xml_text = re.search(r"(\.text\[\d+\])$", source_path)
+    suffix = xml_text.group(1) if xml_text else ""
+    base = source_path[: xml_text.start()] if xml_text else source_path
+    return f"{ARRAY_INDEX_PATTERN.sub('[]', base)}{suffix}"
+
+
+def projection_grammar_signature(evidence: dict[str, Any]) -> str:
+    occurrences: dict[tuple[str, str], int] = {}
+    structure: list[tuple[str, str, int, str]] = []
+    for span in evidence["spans"]:
+        if span["token_class"] != "text":
+            continue
+        source_path = projection_source_path(str(span["source_path"]))
+        token_class = str(span["token_class"])
+        key = (source_path, token_class)
+        occurrence = occurrences.get(key, 0)
+        occurrences[key] = occurrence + 1
+        structure.append(
+            (
+                source_path,
+                token_class,
+                occurrence,
+                grammar_signature_for_texts([str(span["original_text"])]),
+            )
+        )
+    encoded = json.dumps(
+        structure,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return f"grammar-v1:sha256:{sha256(encoded).hexdigest()}"
+
+
+def apply_projection_operations(
+    value: str,
+    operations: list[dict[str, Any]],
+) -> str:
+    result = compact_spaces(value)
+    for operation in operations:
+        op = operation["op"]
+        if op == "collapse_adjacent_delimiters":
+            result = ADJACENT_DELIMITERS_PATTERN.sub(r"\1", result)
+        elif op == "extract_quantity":
+            quantity = quantity_from_text(result)
+            result = str(quantity) if quantity is not None else ""
+        elif op == "split_part":
+            parts = result.split(operation["delimiter"])
+            index = operation["index"]
+            result = parts[index].strip() if index < len(parts) else ""
+        elif op == "strip_field_label":
+            result = remove_field_label(result)
+        elif op == "strip_trailing_quantity":
+            result = strip_trailing_quantity_text(result)[0]
+    return compact_spaces(result)
+
+
+def source_projection_parent(
+    payload: dict[str, Any],
+    profile: dict[str, Any],
+    *,
+    raw_record_id: int,
+    task_id: int | None,
+    source_component: str,
+    source_index: str,
+    parent_sequence: int,
+) -> ParentWaybillDraft:
+    parent_label = business_parent_label(
+        source_index,
+        raw_record_id,
+        parent_sequence=parent_sequence,
+    )
+    evidence = build_evidence(
+        payload,
+        source_component,
+        profile.get("selected_fields"),
+    )
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for span in evidence["spans"]:
+        key = (
+            projection_source_path(str(span["source_path"])),
+            str(span["token_class"]),
+        )
+        grouped.setdefault(key, []).append(span)
+
+    rows: list[OrderRowDraft] = []
+    row_specs = profile["rows"]
+    for row_index, field_specs in enumerate(row_specs, start=1):
+        values: dict[str, Any] = {}
+        traces: dict[str, str] = {}
+        for field, parts in field_specs.items():
+            resolved_values: list[str] = []
+            resolved_paths: list[str] = []
+            for part in parts:
+                candidates = grouped.get(
+                    (part["source_path"], part["token_class"]),
+                    [],
+                )
+                occurrence = part["occurrence"]
+                if occurrence >= len(candidates):
+                    resolved_values = []
+                    resolved_paths = []
+                    break
+                span = candidates[occurrence]
+                resolved_values.append(
+                    apply_projection_operations(
+                        str(span["original_text"]),
+                        part.get("operations", []),
+                    )
+                )
+                resolved_paths.append(
+                    f"{span['source_path']}#{span['token_class']}[{occurrence}]"
+                    + (
+                        "#"
+                        + ">".join(
+                            str(operation["op"])
+                            for operation in part.get("operations", [])
+                        )
+                        if part.get("operations")
+                        else ""
+                    )
+                )
+            values[field] = " ".join(
+                value for value in resolved_values if value
+            )
+            if resolved_paths:
+                traces[field] = " + ".join(resolved_paths)
+        rows.append(
+            row_from_values(
+                values,
+                traces,
+                raw_record_id=raw_record_id,
+                task_id=task_id,
+                parent_label=parent_label,
+                source_component=source_component,
+                source_index=source_index,
+                child_index=row_index,
+                child_count=len(row_specs),
+            )
+        )
+    return ParentWaybillDraft(
+        raw_record_id=raw_record_id,
+        task_id=task_id,
+        parent_label=parent_label,
+        source_component=source_component,
+        source_index=source_index,
+        child_count=len(rows),
+        rows=rows,
+    )
+
+
 def check_parent_completeness(parent: ParentWaybillDraft) -> tuple[bool, list[str]]:
     if not parent.rows:
         return False, ["missing_order_rows"]
@@ -539,7 +847,9 @@ def parse_with_format_profile(
     }
     if profile["strategy"] == "structured_items_v1":
         return structured_parent(payload, profile, **kwargs)
-    return text_parent(payload, profile, **kwargs)
+    if profile["strategy"] == "text_pipeline_v1":
+        return text_parent(payload, profile, **kwargs)
+    return source_projection_parent(payload, profile, **kwargs)
 
 
 def parse_declarative_payload(
@@ -559,13 +869,36 @@ def parse_declarative_payload(
         for profile in profiles
         if profile.get("fingerprint") == fingerprint
     ]
+    projection_signatures = {
+        tuple(profile.get("selected_fields") or ()): projection_grammar_signature(
+            build_evidence(
+                payload,
+                text_value(source_component),
+                profile.get("selected_fields"),
+            )
+        )
+        for profile in candidates
+        if profile.get("strategy") == "source_projection_v1"
+    }
     profile = next(
         (
             candidate
             for candidate in candidates
-            if candidate.get("strategy") == "text_pipeline_v1"
-            and candidate.get("grammar_signature")
-            == text_profile_grammar_signature(payload, candidate)
+            if candidate.get("grammar_signature")
+            and (
+                (
+                    candidate.get("strategy") == "text_pipeline_v1"
+                    and candidate.get("grammar_signature")
+                    == text_profile_grammar_signature(payload, candidate)
+                )
+                or (
+                    candidate.get("strategy") == "source_projection_v1"
+                    and candidate.get("grammar_signature")
+                    == projection_signatures.get(
+                        tuple(candidate.get("selected_fields") or ())
+                    )
+                )
+            )
         ),
         None,
     ) or next(
