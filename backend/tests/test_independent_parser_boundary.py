@@ -7,8 +7,11 @@ BACKEND_APP = REPO_ROOT / "backend" / "app"
 
 def test_backend_has_no_embedded_order_row_parser_implementation() -> None:
     obsolete_parsers = [
+        BACKEND_APP / "services" / "douyin_product_info.py",
         BACKEND_APP / "services" / "order_row_drafts.py",
         BACKEND_APP / "services" / "waybill_parser.py",
+        BACKEND_APP / "services" / "woda_fields.py",
+        BACKEND_APP / "services" / "woda_printxml_parser.py",
     ]
     existing = [str(path.relative_to(REPO_ROOT)).replace("\\", "/") for path in obsolete_parsers if path.exists()]
     assert existing == [], (
