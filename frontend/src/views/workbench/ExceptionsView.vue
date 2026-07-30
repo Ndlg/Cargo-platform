@@ -24,7 +24,7 @@ type ExceptionStatus =
   | 'unmatched'
   | 'special'
 
-type RepairTarget = 'product-matching' | 'product-assets' | 'order-rows' | null
+type RepairTarget = 'product-matching' | 'product-assets' | 'ai-recognition' | null
 
 type ExceptionDefinition = {
   label: string
@@ -65,10 +65,10 @@ const exceptionDefinitions: Record<ExceptionStatus, ExceptionDefinition> = {
     target: 'product-matching',
   },
   pending: {
-    label: '待处理',
-    advice: '检查当前采集轮次的面单解析结果',
-    actionLabel: '检查解析结果',
-    target: 'order-rows',
+    label: '解析待处理',
+    advice: '在 AI 面单解析中确认或修复当前格式',
+    actionLabel: '查看 AI 解析',
+    target: 'ai-recognition',
   },
   unmatched: {
     label: '未匹配',
@@ -136,7 +136,9 @@ const recognitionWaybillCount = computed(
 const parseExceptionCount = computed(() => {
   if (!aiStatus.value || !orderDrafts.value) return 0
   const resolvedParents = orderDrafts.value.parents.filter((parent) => parent.rows.length).length
-  return Math.max(0, orderDrafts.value.summary.parent_waybill_count - resolvedParents)
+  const unresolvedParents = Math.max(0, orderDrafts.value.summary.parent_waybill_count - resolvedParents)
+  const representedParents = recognitionRows.value.filter((row) => row.status === 'pending').length
+  return Math.max(0, unresolvedParents - representedParents)
 })
 const exceptionRows = computed(() =>
   recognitionRows.value.filter((row) => row.status !== 'matched' && row.status !== 'special'),
@@ -302,9 +304,9 @@ function repairRoute(row: RecognitionPreviewRow) {
   const definition = exceptionDefinition(row.status)
   if (!definition?.target) return null
 
-  if (definition.target === 'order-rows') {
+  if (definition.target === 'ai-recognition') {
     return {
-      path: '/waybill-batches',
+      path: '/admin/ai-recognition',
       query: selectedTaskId.value ? { task_id: String(selectedTaskId.value) } : {},
     }
   }

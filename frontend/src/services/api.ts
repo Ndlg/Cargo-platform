@@ -516,6 +516,9 @@ export interface RecognitionPreviewResponse extends ApiRecord {
   task_name: string
   detail_count: number
   waybill_count?: number
+  collected_waybill_count?: number
+  covered_waybill_count?: number
+  coverage_complete?: boolean
   order_row_count?: number
   rows: RecognitionPreviewRow[]
   summary: Record<string, number>

@@ -45,7 +45,17 @@ const selectedTask = computed(
 const recognitionRows = computed<RecognitionPreviewRow[]>(() => recognitionPreview.value?.rows ?? [])
 const recognitionSummary = computed(() => recognitionPreview.value?.summary ?? {})
 const recognitionWaybillCount = computed(
-  () => recognitionPreview.value?.waybill_count ?? recognitionPreview.value?.detail_count ?? 0,
+  () => recognitionPreview.value?.collected_waybill_count
+    ?? recognitionPreview.value?.waybill_count
+    ?? recognitionPreview.value?.detail_count
+    ?? 0,
+)
+const coveredWaybillCount = computed(
+  () => recognitionPreview.value?.covered_waybill_count ?? recognitionWaybillCount.value,
+)
+const coverageComplete = computed(
+  () => recognitionPreview.value?.coverage_complete
+    ?? coveredWaybillCount.value === recognitionWaybillCount.value,
 )
 const reportRows = computed<ReportPreviewRow[]>(() => buildReportRows(recognitionRows.value, reportLayout.value))
 const visibleColumns = computed(() => visibleReportColumns(reportLayout.value))
@@ -271,7 +281,7 @@ onBeforeUnmount(() => revokeSkuImageUrls())
         预览
       </el-button>
       <el-button
-        :disabled="!selectedTaskId"
+        :disabled="!selectedTaskId || !coverageComplete"
         :icon="Download"
         :loading="downloading"
         type="primary"
@@ -302,12 +312,19 @@ onBeforeUnmount(() => revokeSkuImageUrls())
   </section>
 
   <el-alert v-if="error" :closable="false" :title="error" type="error" />
+  <el-alert
+    v-else-if="recognitionPreview && !coverageComplete"
+    :closable="false"
+    :title="`采集面单覆盖不完整：已覆盖 ${coveredWaybillCount}/${recognitionWaybillCount}，已停止下载。`"
+    type="error"
+    show-icon
+  />
 
   <section class="stat-grid">
     <div class="stat-tile">
       <span>面单</span>
       <strong>{{ recognitionWaybillCount }}</strong>
-      <small>{{ selectedTask ? taskLabel(selectedTask, sortedTasks.indexOf(selectedTask)) : '未选择批次' }}</small>
+      <small>覆盖 {{ coveredWaybillCount }}/{{ recognitionWaybillCount }}</small>
     </div>
     <div class="stat-tile">
       <span>商品行</span>
@@ -340,7 +357,7 @@ onBeforeUnmount(() => revokeSkuImageUrls())
     <el-alert
       v-if="exceptionCount"
       :closable="false"
-      :title="`还有 ${exceptionCount} 条商品匹配待处理或异常，下载的 Excel 会放到“异常面单”表。`"
+      :title="`还有 ${exceptionCount} 条解析或匹配异常，下载的 Excel 会放到“异常面单”表。`"
       type="warning"
     />
     <el-alert
