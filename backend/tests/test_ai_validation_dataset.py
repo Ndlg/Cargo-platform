@@ -76,7 +76,19 @@ def create_source_database(path: Path, *, with_unknown_table: bool = False) -> N
                 archived_at TEXT,
                 is_deleted INTEGER DEFAULT 0
             );
+            CREATE TABLE export_header_definitions (
+                id INTEGER PRIMARY KEY,
+                name TEXT
+            );
+            CREATE TABLE print_template_configs (
+                id INTEGER PRIMARY KEY,
+                name TEXT
+            );
             CREATE TABLE export_records (id INTEGER PRIMARY KEY, payload TEXT);
+            CREATE TABLE recognition_rule_pack_revisions (
+                id INTEGER PRIMARY KEY,
+                payload TEXT
+            );
             """
         )
         db.execute(
@@ -116,7 +128,10 @@ def create_source_database(path: Path, *, with_unknown_table: bool = False) -> N
             "INSERT INTO standard_details VALUES (1, 1, ?, NULL, 0)",
             (json.dumps({"capture_task_id": 11, "product": "范74", "quantity": "1"}),),
         )
+        db.execute("INSERT INTO export_header_definitions VALUES (1, '业务表头')")
+        db.execute("INSERT INTO print_template_configs VALUES (1, '现场模板')")
         db.execute("INSERT INTO export_records VALUES (1, '{\"old\":true}')")
+        db.execute("INSERT INTO recognition_rule_pack_revisions VALUES (1, '{\"old\":true}')")
         if with_unknown_table:
             db.execute("CREATE TABLE future_derived_results (id INTEGER PRIMARY KEY)")
             db.execute("INSERT INTO future_derived_results VALUES (1)")
@@ -153,6 +168,9 @@ def test_build_cold_start_database_preserves_inputs_and_scrubs_results(tmp_path:
         assert db.execute("SELECT COUNT(*) FROM recognition_rule_packs").fetchone()[0] == 0
         assert db.execute("SELECT COUNT(*) FROM standard_details").fetchone()[0] == 0
         assert db.execute("SELECT COUNT(*) FROM export_records").fetchone()[0] == 0
+        assert db.execute("SELECT name FROM export_header_definitions").fetchone()[0] == "业务表头"
+        assert db.execute("SELECT name FROM print_template_configs").fetchone()[0] == "现场模板"
+        assert db.execute("SELECT COUNT(*) FROM recognition_rule_pack_revisions").fetchone()[0] == 0
         collector = db.execute(
             """
             SELECT token_hash, is_enabled, online_status, last_heartbeat_at, status_payload
@@ -164,6 +182,87 @@ def test_build_cold_start_database_preserves_inputs_and_scrubs_results(tmp_path:
             "SELECT parsed_payload, standard_detail_id, waybill_mode FROM raw_capture_records ORDER BY id"
         ).fetchall()
         assert derived == [(None, None, None), (None, None, None)]
+
+
+def test_build_cold_start_database_keeps_only_selected_completed_tasks(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.db"
+    destination = tmp_path / "cold.db"
+    create_source_database(source)
+    with sqlite3.connect(source) as db:
+        db.executemany(
+            "INSERT INTO capture_tasks(id, workspace_id, status, is_deleted) VALUES (?, 1, ?, 0)",
+            [(63, "running"), (64, "completed"), (65, "completed"), (66, "completed"), (67, "completed")],
+        )
+        db.executemany(
+            "INSERT INTO capture_batches(id, task_id) VALUES (?, ?)",
+            [(640, 64), (650, 65), (660, 66), (670, 67)],
+        )
+        duplicate_payload = '{"task":{"documents":[{"contents":[{"data":{"ITEM_INFO":"same"}}]}]}}'
+        db.executemany(
+            """
+            INSERT INTO raw_capture_records(
+                id, workspace_id, task_id, source_component, source_index,
+                raw_payload, source_columns, parsed_payload, standard_detail_id,
+                waybill_mode, archived_at, is_deleted
+            ) VALUES (?, 1, ?, 'cainiao-cnprint', ?, ?, '{}', NULL, NULL, NULL, NULL, 0)
+            """,
+            [
+                (6401, 64, "1", duplicate_payload),
+                (6402, 64, "2", duplicate_payload),
+                (6501, 65, "1", '{"task":{"documents":[]}}'),
+                (6601, 66, "1", '{"task":{"documents":[]}}'),
+                (6701, 67, "1", '{"task":{"documents":[]}}'),
+            ],
+        )
+        db.commit()
+
+    manifest = build_cold_start_database(source, destination, task_ids=[66, 64, 65, 64])
+
+    assert manifest["selected_task_ids"] == [64, 65, 66]
+    with sqlite3.connect(destination) as db:
+        assert db.execute("SELECT id FROM capture_tasks ORDER BY id").fetchall() == [
+            (64,),
+            (65,),
+            (66,),
+        ]
+        assert db.execute("SELECT id, task_id FROM capture_batches ORDER BY id").fetchall() == [
+            (640, 64),
+            (650, 65),
+            (660, 66),
+        ]
+        rows = db.execute(
+            "SELECT id, task_id, raw_payload FROM raw_capture_records ORDER BY id"
+        ).fetchall()
+        assert [(row[0], row[1]) for row in rows] == [
+            (6401, 64),
+            (6402, 64),
+            (6501, 65),
+            (6601, 66),
+        ]
+        assert rows[0][2] == rows[1][2]
+        assert db.execute("SELECT COUNT(*) FROM recognition_rule_packs").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM recognition_rule_pack_revisions").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM export_records").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM export_header_definitions").fetchone()[0] == 1
+        assert db.execute("SELECT COUNT(*) FROM print_template_configs").fetchone()[0] == 1
+
+
+def test_build_cold_start_database_rejects_noncompleted_selected_task(tmp_path: Path) -> None:
+    source = tmp_path / "source.db"
+    destination = tmp_path / "cold.db"
+    create_source_database(source)
+    with sqlite3.connect(source) as db:
+        db.execute(
+            "INSERT INTO capture_tasks(id, workspace_id, status, is_deleted) VALUES (63, 1, 'running', 0)"
+        )
+        db.commit()
+
+    with pytest.raises(ValueError, match="not completed"):
+        build_cold_start_database(source, destination, task_ids=[63])
+
+    assert not destination.exists()
 
 
 def test_build_cold_start_database_rejects_unknown_nonempty_table(tmp_path: Path) -> None:

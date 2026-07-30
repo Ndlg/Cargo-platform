@@ -26,19 +26,20 @@ PRESERVED_TABLES = {
     "product_skus",
     "image_assets",
     "product_matching_rules",
+    "export_header_definitions",
+    "print_template_configs",
 }
 
 CLEARED_TABLES = {
     "exception_records",
-    "export_header_definitions",
     "export_records",
     "field_definitions",
     "field_role_configs",
     "key_field_sets",
     "match_rules",
     "operation_logs",
-    "print_template_configs",
     "recognition_rule_packs",
+    "recognition_rule_pack_revisions",
     "report_batches",
     "report_lines",
     "standard_detail_batches",
@@ -105,6 +106,57 @@ def _unknown_nonempty_tables(db: sqlite3.Connection) -> list[str]:
     )
 
 
+def _prune_capture_tasks(db: sqlite3.Connection, task_ids: list[int]) -> list[int]:
+    requested = sorted(set(task_ids))
+    if not requested:
+        raise ValueError("task_ids must not be empty")
+    present = table_names(db)
+    if "capture_tasks" not in present:
+        raise ValueError("capture_tasks table is missing")
+    task_columns = table_columns(db, "capture_tasks")
+    if not {"id", "status"} <= task_columns:
+        raise ValueError("capture_tasks must contain id and status columns")
+
+    placeholders = ", ".join("?" for _ in requested)
+    active_clause = ' AND "is_deleted" = 0' if "is_deleted" in task_columns else ""
+    completed = {
+        int(row[0])
+        for row in db.execute(
+            f"""
+            SELECT "id" FROM "capture_tasks"
+            WHERE "id" IN ({placeholders}) AND "status" = 'completed'{active_clause}
+            """,
+            requested,
+        )
+    }
+    missing = sorted(set(requested) - completed)
+    if missing:
+        raise ValueError(f"selected capture tasks are missing or not completed: {missing}")
+
+    for table in ("raw_capture_records", "capture_batches"):
+        if table not in present:
+            continue
+        columns = table_columns(db, table)
+        task_column = next(
+            (column for column in ("task_id", "capture_task_id") if column in columns),
+            None,
+        )
+        if task_column is None:
+            if table_count(db, table):
+                raise ValueError(f"{table} has no task reference column")
+            continue
+        db.execute(
+            f'DELETE FROM "{table}" '
+            f'WHERE "{task_column}" IS NULL OR "{task_column}" NOT IN ({placeholders})',
+            requested,
+        )
+    db.execute(
+        f'DELETE FROM "capture_tasks" WHERE "id" NOT IN ({placeholders})',
+        requested,
+    )
+    return requested
+
+
 def _scrub_columns(
     db: sqlite3.Connection,
     table: str,
@@ -120,7 +172,12 @@ def _scrub_columns(
     db.execute(f'UPDATE "{table}" SET {clause}', [value for _name, value in selected])
 
 
-def build_cold_start_database(source_db: Path, destination_db: Path) -> dict[str, object]:
+def build_cold_start_database(
+    source_db: Path,
+    destination_db: Path,
+    *,
+    task_ids: list[int] | None = None,
+) -> dict[str, object]:
     source = source_db.resolve()
     destination = destination_db.resolve()
     if source == destination:
@@ -143,6 +200,11 @@ def build_cold_start_database(source_db: Path, destination_db: Path) -> dict[str
                 raise ValueError(f"unknown nonempty tables: {', '.join(unknown)}")
 
             present = table_names(target)
+            selected_task_ids = (
+                _prune_capture_tasks(target, task_ids)
+                if task_ids is not None
+                else None
+            )
             for table in sorted(CLEARED_TABLES & present):
                 target.execute(f'DELETE FROM "{table}"')
 
@@ -197,6 +259,7 @@ def build_cold_start_database(source_db: Path, destination_db: Path) -> dict[str
         "destination_sha256": sha256_file(destination),
         "raw_payload_sha256": payload_sha,
         "integrity_check": integrity,
+        "selected_task_ids": selected_task_ids,
         "preserved_counts": preserved_counts,
         "cleared_counts": cleared_counts,
     }
@@ -547,7 +610,11 @@ def main() -> int:
             exclude_rule_tables=args.exclude_rule_tables,
         )
     if args.cold_db is not None:
-        results["cold_start"] = build_cold_start_database(args.source_db, args.cold_db)
+        results["cold_start"] = build_cold_start_database(
+            args.source_db,
+            args.cold_db,
+            task_ids=args.task_id,
+        )
     print(json.dumps(results, ensure_ascii=False, indent=2, sort_keys=True))
     return 0
 

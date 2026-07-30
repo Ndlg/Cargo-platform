@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from argparse import ArgumentParser
 from datetime import date, datetime, time
 from hashlib import sha256
+import json
 from pathlib import Path
+import sys
 from typing import Any
 
 from openpyxl import load_workbook
@@ -135,3 +138,25 @@ def compare_workbooks(expected_path: Path, actual_path: Path) -> dict[str, Any]:
                 }
             )
     return {"equivalent": not differences, "differences": differences}
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = ArgumentParser(description="Compare two business workbooks semantically.")
+    parser.add_argument("expected", type=Path)
+    parser.add_argument("actual", type=Path)
+    parser.add_argument("--output", type=Path)
+    args = parser.parse_args(argv)
+
+    report = compare_workbooks(args.expected, args.actual)
+    encoded = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
+    if args.output is not None:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(encoded, encoding="utf-8")
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    print(encoded, end="")
+    return 0 if report["equivalent"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

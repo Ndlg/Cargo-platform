@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from base64 import b64decode
+import json
 from pathlib import Path
+import subprocess
+import sys
 
 from openpyxl import Workbook
 from openpyxl.drawing.image import Image
@@ -71,3 +74,36 @@ def test_compare_detects_moved_images(tmp_path: Path) -> None:
 
     assert report["equivalent"] is False
     assert workbook_manifest(expected)["sheets"][0]["images"][0]["anchor"] == "A2"
+
+
+def test_compare_cli_writes_json_and_returns_equivalence_exit_code(tmp_path: Path) -> None:
+    script = Path(__file__).parents[2] / "scripts" / "compare_business_workbooks.py"
+    expected = workbook_with_rows(
+        tmp_path / "expected.xlsx", [["A", "红", "", "40", 1, "", "A 红 40"]]
+    )
+    equal = workbook_with_rows(
+        tmp_path / "equal.xlsx", [["A", "红", "", "40", 1, "", "A 红 40"]]
+    )
+    different = workbook_with_rows(tmp_path / "different.xlsx", [])
+    output = tmp_path / "comparison.json"
+
+    equal_result = subprocess.run(
+        [sys.executable, str(script), str(expected), str(equal), "--output", str(output)],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    different_result = subprocess.run(
+        [sys.executable, str(script), str(expected), str(different)],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    assert equal_result.returncode == 0
+    assert json.loads(equal_result.stdout)["equivalent"] is True
+    assert json.loads(output.read_text(encoding="utf-8"))["equivalent"] is True
+    assert different_result.returncode == 1
+    assert json.loads(different_result.stdout)["equivalent"] is False
