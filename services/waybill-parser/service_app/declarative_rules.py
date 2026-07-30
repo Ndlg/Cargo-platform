@@ -18,6 +18,7 @@ PATH_PATTERN = re.compile(r"^[A-Za-z0-9_]+(?:\[\])?(?:\.[A-Za-z0-9_]+(?:\[\])?)*
 FIELD_PATH_PATTERN = re.compile(r"^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*$")
 FINGERPRINT_PATTERN = re.compile(r"^(?:sha256|v2:[A-Za-z0-9_-]+:sha256):[0-9a-f]{64}$")
 MAX_QUANTITY = 100_000
+QUANTITY_MARKER_PATTERN = re.compile(r"[【\[(（]\s*\d+\s*(?:件|个|個|双|雙|条|條|套|只|瓶|包|箱)\s*[】\])）]")
 ROW_FIELDS = {"product", "sales_attr1", "sales_attr2", "quantity", "remark", "image_match_text"}
 STATE_FIELDS = ROW_FIELDS | {"text"}
 STRUCTURED_PROFILE_KEYS = {
@@ -465,6 +466,10 @@ def check_parent_completeness(parent: ParentWaybillDraft) -> tuple[bool, list[st
             reasons.append("missing_product")
         if row.quantity is None or row.quantity <= 0:
             reasons.append("missing_quantity")
+        if "\n" in row.product or "\r" in row.product:
+            reasons.append("multiple_products_collapsed")
+        if QUANTITY_MARKER_PATTERN.search(row.sales_attr1) or QUANTITY_MARKER_PATTERN.search(row.sales_attr2):
+            reasons.append("quantity_marker_in_sales_attribute")
     return not reasons, list(dict.fromkeys(reasons))
 
 

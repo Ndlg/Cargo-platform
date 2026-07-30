@@ -97,6 +97,45 @@ def raw_record(raw_record_id: int, payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def test_completeness_rejects_collapsed_multi_product_fields() -> None:
+    _app, rules = load_parser()
+    parent_label = "第1批-第1单"
+    row = rules.OrderRowDraft(
+        raw_record_id=901,
+        task_id=61,
+        parent_label=parent_label,
+        child_label=f"{parent_label}-子1",
+        child_index=1,
+        child_count=1,
+        source_component="cainiao-cnprint",
+        source_index="901",
+        product="2026赤足跑步鞋 5.0黑白紫 37.5\n2026赤足跑步鞋 5.0黑白紫",
+        sales_attr1="5.0黑白紫",
+        sales_attr2="36.5 【1件】",
+        quantity=1,
+        remark="",
+        image_match_text="",
+        original_text="",
+        status="draft",
+        review_reason="",
+    )
+    parent = rules.ParentWaybillDraft(
+        raw_record_id=901,
+        task_id=61,
+        parent_label=parent_label,
+        source_component="cainiao-cnprint",
+        source_index="901",
+        child_count=1,
+        rows=[row],
+    )
+
+    complete, reasons = rules.check_parent_completeness(parent)
+
+    assert complete is False
+    assert "multiple_products_collapsed" in reasons
+    assert "quantity_marker_in_sales_attribute" in reasons
+
+
 def test_structured_profile_splits_documents_and_products_without_deduplication() -> None:
     app, rules = load_parser()
     document = one_document()
