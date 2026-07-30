@@ -456,7 +456,10 @@ def create_app(
         model=os.getenv("OLLAMA_MODEL", "qwen3.5:4b-q4_K_M"),
     )
     store = SessionStore(database_path)
-    app = FastAPI(title="Cargo Platform Local AI Recognition", version="1.0.0")
+    app = FastAPI(
+        title="Cargo Platform Local AI Recognition",
+        version=os.getenv("APP_VERSION", "0.2.0-rc.1"),
+    )
     model_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="waybill-ai")
     app.router.add_event_handler(
         "shutdown",

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from typing import Any
+import os
 import re
+from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -26,7 +27,10 @@ from service_app.order_row_engine import (
 )
 
 
-app = FastAPI(title="Cargo Platform Waybill Parser", version="0.1.0")
+app = FastAPI(
+    title="Cargo Platform Waybill Parser",
+    version=os.getenv("APP_VERSION", "0.2.0-rc.1"),
+)
 
 RECOGNITION_RULE_PACK_CONTRACT_VERSION = "recognition_rule_pack_v1"
 SUPPORTED_ORDER_ROW_PARSERS = {"declarative_v1", "shoe_waybill_v1"}

@@ -35,3 +35,27 @@ See:
 
 - `AGENTS.md`
 - `spec/`
+
+## Release deployment
+
+Copy `deploy.env.example` to `.env`, replace both secrets, then start the core
+platform:
+
+```powershell
+docker compose --env-file .env -f docker-compose.release.yml up -d
+```
+
+To enable the isolated local-AI rule-learning workflow, include the optional AI
+file:
+
+```powershell
+docker compose --env-file .env -f docker-compose.release.yml -f docker-compose.ai.yml up -d
+docker exec cargo-platform-local-model ollama pull qwen3.5:4b-q4_K_M
+```
+
+The AI console is available at `http://127.0.0.1:18111/console`. If only the AI
+service is unavailable, already confirmed declarative rules continue to parse
+known formats; unfamiliar formats remain reviewable exceptions.
+
+Release `0.2.0-rc.1` publishes five version-matched images: backend, tenant UI,
+admin UI, waybill parser, and AI recognition. See `CHANGELOG.md`.

@@ -9,7 +9,7 @@ on:
       version:
         description: "Image version, for example 0.1.0"
         required: true
-        default: "0.1.0"
+        default: "0.2.0-rc.1"
 
 permissions:
   contents: read
@@ -58,6 +58,14 @@ jobs:
             build_args: |
               BUILD_COMMAND=build:server-admin
               DIST_DIR=dist-server-admin
+          - image: cargo-platform-waybill-parser
+            context: .
+            dockerfile: services/waybill-parser/Dockerfile
+            build_args: ""
+          - image: cargo-platform-ai-recognition
+            context: .
+            dockerfile: services/ai-recognition/Dockerfile
+            build_args: ""
     steps:
       - uses: actions/checkout@v4
 
