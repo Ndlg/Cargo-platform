@@ -9,18 +9,25 @@ from xml.etree import ElementTree
 
 from services.shared.waybill_fingerprint import (
     business_shape_fingerprint,
+    fingerprint_catalog,
     grammar_signature_for_texts,
     inspect_fingerprint,
 )
 
 
-_DELIMITER_RE = re.compile(r"[,;|/、]")
+_DELIMITER_RE = re.compile(r"[,，;；|/、]")
+_DELIMITER_SEGMENT_RE = re.compile(r"[^,，;；|/、]+")
 _FULL_POSITIVE_INT_RE = re.compile(r"[1-9]\d*")
-_QUANTITY_RE = re.compile(
-    r"(?:[*xX×]\s*[1-9]\d*|[1-9]\d*\s*(?:件|双|雙|个|個|条|條|套|份|只|支|瓶|包|组|組))"
+_POSITIVE_DIGITS = r"[1-9１-９][0-9０-９]*"
+_QUANTITY_UNITS = r"件|双|雙|个|個|条|條|套|份|只|支|瓶|包|组|組"
+_QUANTITY_CAPTURE_RE = re.compile(
+    rf"(?:[*xX×＊]\s*(?P<multiplier>{_POSITIVE_DIGITS})|"
+    rf"(?P<unit>{_POSITIVE_DIGITS})(?=\s*(?:{_QUANTITY_UNITS})))"
 )
-_SHOE_SIZE_RE = re.compile(r"(?<!\d)(?:2[5-9]|[3-5]\d)(?:\.\d)?(?!\d)")
-_CDATA_RE = re.compile(r"<!\[CDATA\[(.*?)\]\]>", re.S)
+_NUMBER_CAPTURE_RE = re.compile(
+    r"(?<![0-9０-９])([0-9０-９]{2}(?:[.．][0-9０-９])?)(?![0-9０-９])"
+)
+_WRAPPER_ARRAY_KEYS = {"documents", "contents"}
 
 
 @dataclass(frozen=True)
@@ -75,23 +82,113 @@ def _normalize_text(text: str) -> str:
     return " ".join(unicodedata.normalize("NFKC", text).split())
 
 
-def _span_id(source_path: str, start: int, end: int) -> str:
-    digest = sha256(f"{source_path}\0{start}\0{end}".encode("utf-8")).hexdigest()[:20]
+def _span_id(source_path: str, start: int, end: int, token_class: str) -> str:
+    digest = sha256(
+        f"{source_path}\0{start}\0{end}\0{token_class}".encode("utf-8")
+    ).hexdigest()[:20]
     return f"span-{digest}"
 
 
-def _is_quantity(text: str) -> bool:
-    return bool(_FULL_POSITIVE_INT_RE.fullmatch(text) or _QUANTITY_RE.search(text))
+def _trimmed_bounds(text: str, start: int, end: int) -> tuple[int, int]:
+    while start < end and text[start].isspace():
+        start += 1
+    while end > start and text[end - 1].isspace():
+        end -= 1
+    return start, end
 
 
-def _token_class(text: str) -> str:
-    if _DELIMITER_RE.search(text):
-        return "delimited_text"
-    if _is_quantity(text):
-        return "positive_integer"
-    if _SHOE_SIZE_RE.fullmatch(text):
-        return "shoe_size_like_numeric"
-    return "text"
+def _quantity_ranges(text: str) -> list[tuple[int, int]]:
+    ranges = [
+        match.span("multiplier") if match.group("multiplier") else match.span("unit")
+        for match in _QUANTITY_CAPTURE_RE.finditer(text)
+    ]
+    start, end = _trimmed_bounds(text, 0, len(text))
+    if _FULL_POSITIVE_INT_RE.fullmatch(_normalize_text(text[start:end])):
+        ranges.append((start, end))
+    return list(dict.fromkeys(ranges))
+
+
+def _shoe_size_ranges(text: str) -> list[tuple[int, int]]:
+    return [
+        match.span(1)
+        for match in _NUMBER_CAPTURE_RE.finditer(text)
+        if 25 <= float(unicodedata.normalize("NFKC", match.group(1))) <= 59
+    ]
+
+
+def _quantity_syntax_ranges(text: str) -> list[tuple[int, int]]:
+    ranges: list[tuple[int, int]] = []
+    for start, end in _quantity_ranges(text):
+        syntax_start = start
+        while syntax_start and text[syntax_start - 1].isspace():
+            syntax_start -= 1
+        if syntax_start and text[syntax_start - 1] in "*xX×＊":
+            syntax_start -= 1
+        syntax_end = end
+        while syntax_end < len(text) and text[syntax_end].isspace():
+            syntax_end += 1
+        unit = re.match(rf"(?:{_QUANTITY_UNITS})", text[syntax_end:])
+        if unit:
+            syntax_end += unit.end()
+        ranges.append((syntax_start, syntax_end))
+    return ranges
+
+
+def _delimiter_segment_ranges(text: str) -> list[tuple[int, int]]:
+    result: list[tuple[int, int]] = []
+    for segment in _DELIMITER_SEGMENT_RE.finditer(text):
+        protected = sorted(
+            [
+                *(
+                    (segment.start() + start, segment.start() + end)
+                    for start, end in _quantity_syntax_ranges(segment.group())
+                ),
+                *(
+                    (segment.start() + start, segment.start() + end)
+                    for start, end in _shoe_size_ranges(segment.group())
+                ),
+            ]
+        )
+        if not protected:
+            bounds = _trimmed_bounds(text, *segment.span())
+            if bounds[0] < bounds[1]:
+                result.append(bounds)
+            continue
+        cursor = segment.start()
+        for start, end in protected:
+            bounds = _trimmed_bounds(text, cursor, start)
+            if bounds[0] < bounds[1]:
+                result.append(bounds)
+            cursor = max(cursor, end)
+        bounds = _trimmed_bounds(text, cursor, segment.end())
+        if bounds[0] < bounds[1]:
+            result.append(bounds)
+    return result
+
+
+def _span_record(
+    source_path: str,
+    text: str,
+    start: int,
+    end: int,
+    token_class: str,
+    array_items: tuple[tuple[str, int], ...],
+) -> _SpanRecord | None:
+    normalized = _normalize_text(text[start:end])
+    if not normalized:
+        return None
+    return _SpanRecord(
+        SourceSpan(
+            span_id=_span_id(source_path, start, end, token_class),
+            source_path=source_path,
+            original_text=text[start:end],
+            normalized_text=normalized,
+            start=start,
+            end=end,
+            token_class=token_class,
+        ),
+        array_items,
+    )
 
 
 def _text_records(
@@ -100,46 +197,85 @@ def _text_records(
     array_items: tuple[tuple[str, int], ...],
 ) -> list[_SpanRecord]:
     records: list[_SpanRecord] = []
-    for match in re.finditer(r"[^\r\n]+", text):
-        normalized = _normalize_text(match.group())
-        if not normalized:
-            continue
-        span = SourceSpan(
-            span_id=_span_id(source_path, match.start(), match.end()),
-            source_path=source_path,
-            original_text=match.group(),
-            normalized_text=normalized,
-            start=match.start(),
-            end=match.end(),
-            token_class=_token_class(normalized),
+    for line in re.finditer(r"[^\r\n]+", text):
+        line_record = _span_record(
+            source_path,
+            text,
+            line.start(),
+            line.end(),
+            "text",
+            array_items,
         )
-        records.append(_SpanRecord(span, array_items))
+        if line_record is None:
+            continue
+        records.append(line_record)
+        line_text = line.group()
+        candidates: list[tuple[int, int, str]] = []
+        if _DELIMITER_RE.search(line_text):
+            candidates.extend(
+                (*bounds, "delimiter_segment")
+                for bounds in _delimiter_segment_ranges(line_text)
+            )
+        candidates.extend(
+            (*bounds, "positive_integer_quantity")
+            for bounds in _quantity_ranges(line_text)
+        )
+        candidates.extend(
+            (*bounds, "shoe_size_like_numeric_segment")
+            for bounds in _shoe_size_ranges(line_text)
+        )
+        for start, end, token_class in candidates:
+            record = _span_record(
+                source_path,
+                text,
+                line.start() + start,
+                line.start() + end,
+                token_class,
+                array_items,
+            )
+            if record is not None:
+                records.append(record)
     return records
 
 
-def _print_xml_records(leaf: _Leaf) -> list[_SpanRecord]:
+def _custom_area_marker(value: object) -> bool:
+    return "CUSTOMAREA" in re.sub(r"[^A-Z0-9]", "", str(value).upper())
+
+
+def _xml_texts(
+    element: ElementTree.Element,
+    marked: bool = False,
+) -> Iterator[tuple[str, bool]]:
+    marked = marked or _custom_area_marker(element.tag) or any(
+        _custom_area_marker(key) or _custom_area_marker(value)
+        for key, value in element.attrib.items()
+    )
+    if element.tag.rsplit("}", 1)[-1] == "text":
+        yield "".join(element.itertext()), marked
+        return
+    for child in element:
+        yield from _xml_texts(child, marked)
+
+
+def _print_xml_records(leaf: _Leaf) -> tuple[list[_SpanRecord], int]:
     if not isinstance(leaf.value, str) or not leaf.value.strip():
-        return []
+        return [], 0
     try:
         root = ElementTree.fromstring(leaf.value)
-        texts = [
-            "".join(element.itertext())
-            for element in root.iter()
-            if element.tag.rsplit("}", 1)[-1] == "text"
-        ]
-        suffix = "text"
     except ElementTree.ParseError:
-        texts = _CDATA_RE.findall(leaf.value)
-        suffix = "cdata"
-    return [
+        return [], 1
+    texts = list(_xml_texts(root))
+    records = [
         record
-        for index, text in enumerate(texts)
+        for index, (text, marked) in enumerate(texts)
+        if marked
         for record in _text_records(
-            f"{leaf.source_path}.{suffix}[{index}]",
+            f"{leaf.source_path}.text[{index}]",
             text,
             leaf.array_items,
         )
     ]
+    return records, sum(not marked for _, marked in texts)
 
 
 def _dedupe_groups(groups: list[list[str]]) -> list[list[str]]:
@@ -153,36 +289,58 @@ def _dedupe_groups(groups: list[list[str]]) -> list[list[str]]:
     return result
 
 
-def _candidate_groups(records: list[_SpanRecord]) -> dict[str, list[list[str]]]:
+def _array_key(item_path: str) -> str:
+    return item_path.rsplit("[", 1)[0].rsplit(".", 1)[-1]
+
+
+def _candidate_groups(
+    records: list[_SpanRecord],
+    business_array_keys: set[str],
+) -> dict[str, list[list[str]]]:
     structured: dict[str, list[str]] = {}
     arrays: dict[str, list[str]] = {}
-    repeated: dict[str, list[str]] = {}
+    repeated: dict[tuple[str, str], list[str]] = {}
     for record in records:
         span = record.span
-        if record.array_items:
-            structured.setdefault(record.array_items[-1][0], []).append(span.span_id)
-        for item_path, item_count in record.array_items:
+        if span.token_class != "text":
+            continue
+        item_arrays = [
+            (item_path, item_count)
+            for item_path, item_count in record.array_items
+            if _array_key(item_path) in business_array_keys
+        ]
+        if item_arrays:
+            item_path, _ = item_arrays[-1]
+            structured.setdefault(item_path, []).append(span.span_id)
+        for item_path, item_count in item_arrays:
             if item_count > 1:
                 arrays.setdefault(item_path.rsplit("[", 1)[0], []).append(span.span_id)
-        repeated.setdefault(span.normalized_text, []).append(span.span_id)
+        repeated.setdefault(
+            (span.source_path, span.normalized_text),
+            [],
+        ).append(span.span_id)
 
     return {
         "structured_list_item": _dedupe_groups(list(structured.values())),
-        "line": [[record.span.span_id] for record in records],
+        "line": [
+            [record.span.span_id]
+            for record in records
+            if record.span.token_class == "text"
+        ],
         "delimiter_separated_segment": [
             [record.span.span_id]
             for record in records
-            if _DELIMITER_RE.search(record.span.normalized_text)
+            if record.span.token_class == "delimiter_segment"
         ],
         "positive_integer_quantity": [
             [record.span.span_id]
             for record in records
-            if _is_quantity(record.span.normalized_text)
+            if record.span.token_class == "positive_integer_quantity"
         ],
         "shoe_size_like_numeric_segment": [
             [record.span.span_id]
             for record in records
-            if _SHOE_SIZE_RE.search(record.span.normalized_text)
+            if record.span.token_class == "shoe_size_like_numeric_segment"
         ],
         "repeated_line_or_array_group": _dedupe_groups(
             [
@@ -190,6 +348,32 @@ def _candidate_groups(records: list[_SpanRecord]) -> dict[str, list[list[str]]]:
                 *(span_ids for span_ids in repeated.values() if len(span_ids) > 1),
             ]
         ),
+    }
+
+
+def _catalog_path_pattern(path: str, detect_path: str) -> re.Pattern[str]:
+    source_path = path.split("//", 1)[0]
+    if not source_path.startswith("contents[]"):
+        source_root = source_path.split(".", 1)[0]
+        root_index = detect_path.find(source_root)
+        if root_index >= 0:
+            source_path = f"{detect_path[:root_index]}{source_path}"
+    pattern = re.escape(source_path).replace(r"\[\]", r"\[\d+\]")
+    task_prefix = (
+        r"(?:task\.documents\[\d+\]\.)?"
+        if source_path.startswith("contents[]")
+        else ""
+    )
+    return re.compile(rf"^{task_prefix}{pattern}$")
+
+
+def _business_array_keys(fields: list[dict[str, Any]], selected: set[str]) -> set[str]:
+    return {
+        array_key
+        for field in fields
+        if field["key"] in selected
+        for array_key in re.findall(r"([^.]+)\[\]", field["path"])
+        if array_key not in _WRAPPER_ARRAY_KEYS
     }
 
 
@@ -205,23 +389,35 @@ def build_evidence(
         if selected_fields is not None
         else {field["key"] for field in fields if field["default_selected"]}
     )
-    field_source_keys = {
-        field["key"]: field["path"].rsplit(".", 1)[-1].split("//", 1)[0].replace("[]", "")
+    catalogue_entry = next(
+        (
+            entry
+            for entry in fingerprint_catalog()
+            if inspection and entry["code"] == inspection["fingerprint_code"]
+        ),
+        {"detect_path": ""},
+    )
+    field_sources = [
+        (
+            field["key"],
+            _catalog_path_pattern(field["path"], catalogue_entry["detect_path"]),
+        )
         for field in fields
-    }
-    selected_source_keys = {
-        source_key
-        for field_key, source_key in field_source_keys.items()
-        if field_key in selected
-    }
-    all_source_keys = set(field_source_keys.values())
+    ]
 
     excluded = {"non_business": 0, "unselected_business": 0}
     records: list[_SpanRecord] = []
     for leaf in _walk_leaves(payload):
-        if leaf.source_key in selected_source_keys:
+        matched_fields = {
+            field_key
+            for field_key, pattern in field_sources
+            if pattern.search(leaf.source_path)
+        }
+        if matched_fields & selected:
             if leaf.source_key == "printXML":
-                records.extend(_print_xml_records(leaf))
+                print_records, excluded_text_count = _print_xml_records(leaf)
+                records.extend(print_records)
+                excluded["non_business"] += excluded_text_count
             elif leaf.value is not None and not isinstance(leaf.value, (dict, list)):
                 records.extend(
                     _text_records(
@@ -230,7 +426,7 @@ def build_evidence(
                         leaf.array_items,
                     )
                 )
-        elif leaf.source_key in all_source_keys:
+        elif matched_fields:
             excluded["unselected_business"] += 1
         else:
             excluded["non_business"] += 1
@@ -241,9 +437,14 @@ def build_evidence(
         "fingerprint_code": inspection["fingerprint_code"] if inspection else "UNKNOWN",
         "structural_fingerprint": business_shape_fingerprint(payload, source_component),
         "grammar_signature": grammar_signature_for_texts(
-            record.span.original_text for record in records
+            record.span.original_text
+            for record in records
+            if record.span.token_class == "text"
         ),
         "spans": [asdict(record.span) for record in records],
-        "candidate_groups": _candidate_groups(records),
+        "candidate_groups": _candidate_groups(
+            records,
+            _business_array_keys(fields, selected),
+        ),
         "excluded_field_counts": excluded,
     }
