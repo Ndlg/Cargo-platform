@@ -93,6 +93,8 @@ FIELD_SOURCE_KEYS = {
     "product_count": "productCount",
 }
 
+_QUANTITY_UNIT_RE = re.compile(r"(?<=\d)\s*(件|双|雙|个|個|条|條|套|份|只|支|瓶|包|组|組)")
+
 
 def _walk_dicts(value: Any):
     if isinstance(value, dict):
@@ -248,7 +250,18 @@ def _scalar_type(value: Any) -> str:
 
 
 def _text_grammar(text: str) -> str:
-    return _normalized_print_text("".join(char for char in text if char.isspace() or unicodedata.category(char).startswith("P")))
+    unit_positions = {
+        index
+        for match in _QUANTITY_UNIT_RE.finditer(text)
+        for index in range(match.start(1), match.end(1))
+    }
+    return _normalized_print_text(
+        "".join(
+            char
+            for index, char in enumerate(text)
+            if index in unit_positions or char.isspace() or unicodedata.category(char).startswith("P")
+        )
+    )
 
 
 def _business_signature(payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
