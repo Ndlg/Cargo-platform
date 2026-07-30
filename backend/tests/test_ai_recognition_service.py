@@ -1024,6 +1024,83 @@ def test_admin_correction_can_compile_a_value_independent_text_rule(tmp_path: Pa
     assert len(validations) == 3
 
 
+def test_admin_correction_can_compile_a_structured_multi_item_rule(tmp_path: Path) -> None:
+    module = load_ai_service(tmp_path / "structured-correction.db")
+    request = package_request()
+    items = request["payload"]["task"]["documents"][0]["contents"][0]["data"]["packageItemDetail"]
+    items.append(
+        {
+            "itemName": "秒67",
+            "skuFullName": "冰川灰 40",
+            "itemNum": 2,
+        }
+    )
+    corrected_rows = [
+        {
+            "product": "范74",
+            "sales_attr1": "5代白金",
+            "sales_attr2": "45",
+            "quantity": 1,
+            "remark": "",
+        },
+        {
+            "product": "秒67",
+            "sales_attr1": "冰川灰",
+            "sales_attr2": "40",
+            "quantity": 2,
+            "remark": "",
+        },
+    ]
+    expected_rule = {
+        "strategy": "structured_items_v1",
+        "items_path": "task.documents[].contents[].data.packageItemDetail[]",
+        "fields": {
+            "product": "itemName",
+            "sales_attr1": "skuFullName",
+            "sales_attr2": "skuFullName",
+            "quantity": "itemNum",
+        },
+        "steps": [
+            {
+                "op": "rsplit",
+                "source": "sales_attr1",
+                "delimiter": " ",
+                "targets": ["sales_attr1", "sales_attr2"],
+            }
+        ],
+        "defaults": {"remark": ""},
+    }
+    validations: list[dict[str, Any]] = []
+
+    def validate_rule(payload: dict[str, Any], _token: str) -> dict[str, Any]:
+        validations.append(payload)
+        if payload["candidate_rule"] == expected_rule:
+            return {"status": "valid"}
+        raise module.RuleValidationRejected("AI 规则不能复现管理员确认行。")
+
+    model = FakeModel()
+    app = module.create_app(
+        model_client=model,
+        db_path=tmp_path / "sessions.db",
+        internal_token="test-shared-token",
+        approval_sender=validate_rule,
+    )
+
+    with TestClient(app) as client:
+        session_id = client.post("/api/v1/recognize", json=request).json()["session_id"]
+        wait_for_session(client, session_id, "ai_rule_invalid")
+        client.post(
+            f"/api/v1/sessions/{session_id}/feedback",
+            json={"corrected_rows": corrected_rows},
+        )
+        stored = wait_for_session(client, session_id, "ai_rule_pending")
+
+    assert stored["candidate"]["parents"][0]["rows"] == corrected_rows
+    assert stored["candidate"]["candidate_rule"] == expected_rule
+    assert len(model.calls) == 2
+    assert len(validations) == 3
+
+
 def test_corrected_text_rule_does_not_capture_unconfirmed_dynamic_literals(tmp_path: Path) -> None:
     module = load_ai_service(tmp_path / "import-default.db")
     rows = [{

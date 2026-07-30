@@ -40,6 +40,7 @@ BUSINESS_KEY_PARTS = {
     "itemdetail",
     "iteminfo",
     "itemname",
+    "itemnum",
     "itemtitle",
     "itemtotalcount",
     "product",

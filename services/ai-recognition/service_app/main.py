@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
 import json
@@ -36,7 +37,7 @@ def _dict_nodes(value: Any, path: tuple[str, ...] = ()) -> list[tuple[str, dict[
             nodes.extend(_dict_nodes(item, (*path, str(key))))
     elif isinstance(value, list) and path:
         list_path = (*path[:-1], f"{path[-1]}[]")
-        for item in value[:10]:
+        for item in value[:100]:
             nodes.extend(_dict_nodes(item, list_path))
     return nodes
 
@@ -72,6 +73,118 @@ def normalize_candidate_rule(result: dict[str, Any], payload: dict[str, Any]) ->
     if len(matching_paths) == 1:
         normalized_rule["items_path"] = matching_paths.pop()
     return {**result, "candidate_rule": normalized_rule}
+
+
+def _relative_scalars(value: Any, path: tuple[str, ...] = ()) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return {
+            field_path: scalar
+            for key, item in value.items()
+            for field_path, scalar in _relative_scalars(item, (*path, str(key))).items()
+        }
+    if isinstance(value, list) or value is None or not path:
+        return {}
+    return {".".join(path): value}
+
+
+def compile_corrected_structured_rule(
+    payload: dict[str, Any],
+    corrected_rows: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    items_by_path: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for path, item in _dict_nodes(payload):
+        if path.endswith("[]"):
+            items_by_path[path].append(item)
+
+    for items_path, items in sorted(items_by_path.items()):
+        if len(items) != len(corrected_rows):
+            continue
+        leaves = [_relative_scalars(item) for item in items]
+        common_paths = set.intersection(*(set(item) for item in leaves))
+
+        def exact_path(field: str) -> str | None:
+            expected = [row[field] for row in corrected_rows]
+            for path in sorted(common_paths):
+                actual = [item[path] for item in leaves]
+                if field == "quantity":
+                    if all(
+                        not isinstance(value, bool)
+                        and isinstance(value, (int, float, str))
+                        and str(value).strip().isdigit()
+                        for value in actual
+                    ) and [int(str(value).strip()) for value in actual] == expected:
+                        return path
+                elif [str(value).strip() for value in actual] == expected:
+                    return path
+            return None
+
+        product_path = exact_path("product")
+        quantity_path = exact_path("quantity")
+        if not product_path or not quantity_path:
+            continue
+
+        fields = {"product": product_path, "quantity": quantity_path}
+        defaults: dict[str, Any] = {}
+        steps: list[dict[str, Any]] = []
+        attr1_path = exact_path("sales_attr1")
+        attr2_path = exact_path("sales_attr2")
+        if attr1_path:
+            fields["sales_attr1"] = attr1_path
+        if attr2_path:
+            fields["sales_attr2"] = attr2_path
+
+        if not attr1_path and any(row["sales_attr1"] for row in corrected_rows):
+            for path in sorted(common_paths):
+                delimiters: list[str] = []
+                for item, row in zip(leaves, corrected_rows, strict=True):
+                    value = str(item[path]).strip()
+                    attr1 = row["sales_attr1"]
+                    attr2 = row["sales_attr2"]
+                    if not attr1 or not attr2 or not value.startswith(attr1) or not value.endswith(attr2):
+                        break
+                    delimiter = value[len(attr1) : len(value) - len(attr2)]
+                    if not delimiter or len(delimiter) > 64:
+                        break
+                    delimiters.append(delimiter)
+                else:
+                    if len(set(delimiters)) == 1:
+                        fields["sales_attr1"] = path
+                        fields["sales_attr2"] = path
+                        steps.append(
+                            {
+                                "op": "rsplit",
+                                "source": "sales_attr1",
+                                "delimiter": delimiters[0],
+                                "targets": ["sales_attr1", "sales_attr2"],
+                            }
+                        )
+                        attr1_path = path
+                        attr2_path = path
+                        break
+
+        for field, path in (
+            ("sales_attr1", attr1_path),
+            ("sales_attr2", attr2_path),
+            ("remark", exact_path("remark")),
+        ):
+            if path:
+                fields.setdefault(field, path)
+            elif all(not row[field] for row in corrected_rows):
+                defaults[field] = ""
+            else:
+                break
+        else:
+            rule: dict[str, Any] = {
+                "strategy": "structured_items_v1",
+                "items_path": items_path,
+                "fields": fields,
+            }
+            if steps:
+                rule["steps"] = steps
+            if defaults:
+                rule["defaults"] = defaults
+            return rule
+    return None
 
 
 def _text_leaves(value: Any, path: tuple[str, ...] = ()) -> list[tuple[str, str]]:
@@ -368,10 +481,10 @@ def create_app(
                     except (ValueError, httpx.HTTPError) as exc:
                         validation_error = str(exc)[:2000]
                 if validation_error and corrected_rows and repairable and attempt == 0:
-                    compiled_rule = compile_corrected_text_rule(
+                    compiled_rule = compile_corrected_structured_rule(
                         session["sanitized_payload"],
                         corrected_rows,
-                    )
+                    ) or compile_corrected_text_rule(session["sanitized_payload"], corrected_rows)
                     if compiled_rule:
                         compiled_candidate = {
                             **candidate_payload,
