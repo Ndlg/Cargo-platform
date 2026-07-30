@@ -9,6 +9,7 @@ from app.api.routes.collector_runtime import (
     RECOGNITION_EXCEPTION_SHEET_TITLE,
     append_recognition_exception_sheet,
     append_xlsx_rows,
+    pending_unmapped_waybill_product_sku_linking_row,
     product_sku_linking_export_row,
     recognition_exception_export_rows,
     recognition_report_export_rows,
@@ -19,6 +20,17 @@ from app.api.routes.collector_runtime import (
     recognition_rows_from_product_sku_linking_results,
     report_quantity_value,
 )
+
+
+def test_pending_unmapped_export_text_does_not_expose_batch_numbers() -> None:
+    row = pending_unmapped_waybill_product_sku_linking_row(
+        {"sample_id": "sample-1", "raw_record_id": 1, "sample_text": "鞋款文字 42 *1"},
+        detail_number=7,
+    )
+
+    assert row["source_label"] == "第1批-第7单"
+    assert row["image_match_text"] == "鞋款文字 42 *1"
+    assert recognition_exception_export_rows([row]) == [["鞋款文字 42 *1"]]
 
 
 def test_report_preview_keeps_matched_rule_id_for_exception_repair() -> None:

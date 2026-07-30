@@ -1348,7 +1348,7 @@ def pending_unmapped_waybill_product_sku_linking_row(
         "sales_attr2_text": "",
         "quantity_text": "",
         "remark_text": "",
-        "image_match_text": f"{source_label}：{message}{(' ' + sample_text) if sample_text else ''}",
+        "image_match_text": sample_text or message,
         "product_name": "",
         "product_id": None,
         "sku_id": None,
