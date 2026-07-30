@@ -5,6 +5,7 @@
     "pre_closeout_commit": "acdb6480a6e318518932d13639cb5de2f8401b2f",
     "pre_closeout_tag": "validation-6173-pre-release-closeout-20260730",
     "plan_commit": "f5f7373",
+    "release_commit": "716f8c7",
     "branch": "codex/local-ai-waybill-recognition"
   },
   "validation_runtime": {
@@ -75,10 +76,11 @@
     }
   ],
   "verification": {
-    "implementation_complete": false,
-    "full_tests_passed": false,
-    "browser_passed": false,
-    "coverage_invariant_passed": false,
-    "field_runtime_unchanged": false
+    "implementation_complete": true,
+    "full_tests_passed": true,
+    "browser_passed": true,
+    "coverage_invariant_passed": true,
+    "field_runtime_unchanged": true,
+    "evidence": "final-validation.json"
   }
 }

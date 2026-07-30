@@ -1,0 +1,126 @@
+{
+  "candidate": "0.2.0-rc.1",
+  "validated_at": "2026-07-30T18:50:34+08:00",
+  "source_commit": "716f8c7",
+  "tests": {
+    "backend": "280 passed",
+    "ai_focused": "66 passed",
+    "frontend_build_all": "passed",
+    "frontend_production_audit": "0 vulnerabilities"
+  },
+  "validation_runtime": {
+    "backend": {
+      "container_id": "017d96023c655dd98781671becee04e1e41ea025b67ac06d8693f4db42629850",
+      "image": "cargo-platform-validation-backend:release-0.2.0-rc.1-716f8c7",
+      "version": "0.2.0-rc.1",
+      "restart_count": 0,
+      "health": 200
+    },
+    "parser": {
+      "container_id": "5d711ba4475740fb4f09de7fe31d22e9139af3b4b95d14a516628cda3237d76e",
+      "image": "cargo-platform-validation-parser:release-0.2.0-rc.1-716f8c7",
+      "version": "0.2.0-rc.1",
+      "restart_count": 0,
+      "health": 200
+    },
+    "ui": {
+      "container_id": "b1e141b5616ab45b2217abffb1a58b2f6c4dccd2bf2f89b15508ccae810fe7ba",
+      "image": "cargo-platform-validation-ui:release-0.2.0-rc.1-716f8c7",
+      "restart_count": 0,
+      "health": 200
+    },
+    "ai_recognition": {
+      "container_id": "825fc0fc2f2187e28dd39cac08aa12c2a1fe80cb2fd8a4627558cbb708bc2682",
+      "image": "cargo-platform-ai-recognition:release-0.2.0-rc.1-716f8c7",
+      "version": "0.2.0-rc.1",
+      "restart_count": 0,
+      "health": 200
+    }
+  },
+  "browser_acceptance": {
+    "sample": "task 64, waybill 18",
+    "loading_feedback": "正在处理…",
+    "result": "已确认并同步",
+    "console_errors": 0,
+    "console_warnings": 0
+  },
+  "rule_reuse": {
+    "same_fingerprint_additional_samples": 4,
+    "model_calls_before": 58,
+    "model_calls_after": 58
+  },
+  "fail_open": {
+    "known_rule_while_ai_stopped": "passed",
+    "unknown_input_status": "ai_unavailable",
+    "silent_fallback": false
+  },
+  "coverage": [
+    {
+      "task": 62,
+      "parents": 164,
+      "normal": 142,
+      "exceptions": 22,
+      "covered": 164
+    },
+    {
+      "task": 63,
+      "parents": 118,
+      "normal": 105,
+      "exceptions": 13,
+      "covered": 118
+    },
+    {
+      "task": 64,
+      "parents": 94,
+      "normal": 70,
+      "exceptions": 24,
+      "covered": 94
+    }
+  ],
+  "export": {
+    "path": "ops/validation-stages/20260729-ai/runtime/release-final-20260730-185034/task64-release-check.xlsx",
+    "bytes": 12826,
+    "sha256": "D311585AB3EE9E54DBDCAE80B4F3998E6168BDA3B5C6C2E59D6CC2753ED455A1",
+    "normal_sheet_headers": [
+      "商品",
+      "销售属性1",
+      "图片",
+      "销售属性2",
+      "数量",
+      "备注",
+      "图片匹配文本"
+    ],
+    "exception_sheet_headers": [
+      "图片匹配文本"
+    ]
+  },
+  "final_backups": [
+    {
+      "kind": "ai_sessions",
+      "path": "ops/validation-stages/20260729-ai/runtime/release-final-20260730-185034/ai-recognition-final.db",
+      "bytes": 98304,
+      "sha256": "82FF0EC46B200DB43605EF96C1CD6A68671FC1CA7C84C8F80FEBFF61D2D19005",
+      "integrity_check": "ok"
+    },
+    {
+      "kind": "platform",
+      "path": "ops/validation-stages/20260729-ai/runtime/release-final-20260730-185034/cargo-platform-final.db",
+      "bytes": 66306048,
+      "sha256": "69405E7A7F1E309271E0FD151E91FC9A06435B3E87692CBD0726BFDDA2409A10",
+      "integrity_check": "ok"
+    }
+  ],
+  "field_runtime_5173": {
+    "unchanged": true,
+    "backend": "eb42223185ae60de5c9b24c1752e23f2e5e63f12db1b48b9e9ba5591fe64b05c",
+    "parser": "5d76b24c504043c44da77962a50ca2dc42744550ec4a1666ecc8af63fc452bec",
+    "tenant_ui": "5ed09f8a74fc36a65eaf68f222998620487b1cb73c63ac66ae2aac414f069d07",
+    "admin_ui": "ea7b3ad8827d28f363e03ff0bc169c942b09eeb68b92e8ab16c1a18ea4f533ed",
+    "redis": "d702409461c6c1a1991a5af843330ce4cb0a53f1a51f77cd29e78dd52ea12905"
+  },
+  "rollback": {
+    "source_tag": "validation-6173-pre-release-closeout-20260730",
+    "source_commit": "acdb6480a6e318518932d13639cb5de2f8401b2f",
+    "database_backup_directory": "ops/validation-stages/20260729-ai/runtime/release-closeout-20260730-181719"
+  }
+}
