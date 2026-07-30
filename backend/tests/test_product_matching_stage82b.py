@@ -25,6 +25,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from openpyxl import load_workbook  # noqa: E402
 
 from app.core.database import SessionLocal  # noqa: E402
+from app.api.routes import collector_runtime as collector_runtime_route  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import (  # noqa: E402
     CaptureTask,
@@ -970,6 +971,183 @@ def test_recognition_preview_uses_waybill_sequence_not_raw_record_source_index(m
         labels = [row["source_label"] for row in body["rows"]]
         assert labels == ["第1批-第1单-子1", "第1批-第2单-子1"]
         assert all("2648" not in label and "7132" not in label for label in labels)
+
+
+def test_recognition_export_covers_parent_without_generated_order_row(monkeypatch) -> None:
+    def fake_parse_order_row_drafts_with_service(
+        *,
+        task_id: int,
+        standard_details: list[dict] | None = None,
+        raw_records: list[dict] | None = None,
+        waybill_samples: list[dict] | None = None,
+        rule_pack: dict,
+    ) -> dict:
+        assert not standard_details
+        assert not waybill_samples
+        assert len(raw_records or []) == 1
+        raw_record = (raw_records or [])[0]
+        parsed_parent = {
+            "raw_record_id": raw_record["raw_record_id"],
+            "task_id": task_id,
+            "parent_label": "第1批-第1单",
+            "source_component": "cainiao-cnprint",
+            "source_index": "coverage-parent",
+            "child_count": 1,
+            "rows": [
+                {
+                    "raw_record_id": raw_record["raw_record_id"],
+                    "task_id": task_id,
+                    "parent_label": "第1批-第1单",
+                    "child_label": "第1批-第1单-子1",
+                    "child_index": 1,
+                    "child_count": 1,
+                    "source_component": "cainiao-cnprint",
+                    "source_index": "coverage-parent",
+                    "product": "范74",
+                    "sales_attr1": "5代白金",
+                    "sales_attr2": "45",
+                    "quantity": 1,
+                    "remark": "",
+                    "image_match_text": "范74 5代白金 45",
+                    "original_text": "范74 5代白金 45 1件",
+                    "status": "draft",
+                    "review_reason": "",
+                }
+            ],
+        }
+        unresolved_parent = {
+            "raw_record_id": raw_record["raw_record_id"],
+            "task_id": task_id,
+            "parent_label": "第1批-第2单",
+            "source_component": "cainiao-cnprint",
+            "source_index": "coverage-parent",
+            "child_count": 0,
+            "rows": [],
+        }
+        return {
+            "contract_version": "order_row_drafts_v1",
+            "task_id": task_id,
+            "status": "ai_rule_pending",
+            "summary": {
+                "parent_waybill_count": 2,
+                "child_waybill_count": 1,
+                "draft_count": 1,
+                "needs_review_count": 1,
+                "special_count": 0,
+            },
+            "parents": [parsed_parent, unresolved_parent],
+            "rows": parsed_parent["rows"],
+            "diagnostics": [
+                {
+                    "raw_record_id": raw_record["raw_record_id"],
+                    "parent_label": "第1批-第2单",
+                    "reason": "ai_rule_pending",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(order_row_reader_service, "waybill_parser_service_enabled", lambda: True, raising=False)
+    monkeypatch.setattr(
+        order_row_reader_service,
+        "parse_order_row_drafts_with_service",
+        fake_parse_order_row_drafts_with_service,
+        raising=False,
+    )
+
+    with TestClient(app) as client:
+        headers = _headers(client)
+        _activate_test_recognition_pack()
+        with SessionLocal() as db:
+            task = CaptureTask(
+                tenant_id=1,
+                workspace_id=1,
+                name="未生成订单行覆盖测试",
+                status="completed",
+            )
+            db.add(task)
+            db.flush()
+            db.add(
+                RawCaptureRecord(
+                    tenant_id=1,
+                    workspace_id=1,
+                    task_id=task.id,
+                    source_component="cainiao-cnprint",
+                    source_index="coverage-parent",
+                    payload_format="json",
+                    raw_payload=json.dumps(
+                        {
+                            "task": {
+                                "documents": [
+                                    {"contents": [{"data": {"productInfo": "范74 5代白金 45 1件"}}]},
+                                    {"contents": [{"data": {"productInfo": "陌生格式商品 42 1件"}}]},
+                                ]
+                            }
+                        },
+                        ensure_ascii=False,
+                    ),
+                    status="parsed",
+                )
+            )
+            db.commit()
+            task_id = task.id
+
+        preview_response = client.get(
+            f"/api/v1/collector-control/tasks/{task_id}/recognition-preview",
+            headers=headers,
+        )
+        assert preview_response.status_code == 200
+        preview = preview_response.json()
+        assert preview["collected_waybill_count"] == 2
+        assert preview["covered_waybill_count"] == 2
+        assert preview["coverage_complete"] is True
+        assert preview["waybill_count"] == 2
+        assert preview["order_row_count"] == 1
+        assert preview["summary"]["total"] == 1
+        assert preview["summary"]["pending"] == 1
+
+        workbook_response = client.get(
+            f"/api/v1/collector-control/tasks/{task_id}/report-workbook",
+            headers=headers,
+            params={"layout": json.dumps({"output_mode": "merged_sheet"}, ensure_ascii=False)},
+        )
+        assert workbook_response.status_code == 200
+        workbook = load_workbook(BytesIO(workbook_response.content))
+        assert workbook["异常面单"].max_row == 3
+
+
+def test_recognition_download_rejects_incomplete_parent_coverage(monkeypatch) -> None:
+    with TestClient(app) as client:
+        headers = _headers(client)
+        with SessionLocal() as db:
+            task = CaptureTask(
+                tenant_id=1,
+                workspace_id=1,
+                name="下载覆盖守门测试",
+                status="completed",
+            )
+            db.add(task)
+            db.commit()
+            task_id = task.id
+
+        monkeypatch.setattr(
+            collector_runtime_route,
+            "recognition_rows_for_task",
+            lambda *_args, **_kwargs: [],
+        )
+        monkeypatch.setattr(
+            collector_runtime_route,
+            "task_waybill_counts",
+            lambda *_args, **_kwargs: (1, 1),
+            raising=False,
+        )
+
+        response = client.get(
+            f"/api/v1/collector-control/tasks/{task_id}/report-workbook",
+            headers=headers,
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "采集面单覆盖不完整，已停止生成报货文件。请先处理缺失面单。"
 
 
 def test_recognition_export_keeps_unreadable_raw_print_in_exception_sheet(monkeypatch) -> None:

@@ -311,7 +311,7 @@ def task_waybill_counts(
     task_id: int,
 ) -> tuple[int, int]:
     raw_records = raw_records_for_task(db, workspace_id=workspace_id, task_id=task_id)
-    return len(raw_records), sum(len(read_waybill_samples(raw_record)) for raw_record in raw_records)
+    return len(raw_records), sum(max(1, len(read_waybill_samples(raw_record))) for raw_record in raw_records)
 
 
 def standard_detail_raw_id_map(details: list[StandardDetail]) -> dict[int, StandardDetail]:

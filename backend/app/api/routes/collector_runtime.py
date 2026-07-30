@@ -49,6 +49,7 @@ from app.api.routes.product_sku_linking import (
 from app.services.collection_contract import (
     build_raw_capture_record,
 )
+from app.services.order_row_reader import task_waybill_counts
 from app.services.product_sku_linking import exportable_product_sku_linking_result
 from app.services.recognition_rule_packs import (
     RULE_PACK_MISSING_STATUS,
@@ -474,7 +475,8 @@ def recognition_summary(rows: list[dict[str, Any]]) -> dict[str, int]:
         "conflict": 0,
     }
     for row in rows:
-        summary["total"] += 1
+        if not row.get("coverage_only"):
+            summary["total"] += 1
         status_text = text_value(row.get("status"))
         if status_text in summary:
             summary[status_text] += 1
@@ -1331,7 +1333,7 @@ def pending_unmapped_waybill_product_sku_linking_row(
 ) -> dict[str, Any]:
     sample_text = text_value(sample.get("sample_text"))
     message = "这张面单还没有生成五字段结果，无法进入商品匹配。"
-    source_label = f"面单 {detail_number}"
+    source_label = f"第1批-第{detail_number}单"
     return {
         "contract": EXPORT_PRODUCT_SKU_LINKING_CONTRACT,
         "detail_id": None,
@@ -1358,6 +1360,7 @@ def pending_unmapped_waybill_product_sku_linking_row(
         "match_type": "product_sku_linking_result",
         "match_field": "",
         "match_keyword": "",
+        "coverage_only": True,
     }
 
 
@@ -1366,8 +1369,8 @@ def unmapped_waybill_samples_for_task(
     *,
     workspace_id: int,
     task_id: int,
+    mapped_parent_sequences: set[int],
     mapped_raw_record_ids: set[int],
-    mapped_sample_ids: set[str],
 ) -> list[dict[str, Any]]:
     raw_records = db.scalars(
         select(RawCaptureRecord)
@@ -1381,18 +1384,22 @@ def unmapped_waybill_samples_for_task(
     ).all()
 
     unmapped_samples: list[dict[str, Any]] = []
+    waybill_number = 0
     for raw_record in raw_records:
         samples = read_waybill_samples(raw_record)
-        if len(samples) == 1 and int(raw_record.id) in mapped_raw_record_ids:
-            continue
+        if not samples:
+            samples = [{
+                "sample_id": f"raw-{raw_record.id}-sample-1",
+                "raw_record_id": raw_record.id,
+                "sample_text": "",
+            }]
         for sample in samples:
-            sample_id = text_value(sample.get("sample_id"))
-            raw_record_id = int_value(sample.get("raw_record_id"))
-            if sample_id and sample_id in mapped_sample_ids:
+            waybill_number += 1
+            if waybill_number in mapped_parent_sequences:
                 continue
-            if raw_record_id in mapped_raw_record_ids:
+            if len(samples) == 1 and int(raw_record.id) in mapped_raw_record_ids:
                 continue
-            unmapped_samples.append(sample)
+            unmapped_samples.append({**sample, "task_waybill_number": waybill_number})
     return unmapped_samples
 
 
@@ -1414,6 +1421,7 @@ def export_recognition_summary(rows: list[dict[str, Any]]) -> dict[str, int]:
 
 
 CHILD_SOURCE_LABEL_SUFFIX_PATTERN = re.compile(r"-子\d+$")
+PARENT_SEQUENCE_PATTERN = re.compile(r"(?:第1批-第|面单\s*)(\d+)(?:单)?")
 
 
 def recognition_waybill_count(rows: list[dict[str, Any]]) -> int:
@@ -1426,6 +1434,15 @@ def recognition_waybill_count(rows: list[dict[str, Any]]) -> int:
         if parent_label:
             parent_labels.add(parent_label)
     return len(parent_labels) or len(rows)
+
+
+def recognition_parent_sequences(rows: list[dict[str, Any]]) -> set[int]:
+    sequences: set[int] = set()
+    for row in rows:
+        match = PARENT_SEQUENCE_PATTERN.search(text_value(row.get("source_label")))
+        if match:
+            sequences.add(int(match.group(1)))
+    return sequences
 
 
 def recognition_row_from_product_matching_preview(
@@ -1488,7 +1505,55 @@ def recognition_rows_from_current_order_rows(
 
 
 def recognition_rows_for_task(db: Session, *, workspace_id: int, task_id: int) -> list[dict[str, Any]]:
-    return recognition_rows_from_current_order_rows(db, workspace_id=workspace_id, task_id=task_id)
+    rows = recognition_rows_from_current_order_rows(db, workspace_id=workspace_id, task_id=task_id)
+    mapped_raw_record_ids = {
+        raw_record_id
+        for row in rows
+        if (raw_record_id := int_value(row.get("raw_record_id"))) is not None
+    }
+    unmapped_samples = unmapped_waybill_samples_for_task(
+        db,
+        workspace_id=workspace_id,
+        task_id=task_id,
+        mapped_parent_sequences=recognition_parent_sequences(rows),
+        mapped_raw_record_ids=mapped_raw_record_ids,
+    )
+    rows.extend(
+        pending_unmapped_waybill_product_sku_linking_row(
+            sample,
+            detail_number=int_value(sample.get("task_waybill_number")) or len(rows) + 1,
+        )
+        for sample in unmapped_samples
+    )
+    return rows
+
+
+def recognition_expected_waybill_count(db: Session, *, workspace_id: int, task_id: int) -> int:
+    raw_record_count, waybill_count = task_waybill_counts(
+        db,
+        workspace_id=workspace_id,
+        task_id=task_id,
+    )
+    if raw_record_count:
+        return waybill_count
+    return len(standard_details_for_task(db, workspace_id=workspace_id, task_id=task_id))
+
+
+def require_complete_recognition_coverage(
+    db: Session,
+    *,
+    workspace_id: int,
+    task_id: int,
+    rows: list[dict[str, Any]],
+) -> tuple[int, int]:
+    expected = recognition_expected_waybill_count(db, workspace_id=workspace_id, task_id=task_id)
+    covered = recognition_waybill_count(rows)
+    if expected != covered:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="采集面单覆盖不完整，已停止生成报货文件。请先处理缺失面单。",
+        )
+    return expected, covered
 
 
 def task_or_404(db: Session, task_id: int, workspace_id: int) -> CaptureTask:
@@ -2335,17 +2400,26 @@ def preview_capture_task_recognition(
     task = task_or_404(db, task_id, workspace_id)
     details = standard_details_for_task(db, workspace_id=workspace_id, task_id=task.id)
     rows = recognition_rows_for_task(db, workspace_id=workspace_id, task_id=task.id)
-    waybill_count = recognition_waybill_count(rows)
+    collected_waybill_count = recognition_expected_waybill_count(
+        db,
+        workspace_id=workspace_id,
+        task_id=task.id,
+    )
+    covered_waybill_count = recognition_waybill_count(rows)
+    summary = export_recognition_summary(rows)
     return {
         "task_id": task.id,
         "task_name": task.name,
         "contract": EXPORT_PRODUCT_SKU_LINKING_CONTRACT,
         "data_source": "order_row_drafts",
-        "detail_count": waybill_count or len(details),
-        "waybill_count": waybill_count,
-        "order_row_count": len(rows),
+        "detail_count": collected_waybill_count or len(details),
+        "waybill_count": collected_waybill_count,
+        "collected_waybill_count": collected_waybill_count,
+        "covered_waybill_count": covered_waybill_count,
+        "coverage_complete": collected_waybill_count == covered_waybill_count,
+        "order_row_count": summary["total"],
         "rows": rows,
-        "summary": export_recognition_summary(rows),
+        "summary": summary,
     }
 
 
@@ -2360,6 +2434,12 @@ def download_capture_task_recognition_report(
 ) -> StreamingResponse:
     task = task_or_404(db, task_id, workspace_id)
     rows = recognition_rows_for_task(db, workspace_id=workspace_id, task_id=task.id)
+    require_complete_recognition_coverage(
+        db,
+        workspace_id=workspace_id,
+        task_id=task.id,
+        rows=rows,
+    )
     images_by_id = recognition_report_image_assets(db, workspace_id=workspace_id, rows=rows)
     report_layout = recognition_report_layout_from_query(layout)
     report_rows = recognition_report_line_items(rows, report_layout)
