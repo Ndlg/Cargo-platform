@@ -755,6 +755,63 @@ def test_older_feedback_result_cannot_replace_newer_correction(tmp_path: Path) -
     assert stored["candidate"]["parents"][0]["rows"] == correction_b
 
 
+def test_duplicate_feedback_is_idempotent_while_model_is_running(tmp_path: Path) -> None:
+    module = load_ai_service(tmp_path / "import-default.db")
+
+    class BlockingFeedbackModel(FakeModel):
+        def __init__(self) -> None:
+            super().__init__()
+            self.invocations = 0
+            self.feedback_started = Event()
+            self.release_feedback = Event()
+
+        def recognize(
+            self,
+            payload: dict[str, Any],
+            fingerprint: str,
+            feedback: list[str] | None = None,
+        ) -> dict[str, Any]:
+            self.invocations += 1
+            if self.invocations == 2:
+                self.feedback_started.set()
+                self.release_feedback.wait(2)
+            return super().recognize(payload, fingerprint, feedback)
+
+    model = BlockingFeedbackModel()
+    app = module.create_app(model_client=model, db_path=tmp_path / "sessions.db")
+    correction = [{
+        "product": "修正商品",
+        "sales_attr1": "黑色",
+        "sales_attr2": "42",
+        "quantity": 1,
+        "remark": "",
+    }]
+
+    with TestClient(app) as client:
+        session_id = client.post("/api/v1/recognize", json=raw_request()).json()["session_id"]
+        wait_for_session(client, session_id, "ai_rule_pending")
+        first = client.post(
+            f"/api/v1/sessions/{session_id}/feedback",
+            json={"corrected_rows": correction},
+        )
+        assert model.feedback_started.wait(1)
+        duplicate = client.post(
+            f"/api/v1/sessions/{session_id}/feedback",
+            json={"corrected_rows": correction},
+        )
+        current = client.get(f"/api/v1/sessions/{session_id}").json()
+        model.release_feedback.set()
+        stored = wait_for_session(client, session_id, "ai_rule_pending")
+
+    assert first.status_code == 200
+    assert duplicate.status_code == 200
+    assert duplicate.json()["generation"] == first.json()["generation"]
+    assert current["generation"] == first.json()["generation"]
+    assert len(current["feedback"]) == 1
+    assert len(stored["feedback"]) == 1
+    assert model.invocations == 2
+
+
 def test_feedback_is_rejected_while_rule_approval_is_running(tmp_path: Path) -> None:
     module = load_ai_service(tmp_path / "import-default.db")
     approval_started = Event()
@@ -1393,6 +1450,9 @@ def test_health_console_and_session_list_are_available(tmp_path: Path) -> None:
     assert "删除" in console.text
     assert "rows.length > 1" in console.text
     assert "confirmAndSync" in console.text
+    assert "busySessions" in console.text
+    assert "正在根据修改结果生成并校验规则" in console.text
+    assert "button.disabled = true" in console.text
     assert "onclick=\"post('/api/v1/sessions/${row.session_id}/approve')\"" not in console.text
     assert "ai_rule_invalid" in console.text
     assert "ai_result_invalid" in console.text

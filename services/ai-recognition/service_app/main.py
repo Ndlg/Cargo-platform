@@ -651,6 +651,12 @@ def create_app(
                 },
                 ensure_ascii=False,
             )
+        if (
+            session["status"] == "model_running"
+            and session["feedback"]
+            and session["feedback"][-1] == message
+        ):
+            return response_payload(session)
         try:
             updated = store.append_feedback(session_id, message)
         except ValueError as exc:
