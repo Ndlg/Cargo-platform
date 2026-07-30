@@ -135,8 +135,10 @@ def sanitize_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _row_limit(evidence: dict[str, Any]) -> int:
-    groups = evidence["candidate_groups"]
+def candidate_row_limit(evidence: dict[str, Any]) -> int:
+    groups = evidence.get("candidate_groups")
+    if not isinstance(groups, dict):
+        return 1
     structured_count = len(groups.get("structured_list_item", []))
     if structured_count:
         return structured_count
@@ -152,7 +154,7 @@ def validate_selection(selection: dict[str, Any], evidence: dict[str, Any]) -> d
         candidate = SpanSelectionCandidate.model_validate(selection)
     except ValidationError as exc:
         return {"status": "candidate_invalid", "error": str(exc)[:2000]}
-    if len(candidate.rows) > _row_limit(evidence):
+    if len(candidate.rows) > candidate_row_limit(evidence):
         return {
             "status": "candidate_invalid",
             "error": "selected row count exceeds evidence repeat groups",

@@ -5,6 +5,8 @@ from typing import Any
 
 import httpx
 
+from .sanitizer import candidate_row_limit
+
 
 SYSTEM_PROMPT = """你只负责从给定证据片段中选择字段来源，不解析原始面单，也不编写规则。
 每个商品输出一行；同一打印中的重复商品行不得去重。
@@ -58,7 +60,7 @@ def ollama_json_schema(evidence: dict[str, Any] | None = None) -> dict[str, Any]
             "rows": {
                 "type": "array",
                 "minItems": 1,
-                "maxItems": 100,
+                "maxItems": candidate_row_limit(evidence or {}),
                 "items": row_schema,
             }
         },

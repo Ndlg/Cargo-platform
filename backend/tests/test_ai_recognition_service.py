@@ -160,6 +160,16 @@ def test_model_schema_exposes_only_span_selection(tmp_path: Path) -> None:
     assert "quantity_span_id" in encoded
 
 
+def test_model_schema_limits_rows_to_evidence_instances(tmp_path: Path) -> None:
+    module = load_ai_service(tmp_path / "import-default.db")
+
+    schema = module.ollama_json_schema(
+        module.sanitize_evidence(evidence_bundle(rows=3))
+    )
+
+    assert schema["properties"]["rows"]["maxItems"] == 3
+
+
 def test_evidence_given_to_model_has_only_ids_labels_short_values_and_groups(tmp_path: Path) -> None:
     module = load_ai_service(tmp_path / "import-default.db")
     sanitized = module.sanitize_evidence(evidence_bundle())
