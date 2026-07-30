@@ -43,6 +43,8 @@ STRUCTURED_PROFILE_KEYS = {
     "strategy",
     "name",
     "description",
+    "grammar_signature",
+    "selected_fields",
     "items_path",
     "fields",
     "steps",
@@ -118,10 +120,34 @@ def validate_defaults(defaults: object, prefix: str) -> list[str]:
     return errors
 
 
+def validate_selected_fields(value: object, prefix: str) -> list[str]:
+    if value is None:
+        return []
+    if (
+        not isinstance(value, list)
+        or len(value) > 100
+        or len(value) != len(set(value))
+        or any(
+            not isinstance(field, str)
+            or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", field)
+            for field in value
+        )
+    ):
+        return [f"{prefix}.selected_fields"]
+    return []
+
+
 def validate_structured_profile(profile: dict[str, Any], prefix: str) -> list[str]:
     errors: list[str] = []
     if set(profile) - STRUCTURED_PROFILE_KEYS:
         errors.append(prefix)
+    grammar_signature = profile.get("grammar_signature")
+    if grammar_signature is not None and (
+        not isinstance(grammar_signature, str)
+        or not GRAMMAR_SIGNATURE_PATTERN.fullmatch(grammar_signature)
+    ):
+        errors.append(f"{prefix}.grammar_signature")
+    errors.extend(validate_selected_fields(profile.get("selected_fields"), prefix))
     if not valid_path(profile.get("items_path")):
         errors.append(f"{prefix}.items_path")
     fields = profile.get("fields")
@@ -338,18 +364,7 @@ def validate_source_projection_profile(
         or not GRAMMAR_SIGNATURE_PATTERN.fullmatch(grammar_signature)
     ):
         errors.append(f"{prefix}.grammar_signature")
-    selected_fields = profile.get("selected_fields")
-    if selected_fields is not None and (
-        not isinstance(selected_fields, list)
-        or len(selected_fields) > 100
-        or len(selected_fields) != len(set(selected_fields))
-        or any(
-            not isinstance(field, str)
-            or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", field)
-            for field in selected_fields
-        )
-    ):
-        errors.append(f"{prefix}.selected_fields")
+    errors.extend(validate_selected_fields(profile.get("selected_fields"), prefix))
     rows = profile.get("rows")
     if not isinstance(rows, list) or not 1 <= len(rows) <= 100:
         return [*errors, f"{prefix}.rows"]
@@ -869,6 +884,16 @@ def parse_declarative_payload(
         for profile in profiles
         if profile.get("fingerprint") == fingerprint
     ]
+    structured_signatures = {
+        tuple(profile.get("selected_fields") or ()): build_evidence(
+            payload,
+            text_value(source_component),
+            profile.get("selected_fields"),
+        )["grammar_signature"]
+        for profile in candidates
+        if profile.get("strategy") == "structured_items_v1"
+        and profile.get("grammar_signature")
+    }
     projection_signatures = {
         tuple(profile.get("selected_fields") or ()): projection_grammar_signature(
             build_evidence(
@@ -883,10 +908,17 @@ def parse_declarative_payload(
     profile = next(
         (
             candidate
-            for candidate in candidates
+            for candidate in reversed(candidates)
             if candidate.get("grammar_signature")
             and (
                 (
+                    candidate.get("strategy") == "structured_items_v1"
+                    and candidate.get("grammar_signature")
+                    == structured_signatures.get(
+                        tuple(candidate.get("selected_fields") or ())
+                    )
+                )
+                or (
                     candidate.get("strategy") == "text_pipeline_v1"
                     and candidate.get("grammar_signature")
                     == text_profile_grammar_signature(payload, candidate)
@@ -902,7 +934,11 @@ def parse_declarative_payload(
         ),
         None,
     ) or next(
-        (candidate for candidate in candidates if not candidate.get("grammar_signature")),
+        (
+            candidate
+            for candidate in reversed(candidates)
+            if not candidate.get("grammar_signature")
+        ),
         None,
     )
     if profile is None:

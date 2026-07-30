@@ -541,6 +541,44 @@ def test_structured_synthesis_reuses_equivalent_specs_and_collapses_whitespace()
     ) == [row("另一个 商品", "深蓝", "43", 2)]
 
 
+def test_structured_rule_uses_input_grammar_and_ignores_neighbor_gold() -> None:
+    current = structured_items(
+        {
+            "itemName": "5.0秒70",
+            "skuFullName": "5.0黑白紫 36",
+            "skuSize": "36",
+            "itemNum": 1,
+        }
+    )
+    neighbor = structured_items(
+        {
+            "itemName": "秒25  阿尔。fa 12025",
+            "skuFullName": "白色 44",
+            "skuSize": "44",
+            "itemNum": 1,
+        }
+    )
+    result = synthesize_rule(
+        payload=current,
+        source_component="cainiao-cnprint",
+        corrected_rows=[row("5.0秒70", "5.0黑白紫", "36", 1)],
+        gold_samples=[
+            {
+                "raw_payload": neighbor,
+                "source_component": "cainiao-cnprint",
+                "rows": [row("秒25 阿尔。fa 12025", "白色", "44", 1)],
+            }
+        ],
+        negative_samples=[],
+    )
+
+    assert result["status"] == "compiled"
+    assert result["rule"]["strategy"] == "structured_items_v1"
+    assert result["rule"]["grammar_signature"].startswith("grammar-v1:sha256:")
+    assert replay_rule(result["rule"], neighbor) == []
+    assert result["replay_report"][-1]["kind"] == "gold_neighbor"
+
+
 def test_synthesizer_prefers_direct_structured_paths_and_preserves_duplicates() -> None:
     payload = structured_items(
         {"itemName": "商品甲", "skuFullName": "灰黑", "skuSize": "38", "itemNum": 1},
@@ -666,6 +704,12 @@ def test_structured_synthesis_uses_only_tenant_selected_fields() -> None:
     assert excluded["status"] == "compiler_capability_missing"
     assert "不允许参与的规格" not in json.dumps(excluded, ensure_ascii=False)
     assert included["status"] == "compiled"
+    assert included["rule"]["selected_fields"] == [
+        "item_name",
+        "sku_full_name",
+        "sku_size",
+        "item_quantity",
+    ]
 
 
 def test_negative_sample_fails_when_parser_emits_an_invalid_row() -> None:

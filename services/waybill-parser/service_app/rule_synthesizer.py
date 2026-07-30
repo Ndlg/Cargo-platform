@@ -906,10 +906,16 @@ def _replay_rule(
         payload,
         source_component,
         rule.get("selected_fields")
-        if rule.get("strategy") == "source_projection_v1"
+        if rule.get("strategy") in {"structured_items_v1", "source_projection_v1"}
         else None,
     )
     if rule.get("fingerprint") != evidence["structural_fingerprint"]:
+        return 0, []
+    if (
+        rule.get("strategy") == "structured_items_v1"
+        and rule.get("grammar_signature")
+        and rule.get("grammar_signature") != evidence["grammar_signature"]
+    ):
         return 0, []
     if (
         rule.get("strategy") == "text_pipeline_v1"
@@ -989,7 +995,11 @@ def synthesize_rule(
             "rule": None,
             "replay_report": [],
         }
-    if rule["strategy"] == "text_pipeline_v1":
+    if rule["strategy"] == "structured_items_v1":
+        rule["grammar_signature"] = evidence["grammar_signature"]
+        if selected_fields is not None:
+            rule["selected_fields"] = list(selected_fields)
+    elif rule["strategy"] == "text_pipeline_v1":
         rule["grammar_signature"] = text_profile_grammar_signature(payload, rule)
     rule = {**rule, "fingerprint": evidence["structural_fingerprint"]}
     if (
@@ -1044,18 +1054,23 @@ def synthesize_rule(
             sample_payload,
             sample_source,
             rule.get("selected_fields")
-            if rule.get("strategy") == "source_projection_v1"
+            if rule.get("strategy") in {"structured_items_v1", "source_projection_v1"}
             else None,
         )
         grammar_neighbor = (
-            rule.get("strategy") in {"text_pipeline_v1", "source_projection_v1"}
+            rule.get("strategy")
+            in {"structured_items_v1", "text_pipeline_v1", "source_projection_v1"}
             and bool(rule.get("grammar_signature"))
             and rule["fingerprint"] == sample_evidence["structural_fingerprint"]
             and rule["grammar_signature"]
             != (
-                text_profile_grammar_signature(sample_payload, rule)
-                if rule.get("strategy") == "text_pipeline_v1"
-                else projection_grammar_signature(sample_evidence)
+                sample_evidence["grammar_signature"]
+                if rule.get("strategy") == "structured_items_v1"
+                else (
+                    text_profile_grammar_signature(sample_payload, rule)
+                    if rule.get("strategy") == "text_pipeline_v1"
+                    else projection_grammar_signature(sample_evidence)
+                )
             )
         )
         passed = check(

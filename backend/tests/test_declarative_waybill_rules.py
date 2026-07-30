@@ -541,6 +541,119 @@ def test_same_fingerprint_text_grammars_coexist_and_match_exactly() -> None:
     )
 
 
+def test_same_fingerprint_structured_grammars_coexist_and_match_exactly() -> None:
+    _app, rules = load_parser()
+    synthesizer = importlib.import_module("service_app.rule_synthesizer")
+
+    def payload(product: str) -> dict[str, Any]:
+        return {
+            "task": {
+                "documents": [
+                    {
+                        "contents": [
+                            {
+                                "data": {
+                                    "packageItemDetail": [
+                                        {
+                                            "itemName": product,
+                                            "skuFullName": "5代白金 45",
+                                            "skuSize": "45",
+                                            "itemNum": 1,
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                ]
+            }
+        }
+
+    def row(product: str) -> dict[str, Any]:
+        return {
+            "product": product,
+            "sales_attr1": "5代白金",
+            "sales_attr2": "45",
+            "quantity": 1,
+            "remark": "",
+        }
+
+    compact = synthesizer.synthesize_rule(
+        payload=payload("商品甲"),
+        source_component="cainiao-cnprint",
+        corrected_rows=[row("商品甲")],
+        gold_samples=[],
+        negative_samples=[],
+    )["rule"]
+    spaced = synthesizer.synthesize_rule(
+        payload=payload("商品  乙。"),
+        source_component="cainiao-cnprint",
+        corrected_rows=[row("商品 乙。")],
+        gold_samples=[],
+        negative_samples=[],
+    )["rule"]
+
+    assert compact["fingerprint"] == spaced["fingerprint"]
+    assert compact["grammar_signature"] != spaced["grammar_signature"]
+    assert rules.validate_format_profiles([compact, spaced]) == []
+
+    parent, diagnostic = rules.parse_declarative_payload(
+        payload("商品  丙。"),
+        [compact, spaced],
+        raw_record_id=1,
+        task_id=1,
+        source_component="cainiao-cnprint",
+        source_index="1",
+        parent_sequence=1,
+        fingerprint_strategy="business_shape_v2",
+    )
+    assert diagnostic["reason"] == ""
+    assert [item.product for item in parent.rows] == ["商品 丙。"]
+
+    unknown, diagnostic = rules.parse_declarative_payload(
+        payload("商品;丁"),
+        [compact, spaced],
+        raw_record_id=2,
+        task_id=1,
+        source_component="cainiao-cnprint",
+        source_index="2",
+        parent_sequence=2,
+        fingerprint_strategy="business_shape_v2",
+    )
+    assert unknown.rows == []
+    assert diagnostic["reason"] == "format_profile_missing"
+
+    subset = synthesizer.synthesize_rule(
+        payload=payload("商品甲"),
+        source_component="cainiao-cnprint",
+        corrected_rows=[
+            {
+                **row("商品甲"),
+                "sales_attr1": "",
+                "sales_attr2": "",
+            }
+        ],
+        gold_samples=[],
+        negative_samples=[],
+        selected_fields=["item_name", "item_quantity"],
+    )["rule"]
+    parent, diagnostic = rules.parse_declarative_payload(
+        payload("商品甲"),
+        [subset, compact],
+        raw_record_id=3,
+        task_id=1,
+        source_component="cainiao-cnprint",
+        source_index="3",
+        parent_sequence=3,
+        fingerprint_strategy="business_shape_v2",
+    )
+    assert diagnostic["reason"] == ""
+    assert [
+        (item.product, item.sales_attr1, item.sales_attr2, item.quantity)
+        for item in parent.rows
+    ] == [("商品甲", "5代白金", "45", 1)]
+
+
 def test_rule_pack_validation_rejects_regex_script_and_unbounded_paths() -> None:
     app, _rules = load_parser()
     profiles = [
