@@ -16,6 +16,7 @@ from service_app.declarative_rules import (
     parse_declarative_payload,
     validate_format_profiles,
 )
+from service_app.evidence import build_evidence
 from service_app.order_row_engine import (
     ORDER_ROW_DRAFTS_CONTRACT_VERSION,
     ParentWaybillDraft,
@@ -101,6 +102,12 @@ class BatchParseRequest(BaseModel):
 
 class RulePackRequest(BaseModel):
     rule_pack: dict[str, Any] | None = None
+
+
+class AnalyzeRequest(BaseModel):
+    raw_payload: dict[str, Any]
+    source_component: str
+    selected_fields: list[str] = Field(default_factory=list)
 
 
 def rule_pack_validation_errors(rule_pack: dict[str, Any] | None) -> list[str]:
@@ -457,6 +464,15 @@ def health() -> dict[str, str]:
         "app": "Cargo Platform Waybill Parser",
         "contract_version": ORDER_ROW_DRAFTS_CONTRACT_VERSION,
     }
+
+
+@app.post("/api/v1/analyze")
+def analyze(payload: AnalyzeRequest) -> dict[str, Any]:
+    return build_evidence(
+        payload.raw_payload,
+        payload.source_component,
+        payload.selected_fields or None,
+    )
 
 
 @app.post("/api/v1/rule-packs/validate")

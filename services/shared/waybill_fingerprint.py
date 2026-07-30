@@ -3,7 +3,7 @@ from __future__ import annotations
 from hashlib import sha256
 import json
 import re
-from typing import Any
+from typing import Any, Iterable
 import unicodedata
 from xml.etree import ElementTree
 
@@ -250,6 +250,7 @@ def _scalar_type(value: Any) -> str:
 
 
 def _text_grammar(text: str) -> str:
+    text = unicodedata.normalize("NFKC", text)
     unit_positions = {
         index
         for match in _QUANTITY_UNIT_RE.finditer(text)
@@ -262,6 +263,15 @@ def _text_grammar(text: str) -> str:
             if index in unit_positions or char.isspace() or unicodedata.category(char).startswith("P")
         )
     )
+
+
+def grammar_signature_for_texts(texts: Iterable[str]) -> str:
+    encoded = json.dumps(
+        [_text_grammar(text) for text in texts],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return f"grammar-v1:sha256:{sha256(encoded).hexdigest()}"
 
 
 def _business_signature(payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
