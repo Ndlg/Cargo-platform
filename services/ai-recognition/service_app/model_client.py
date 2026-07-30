@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 from typing import Any
 
@@ -13,7 +14,7 @@ SYSTEM_PROMPT = """你是面单商品订单行解析器。只处理提供的脱�
 若 administrator_feedback 包含 corrected_rows，parents 必须逐字段原样复制 corrected_rows，不得改写；只重新生成能复现这些正确订单行的 candidate_rule。
 若 administrator_feedback 包含 rule_validation_error，必须修复该规则错误；defaults.quantity 只能省略或使用大于等于 1 的整数。
 candidate_rule 必须能在当前脱敏数据上重放出与 parents 完全相同的订单行。text_path 必须是从根开始的完整路径，数组段写成 []，例如 task.documents[].contents[].data.ITEM_INFO。
-items_path、text_path 和 fields 只能写点分隔字段路径，不能写 .split()、数组下标、表达式或代码。printXML 是文本字段，只能使用 text_pipeline_v1，路径通常为 task.documents[].contents[].printXML。
+items_path、text_path 和 fields 只能写点分隔字段路径，不能写 .split()、数组下标、表达式或代码。fields 的值必须从 JSON Schema enum 中原样选择真实字段路径，不得添加派生后缀；拆分只能写在 steps。printXML 是文本字段，只能使用 text_pipeline_v1，路径通常为 task.documents[].contents[].printXML。
 文本规则按顺序执行，初始只有 text 和 defaults；后续步骤只能读取 text、defaults 或前一步已写入的字段。extract_between 默认不保留 start/end；若确认后的字段值包含这两个边界符，必须设置 include_delimiters:true。
 同时生成 candidate_rule。结构化数据只能使用：
 {"strategy":"structured_items_v1","items_path":"数组路径[]","fields":{"product":"相对字段路径","sales_attr1":"相对字段路径","sales_attr2":"相对字段路径","quantity":"相对字段路径","remark":"相对字段路径"}}
@@ -239,8 +240,64 @@ OLLAMA_OUTPUT_SCHEMA = {
 }
 
 
-def ollama_json_schema() -> dict[str, Any]:
-    return OLLAMA_OUTPUT_SCHEMA
+def _scalar_paths(value: Any, prefix: tuple[str, ...] = ()) -> set[str]:
+    if isinstance(value, dict):
+        return {
+            path
+            for key, item in value.items()
+            for path in _scalar_paths(item, (*prefix, str(key)))
+        }
+    if isinstance(value, list) or value is None or not prefix:
+        return set()
+    return {".".join(prefix)}
+
+
+def _structured_sources(
+    value: Any,
+    path: tuple[str, ...] = (),
+    result: dict[str, set[str]] | None = None,
+) -> dict[str, set[str]]:
+    sources = result if result is not None else {}
+    if isinstance(value, dict):
+        for key, item in value.items():
+            _structured_sources(item, (*path, str(key)), sources)
+    elif isinstance(value, list) and path:
+        list_path = (*path[:-1], f"{path[-1]}[]")
+        items = [item for item in value[:100] if isinstance(item, dict)]
+        if items:
+            common = set.intersection(*(_scalar_paths(item) for item in items))
+            dotted_path = ".".join(list_path)
+            if common:
+                sources[dotted_path] = (
+                    sources[dotted_path] & common
+                    if dotted_path in sources
+                    else common
+                )
+            for item in items:
+                _structured_sources(item, list_path, sources)
+    return sources
+
+
+def ollama_json_schema(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    schema = copy.deepcopy(OLLAMA_OUTPUT_SCHEMA)
+    sources = _structured_sources(payload) if payload is not None else {}
+    if not sources:
+        return schema
+
+    structured_rules: list[dict[str, Any]] = []
+    for items_path, field_paths in sorted(sources.items()):
+        rule_schema = copy.deepcopy(STRUCTURED_RULE_SCHEMA)
+        rule_schema["properties"]["items_path"] = {"const": items_path}
+        allowed_paths = sorted(field_paths)
+        for field_schema in rule_schema["properties"]["fields"]["properties"].values():
+            field_schema.clear()
+            field_schema["enum"] = allowed_paths
+        structured_rules.append(rule_schema)
+    schema["properties"]["candidate_rule"]["oneOf"] = [
+        *structured_rules,
+        copy.deepcopy(TEXT_RULE_SCHEMA),
+    ]
+    return schema
 
 
 class OllamaModelClient:
@@ -277,7 +334,7 @@ class OllamaModelClient:
                         "content": json.dumps(user_payload, ensure_ascii=False, sort_keys=True),
                     },
                 ],
-                "format": ollama_json_schema(),
+                "format": ollama_json_schema(payload),
                 "stream": False,
                 "think": False,
                 "keep_alive": "10m",

@@ -1,6 +1,8 @@
 from copy import deepcopy
 import json
 from pathlib import Path
+import subprocess
+import sys
 
 from services.shared.waybill_fingerprint import fingerprint_for_payload
 
@@ -10,6 +12,21 @@ from scripts.migrate_validation_rule_pack_v2 import (
     migrate_rule_pack,
     write_migration,
 )
+
+
+def test_migration_script_runs_directly_outside_repo_cwd(tmp_path: Path) -> None:
+    script = Path(__file__).resolve().parents[2] / "scripts" / "migrate_validation_rule_pack_v2.py"
+
+    result = subprocess.run(
+        [sys.executable, str(script), "--help"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "--source-pack" in result.stdout
 
 
 def row(product: str, quantity: int = 1) -> dict:

@@ -1236,6 +1236,42 @@ def test_ollama_client_requests_schema_constrained_non_thinking_json(tmp_path: P
     assert rows_schema["maxItems"] == 100
 
 
+def test_ollama_structured_rule_schema_only_allows_real_source_paths(tmp_path: Path) -> None:
+    module = load_ai_service(tmp_path / "structured-paths.db")
+    captured: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={"message": {"content": json.dumps(candidate(), ensure_ascii=False)}},
+        )
+
+    client = module.OllamaModelClient(
+        base_url="http://ollama:11434",
+        model="qwen3.5:4b-q4_K_M",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    client.recognize(package_request()["payload"], "v2:CN-PACKAGE-ITEMS:sha256:test")
+
+    request = captured[0]
+    structured = request["format"]["properties"]["candidate_rule"]["oneOf"][0]
+    assert structured["properties"]["items_path"] == {
+        "const": "task.documents[].contents[].data.packageItemDetail[]"
+    }
+    field_schemas = structured["properties"]["fields"]["properties"]
+    assert all(
+        schema["enum"] == ["itemName", "itemNum", "skuFullName"]
+        for schema in field_schemas.values()
+    )
+    assert all(
+        "skuFullName.rsplit_first_part" not in schema["enum"]
+        for schema in field_schemas.values()
+    )
+    assert "不得添加派生后缀" in request["messages"][0]["content"]
+
+
 def test_health_console_and_session_list_are_available(tmp_path: Path) -> None:
     module = load_ai_service(tmp_path / "import-default.db")
     app = module.create_app(model_client=FakeModel(), db_path=tmp_path / "sessions.db")
