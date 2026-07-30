@@ -280,8 +280,13 @@ def _structured_sources(
 
 def ollama_json_schema(payload: dict[str, Any] | None = None) -> dict[str, Any]:
     schema = copy.deepcopy(OLLAMA_OUTPUT_SCHEMA)
-    sources = _structured_sources(payload) if payload is not None else {}
+    if payload is None:
+        return schema
+    sources = _structured_sources(payload)
     if not sources:
+        schema["properties"]["candidate_rule"]["oneOf"] = [
+            copy.deepcopy(TEXT_RULE_SCHEMA),
+        ]
         return schema
 
     structured_rules: list[dict[str, Any]] = []

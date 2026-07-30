@@ -1152,7 +1152,7 @@ def test_ollama_client_requests_schema_constrained_non_thinking_json(tmp_path: P
         http_client=http_client,
     )
 
-    result = client.recognize({"task": {"documents": []}}, "sha256:test")
+    result = client.recognize(package_request()["payload"], "sha256:test")
 
     assert result["parents"][0]["rows"][0]["product"] == "范74"
     request = captured[0]
@@ -1234,6 +1234,31 @@ def test_ollama_client_requests_schema_constrained_non_thinking_json(tmp_path: P
     rows_schema = request["format"]["properties"]["parents"]["items"]["properties"]["rows"]
     assert rows_schema["minItems"] == 1
     assert rows_schema["maxItems"] == 100
+
+
+def test_ollama_schema_disallows_structured_rule_without_real_array_source(tmp_path: Path) -> None:
+    module = load_ai_service(tmp_path / "no-structured-source.db")
+    captured: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={"message": {"content": json.dumps(candidate(), ensure_ascii=False)}},
+        )
+
+    client = module.OllamaModelClient(
+        base_url="http://ollama:11434",
+        model="qwen3.5:4b-q4_K_M",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    client.recognize({"productInfo": "商品 属性 42 1 件"}, "v2:CLOUD-PRODUCT-INFO:sha256:test")
+
+    schema = captured[0]["format"]
+    candidates = schema["properties"]["candidate_rule"]["oneOf"]
+    assert [candidate["properties"]["strategy"]["const"] for candidate in candidates] == [
+        "text_pipeline_v1"
+    ]
 
 
 def test_ollama_structured_rule_schema_only_allows_real_source_paths(tmp_path: Path) -> None:
