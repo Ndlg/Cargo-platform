@@ -26,6 +26,7 @@ from service_app.order_row_engine import (
     draft_rows_from_waybill_sample,
     order_row_draft_summary,
 )
+from service_app.rule_synthesizer import synthesize_rule as synthesize_waybill_rule
 
 
 app = FastAPI(
@@ -108,6 +109,14 @@ class AnalyzeRequest(BaseModel):
     raw_payload: dict[str, Any]
     source_component: str
     selected_fields: list[str] = Field(default_factory=list)
+
+
+class RuleSynthesisRequest(BaseModel):
+    raw_payload: dict[str, Any]
+    source_component: str
+    corrected_rows: list[dict[str, Any]]
+    gold_samples: list[dict[str, Any]] = Field(default_factory=list)
+    negative_samples: list[dict[str, Any]] = Field(default_factory=list)
 
 
 def rule_pack_validation_errors(rule_pack: dict[str, Any] | None) -> list[str]:
@@ -472,6 +481,17 @@ def analyze(payload: AnalyzeRequest) -> dict[str, Any]:
         payload.raw_payload,
         payload.source_component,
         payload.selected_fields or None,
+    )
+
+
+@app.post("/api/v1/rules/synthesize")
+def synthesize_rule(payload: RuleSynthesisRequest) -> dict[str, Any]:
+    return synthesize_waybill_rule(
+        payload=payload.raw_payload,
+        source_component=payload.source_component,
+        corrected_rows=payload.corrected_rows,
+        gold_samples=payload.gold_samples,
+        negative_samples=payload.negative_samples,
     )
 
 

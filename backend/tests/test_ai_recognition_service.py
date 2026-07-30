@@ -994,7 +994,7 @@ def test_invalid_rule_is_retried_once_after_admin_correction(tmp_path: Path) -> 
     assert len(stored["feedback"]) == 1
 
 
-def test_admin_correction_can_compile_a_value_independent_text_rule(tmp_path: Path) -> None:
+def test_admin_correction_keeps_rows_without_compiling_a_text_rule(tmp_path: Path) -> None:
     module = load_ai_service(tmp_path / "import-default.db")
     request = raw_request()
     request["source_component"] = "cloud-print-client"
@@ -1047,42 +1047,15 @@ def test_admin_correction_can_compile_a_value_independent_text_rule(tmp_path: Pa
             f"/api/v1/sessions/{session_id}/feedback",
             json={"corrected_rows": corrected_rows},
         )
-        stored = wait_for_session(client, session_id, "ai_rule_pending")
+        stored = wait_for_session(client, session_id, "ai_rule_invalid")
 
-    rule = stored["candidate"]["candidate_rule"]
-    encoded_rule = json.dumps(rule, ensure_ascii=False)
     assert stored["candidate"]["parents"][0]["rows"] == corrected_rows
-    assert rule == {
-        "strategy": "text_pipeline_v1",
-        "text_path": "task.documents[].contents[].data.productInfo",
-        "steps": [
-            {
-                "op": "extract_between",
-                "source": "text",
-                "start": "【",
-                "end": "】",
-                "target": "product",
-                "consume": True,
-                "include_delimiters": True,
-            },
-            {"op": "strip_suffix", "target": "text", "literal": " 件"},
-            {
-                "op": "rsplit",
-                "source": "text",
-                "delimiter": " ",
-                "targets": ["text", "quantity"],
-            },
-            {"op": "rsplit", "source": "text", "delimiter": " ", "targets": ["sales_attr1", "sales_attr2"]},
-            {"op": "to_positive_int", "target": "quantity"},
-        ],
-        "defaults": {"remark": ""},
-    }
-    assert all(value not in encoded_rule for value in ("2026户外登山鞋", "紫色", "42.5"))
-    assert len(model.calls) == 2
+    assert stored["error"] == "AI 规则不能复现管理员确认行。"
+    assert len(model.calls) == 3
     assert len(validations) == 3
 
 
-def test_admin_correction_can_compile_text_rule_when_product_follows_attributes(tmp_path: Path) -> None:
+def test_admin_correction_keeps_source_order_rows_without_compiling(tmp_path: Path) -> None:
     module = load_ai_service(tmp_path / "text-correction-source-order.db")
     request = raw_request()
     request["payload"] = {
@@ -1112,38 +1085,10 @@ def test_admin_correction_can_compile_text_rule_when_product_follows_attributes(
             "remark": "",
         }
     ]
-    expected_rule = {
-        "strategy": "text_pipeline_v1",
-        "text_path": "task.documents[].contents[].printXML",
-        "steps": [
-            {
-                "op": "split",
-                "source": "text",
-                "delimiter": "，",
-                "targets": ["sales_attr1", "text"],
-            },
-            {
-                "op": "split",
-                "source": "text",
-                "delimiter": " ",
-                "targets": ["sales_attr2", "text"],
-            },
-            {
-                "op": "split",
-                "source": "text",
-                "delimiter": "*",
-                "targets": ["product", "quantity"],
-            },
-            {"op": "to_positive_int", "target": "quantity"},
-        ],
-        "defaults": {"remark": ""},
-    }
     validations: list[dict[str, Any]] = []
 
     def validate_rule(payload: dict[str, Any], _token: str) -> dict[str, Any]:
         validations.append(payload)
-        if payload["candidate_rule"] == expected_rule:
-            return {"status": "valid"}
         raise module.RuleValidationRejected("AI 规则不能复现管理员确认行。")
 
     model = FakeModel()
@@ -1161,25 +1106,15 @@ def test_admin_correction_can_compile_text_rule_when_product_follows_attributes(
             f"/api/v1/sessions/{session_id}/feedback",
             json={"corrected_rows": corrected_rows},
         )
-        stored = wait_for_session(client, session_id, "ai_rule_pending")
+        stored = wait_for_session(client, session_id, "ai_rule_invalid")
 
-    rule = stored["candidate"]["candidate_rule"]
-    encoded_rule = json.dumps(rule, ensure_ascii=False)
     assert stored["candidate"]["parents"][0]["rows"] == corrected_rows
-    assert rule == expected_rule
-    assert all(
-        value not in encoded_rule
-        for value in (
-            "2026网面女鞋男鞋情侣透气跑步鞋休闲赤足时尚运动鞋健身一脚蹬",
-            "5.0二代灰黑",
-            '"38"',
-        )
-    )
-    assert len(model.calls) == 2
+    assert stored["error"] == "AI 规则不能复现管理员确认行。"
+    assert len(model.calls) == 3
     assert len(validations) == 3
 
 
-def test_admin_correction_can_compile_a_structured_multi_item_rule(tmp_path: Path) -> None:
+def test_admin_correction_keeps_structured_rows_without_compiling(tmp_path: Path) -> None:
     module = load_ai_service(tmp_path / "structured-correction.db")
     request = package_request()
     items = request["payload"]["task"]["documents"][0]["contents"][0]["data"]["packageItemDetail"]
@@ -1206,31 +1141,10 @@ def test_admin_correction_can_compile_a_structured_multi_item_rule(tmp_path: Pat
             "remark": "",
         },
     ]
-    expected_rule = {
-        "strategy": "structured_items_v1",
-        "items_path": "task.documents[].contents[].data.packageItemDetail[]",
-        "fields": {
-            "product": "itemName",
-            "sales_attr1": "skuFullName",
-            "sales_attr2": "skuFullName",
-            "quantity": "itemNum",
-        },
-        "steps": [
-            {
-                "op": "rsplit",
-                "source": "sales_attr1",
-                "delimiter": " ",
-                "targets": ["sales_attr1", "sales_attr2"],
-            }
-        ],
-        "defaults": {"remark": ""},
-    }
     validations: list[dict[str, Any]] = []
 
     def validate_rule(payload: dict[str, Any], _token: str) -> dict[str, Any]:
         validations.append(payload)
-        if payload["candidate_rule"] == expected_rule:
-            return {"status": "valid"}
         raise module.RuleValidationRejected("AI 规则不能复现管理员确认行。")
 
     model = FakeModel()
@@ -1248,32 +1162,20 @@ def test_admin_correction_can_compile_a_structured_multi_item_rule(tmp_path: Pat
             f"/api/v1/sessions/{session_id}/feedback",
             json={"corrected_rows": corrected_rows},
         )
-        stored = wait_for_session(client, session_id, "ai_rule_pending")
+        stored = wait_for_session(client, session_id, "ai_rule_invalid")
 
     assert stored["candidate"]["parents"][0]["rows"] == corrected_rows
-    assert stored["candidate"]["candidate_rule"] == expected_rule
-    assert len(model.calls) == 2
+    assert stored["error"] == "AI 规则不能复现管理员确认行。"
+    assert len(model.calls) == 3
     assert len(validations) == 3
 
 
-def test_corrected_text_rule_does_not_capture_unconfirmed_dynamic_literals(tmp_path: Path) -> None:
+def test_ai_service_does_not_compile_rules_locally(tmp_path: Path) -> None:
     module = load_ai_service(tmp_path / "import-default.db")
-    rows = [{
-        "product": "【登山鞋】",
-        "sales_attr1": "紫色",
-        "sales_attr2": "42.5",
-        "quantity": 1,
-        "remark": "",
-    }]
 
-    assert module.compile_corrected_text_rule(
-        {"productInfo": "【登山鞋】紫色 SKU-20260730 42.5 1 件"},
-        rows,
-    ) is None
-    assert module.compile_corrected_text_rule(
-        {"productInfo": "【登山鞋】紫色 42.5 1 批次A"},
-        rows,
-    ) is None
+    assert not hasattr(module, "compile_corrected_structured_rule")
+    assert not hasattr(module, "compile_source_order_text_rule")
+    assert not hasattr(module, "compile_corrected_text_rule")
 
 
 def test_non_rule_sender_error_is_not_retried_after_admin_correction(tmp_path: Path) -> None:
