@@ -129,7 +129,12 @@ class SessionStore:
         decoded = self.decode(row)
         if decoded is None:
             raise RuntimeError("failed to reserve recognition session")
-        if not created and decoded["status"] in {"approved", "rejected", "ai_parse_failed"}:
+        if not created and decoded["status"] in {
+            "approved",
+            "rejected",
+            "ai_parse_failed",
+            "ai_unavailable",
+        }:
             return self.reserve(
                 request_key=f"{request_key}:{uuid4().hex}",
                 workspace_id=workspace_id,
@@ -167,18 +172,21 @@ class SessionStore:
         candidate: dict[str, Any] | None,
         status: str,
         error: str | None = None,
+        count_model_call: bool = True,
     ) -> dict[str, Any]:
         with closing(self.connect()) as db:
             db.execute(
                 """
                 UPDATE recognition_sessions
-                SET candidate = ?, status = ?, error = ?, model_calls = model_calls + 1, updated_at = ?
+                SET candidate = ?, status = ?, error = ?,
+                    model_calls = model_calls + ?, updated_at = ?
                 WHERE session_id = ? AND generation = ? AND status = 'model_running'
                 """,
                 (
                     json.dumps(candidate, ensure_ascii=False) if candidate is not None else None,
                     status,
                     error,
+                    int(count_model_call),
                     utc_now(),
                     session_id,
                     generation,

@@ -4,10 +4,10 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import RecognitionRulePack
+from app.models import RecognitionRulePack, RecognitionRulePackRevision
 from app.services.order_row_contract import ORDER_ROW_DRAFTS_CONTRACT_VERSION
 
 
@@ -184,6 +184,7 @@ def save_ai_rule_profile(
     fingerprint = text_value(profile.get("fingerprint"))
     if not fingerprint:
         raise ValueError("AI candidate rule requires a format fingerprint.")
+    grammar_signature = text_value(profile.get("grammar_signature"))
 
     pack = db.scalar(
         select(RecognitionRulePack).where(
@@ -200,7 +201,11 @@ def save_ai_rule_profile(
     profiles = [
         deepcopy(item)
         for item in list_value(parser_policy.get("format_profiles"))
-        if isinstance(item, dict) and text_value(item.get("fingerprint")) != fingerprint
+        if isinstance(item, dict)
+        and (
+            text_value(item.get("fingerprint")) != fingerprint
+            or text_value(item.get("grammar_signature")) != grammar_signature
+        )
     ]
     profiles.append(deepcopy(profile))
     learning_records = [
@@ -209,7 +214,37 @@ def save_ai_rule_profile(
         if isinstance(item, dict) and text_value(item.get("session_id")) != session_id
     ]
     if learning_record is not None:
-        learning_records.append({**deepcopy(learning_record), "fingerprint": fingerprint})
+        learning_records.append(
+            {
+                **deepcopy(learning_record),
+                "fingerprint": fingerprint,
+                "grammar_signature": grammar_signature,
+            }
+        )
+    latest_revision = int(
+        db.scalar(
+            select(func.max(RecognitionRulePackRevision.revision)).where(
+                RecognitionRulePackRevision.workspace_id == workspace_id,
+                RecognitionRulePackRevision.code == AI_RULE_PACK_CODE,
+            )
+        )
+        or 0
+    )
+    if latest_revision == 0 and current_payload:
+        db.add(
+            RecognitionRulePackRevision(
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                code=AI_RULE_PACK_CODE,
+                revision=1,
+                version=text_value(object_value(current_payload.get("pack")).get("version"))
+                or (pack.version if pack is not None else "1.0.0"),
+                payload=deepcopy(current_payload),
+            )
+        )
+        latest_revision = 1
+    revision = latest_revision + 1
+    version = f"1.0.{revision}"
     payload = normalize_rule_pack_payload(
         {
             **current_payload,
@@ -218,11 +253,12 @@ def save_ai_rule_profile(
                 **object_value(current_payload.get("pack")),
                 "code": AI_RULE_PACK_CODE,
                 "name": AI_RULE_PACK_NAME,
-                "version": "1.0.0",
+                "version": version,
             },
             "parser_policy": {
                 **parser_policy,
                 "order_row_parser": "declarative_v1",
+                "fingerprint_strategy": "business_shape_v2",
                 "format_profiles": profiles,
             },
             "ai_learning_records": learning_records,
@@ -239,7 +275,7 @@ def save_ai_rule_profile(
             workspace_id=workspace_id,
             name=AI_RULE_PACK_NAME,
             code=AI_RULE_PACK_CODE,
-            version="1.0.0",
+            version=version,
             payload=payload,
             status="draft",
             is_enabled=False,
@@ -248,8 +284,18 @@ def save_ai_rule_profile(
     else:
         pack.is_deleted = False
         pack.name = AI_RULE_PACK_NAME
-        pack.version = "1.0.0"
+        pack.version = version
         pack.payload = payload
+    db.add(
+        RecognitionRulePackRevision(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            code=AI_RULE_PACK_CODE,
+            revision=revision,
+            version=version,
+            payload=deepcopy(payload),
+        )
+    )
     pack.description = f"管理员最后确认 AI 会话 {session_id} 后更新。"
     activate_recognition_rule_pack(db, workspace_id=workspace_id, pack=pack)
     return pack

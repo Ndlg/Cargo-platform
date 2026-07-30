@@ -46,11 +46,13 @@
         ai_rule_invalid: "规则校验未通过",
         ai_result_invalid: "识别结果需修改",
         ai_parse_failed: "解析失败",
+        candidate_invalid: "候选结果需修改",
+        ai_unavailable: "本地 AI 不可用",
         approved: "已确认并同步",
         rejected: "已拒绝",
       })[status] || "待处理";
       const candidateRows = (session) => (session.candidate?.parents || []).flatMap((parent) => Array.isArray(parent?.rows) ? parent.rows : []);
-      const editableStatuses = ["ai_rule_pending", "ai_rule_invalid", "ai_result_invalid"];
+      const editableStatuses = ["ai_rule_pending", "candidate_invalid", "ai_rule_invalid", "ai_result_invalid"];
       let sessionsById = {};
       function flattenInput(value, path = "", rows = []) {
         if (Array.isArray(value)) {
@@ -68,10 +70,10 @@
         return `
           <section>
             <h3>本次传给 AI 的字段</h3>
-            <p class="muted">以下是模型实际收到的脱敏面单字段；收件信息、订单号和快递单号未传入。</p>
+            <p class="muted">以下是模型实际收到的证据片段 ID、标签和短值；原始路径、收件信息、订单号和快递单号未传入。</p>
             <div class="result-table">
               <table aria-label="本次传给 AI 的字段">
-                <thead><tr><th>字段路径（原始英文名）</th><th>实际传入值</th></tr></thead>
+                <thead><tr><th>模型输入项</th><th>实际传入值</th></tr></thead>
                 <tbody>${fields.map((field) => `
                   <tr>
                     <td><code>${escapeHtml(field.path)}</code></td>
@@ -126,7 +128,7 @@
         if (row.status === "model_running") return "<p>模型正在解析这一张面单，请稍候……</p>";
         if (row.status === "approving") return "<p>规则正在校验并同步，请稍候……</p>";
         if (row.status === "approved") return "<p>已确认，新规则已经同步到系统。</p>";
-        if (!["ai_rule_pending", "ai_rule_invalid", "ai_result_invalid"].includes(row.status)) return "";
+        if (!["ai_rule_pending", "candidate_invalid", "ai_rule_invalid", "ai_result_invalid"].includes(row.status)) return "";
         return [
           `<textarea id="feedback-${row.session_id}" placeholder="可选：补充说明这类面单应如何读取"></textarea>`,
           "<p>",

@@ -3,7 +3,10 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from services.shared.waybill_fingerprint import fingerprint_for_payload
+from services.shared.waybill_fingerprint import (
+    fingerprint_for_payload,
+    grammar_signature_for_texts,
+)
 from service_app.order_row_engine import (
     OrderRowDraft,
     ParentWaybillDraft,
@@ -17,6 +20,7 @@ from service_app.order_row_engine import (
 PATH_PATTERN = re.compile(r"^[A-Za-z0-9_]+(?:\[\])?(?:\.[A-Za-z0-9_]+(?:\[\])?)*$")
 FIELD_PATH_PATTERN = re.compile(r"^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*$")
 FINGERPRINT_PATTERN = re.compile(r"^(?:sha256|v2:[A-Za-z0-9_-]+:sha256):[0-9a-f]{64}$")
+GRAMMAR_SIGNATURE_PATTERN = re.compile(r"^grammar-v1:sha256:[0-9a-f]{64}$")
 MAX_QUANTITY = 100_000
 QUANTITY_MARKER_PATTERN = re.compile(r"[【\[(（]\s*\d+\s*(?:件|个|個|双|雙|条|條|套|只|瓶|包|箱)\s*[】\])）]")
 ROW_FIELDS = {"product", "sales_attr1", "sales_attr2", "quantity", "remark", "image_match_text"}
@@ -37,6 +41,8 @@ TEXT_PROFILE_KEYS = {
     "name",
     "description",
     "text_path",
+    "text_selector",
+    "grammar_signature",
     "item_split",
     "steps",
     "defaults",
@@ -186,6 +192,23 @@ def validate_text_profile(profile: dict[str, Any], prefix: str) -> list[str]:
         errors.append(prefix)
     if not valid_path(profile.get("text_path")):
         errors.append(f"{prefix}.text_path")
+    selector = profile.get("text_selector")
+    if selector is not None and (
+        not isinstance(selector, dict)
+        or set(selector) != {"kind", "text_index"}
+        or selector.get("kind") != "print_xml_custom_area"
+        or isinstance(selector.get("text_index"), bool)
+        or not isinstance(selector.get("text_index"), int)
+        or not 0 <= selector["text_index"] <= 10_000
+        or not str(profile.get("text_path") or "").endswith("printXML")
+    ):
+        errors.append(f"{prefix}.text_selector")
+    grammar_signature = profile.get("grammar_signature")
+    if grammar_signature is not None and (
+        not isinstance(grammar_signature, str)
+        or not GRAMMAR_SIGNATURE_PATTERN.fullmatch(grammar_signature)
+    ):
+        errors.append(f"{prefix}.grammar_signature")
     item_split = profile.get("item_split")
     if item_split is not None and (
         not isinstance(item_split, str) or not item_split or len(item_split) > 64
@@ -205,16 +228,18 @@ def validate_format_profiles(value: object) -> list[str]:
     if not isinstance(value, list) or not 1 <= len(value) <= 100:
         return ["parser_policy.format_profiles"]
     errors: list[str] = []
-    fingerprints: set[str] = set()
+    identities: set[tuple[str, str | None]] = set()
     for index, profile in enumerate(value):
         prefix = f"parser_policy.format_profiles[{index}]"
         if not isinstance(profile, dict):
             errors.append(prefix)
             continue
         fingerprint = text_value(profile.get("fingerprint"))
-        if not FINGERPRINT_PATTERN.fullmatch(fingerprint) or fingerprint in fingerprints:
+        grammar_signature = text_value(profile.get("grammar_signature")) or None
+        identity = (fingerprint, grammar_signature)
+        if not FINGERPRINT_PATTERN.fullmatch(fingerprint) or identity in identities:
             errors.append(f"{prefix}.fingerprint")
-        fingerprints.add(fingerprint)
+        identities.add(identity)
         strategy = profile.get("strategy")
         if strategy == "structured_items_v1":
             errors.extend(validate_structured_profile(profile, prefix))
@@ -243,9 +268,35 @@ def positive_int(value: Any) -> int | None:
     return int(text) if text.isdigit() and 1 <= int(text) <= MAX_QUANTITY else None
 
 
-def pipeline_text_value(value: Any) -> str:
+def pipeline_text_value(value: Any, selector: object = None) -> str:
     text = text_value(value)
+    if isinstance(selector, dict) and selector.get("kind") == "print_xml_custom_area":
+        return print_xml_text(
+            text,
+            text_index=selector.get("text_index"),
+            require_custom_area=True,
+        )
     return print_xml_text(text) or text
+
+
+def text_profile_input_values(
+    payload: dict[str, Any],
+    profile: dict[str, Any],
+) -> list[tuple[str, str]]:
+    return [
+        (text, path)
+        for value, path in values_at_structured_path(payload, profile["text_path"])
+        if (text := pipeline_text_value(value, profile.get("text_selector")))
+    ]
+
+
+def text_profile_grammar_signature(
+    payload: dict[str, Any],
+    profile: dict[str, Any],
+) -> str:
+    return grammar_signature_for_texts(
+        text for text, _path in text_profile_input_values(payload, profile)
+    )
 
 
 def row_from_values(
@@ -412,11 +463,7 @@ def text_parent(
     parent_sequence: int,
 ) -> ParentWaybillDraft:
     parent_label = business_parent_label(source_index, raw_record_id, parent_sequence=parent_sequence)
-    text_values = [
-        (text, path)
-        for value, path in values_at_structured_path(payload, profile["text_path"])
-        if (text := pipeline_text_value(value))
-    ]
+    text_values = text_profile_input_values(payload, profile)
     items: list[tuple[str, str]] = []
     item_split = profile.get("item_split")
     for value, path in text_values:
@@ -507,8 +554,22 @@ def parse_declarative_payload(
     fingerprint_strategy: str = "legacy_structure_v1",
 ) -> tuple[ParentWaybillDraft, dict[str, Any]]:
     fingerprint = fingerprint_for_payload(payload, text_value(source_component), fingerprint_strategy)
+    candidates = [
+        profile
+        for profile in profiles
+        if profile.get("fingerprint") == fingerprint
+    ]
     profile = next(
-        (profile for profile in profiles if profile.get("fingerprint") == fingerprint),
+        (
+            candidate
+            for candidate in candidates
+            if candidate.get("strategy") == "text_pipeline_v1"
+            and candidate.get("grammar_signature")
+            == text_profile_grammar_signature(payload, candidate)
+        ),
+        None,
+    ) or next(
+        (candidate for candidate in candidates if not candidate.get("grammar_signature")),
         None,
     )
     if profile is None:

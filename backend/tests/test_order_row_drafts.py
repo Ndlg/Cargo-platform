@@ -198,6 +198,91 @@ def activate_test_rule_pack() -> None:
         db.commit()
 
 
+def test_business_parse_uses_same_tenant_fingerprint_field_selection(monkeypatch) -> None:
+    task_id = 8811
+    raw_record_id = 9911
+    with TestClient(app):
+        pass
+    activate_test_rule_pack()
+    with SessionLocal() as db:
+        db.add(
+            RawCaptureRecord(
+                id=raw_record_id,
+                tenant_id=1,
+                workspace_id=1,
+                task_id=task_id,
+                document_id="business-parse",
+                source_component="cloud-print-client",
+                source_index="1",
+                payload_format="json",
+                raw_payload=json.dumps(
+                    {
+                        "contents": [
+                            {
+                                "data": {
+                                    "productInfo": "商品甲 红色 38 1件",
+                                    "productCount": "1",
+                                    "remark": "不应传入",
+                                }
+                            }
+                        ]
+                    }
+                ),
+                status="pending",
+            )
+        )
+        config = db.query(TenantFingerprintConfig).filter(
+            TenantFingerprintConfig.tenant_id == 1,
+            TenantFingerprintConfig.fingerprint_code == "CLOUD-PRODUCT-INFO",
+        ).first()
+        if config is None:
+            db.add(
+                TenantFingerprintConfig(
+                    tenant_id=1,
+                    fingerprint_code="CLOUD-PRODUCT-INFO",
+                    is_enabled=True,
+                    selected_fields=["product_info", "product_count"],
+                )
+            )
+        else:
+            config.is_enabled = True
+            config.selected_fields = ["product_info", "product_count"]
+        db.commit()
+
+    calls: list[dict] = []
+
+    def fake_parser(**kwargs) -> dict:
+        calls.append(kwargs)
+        return {
+            "contract_version": "order_row_drafts_v1",
+            "task_id": task_id,
+            "status": "parsed",
+            "summary": {},
+            "parents": [],
+            "rows": [],
+        }
+
+    monkeypatch.setattr(order_row_reader_service, "waybill_parser_service_enabled", lambda: True)
+    monkeypatch.setattr(
+        order_row_reader_service,
+        "parse_order_row_drafts_with_service",
+        fake_parser,
+    )
+    with SessionLocal() as db:
+        response = order_row_reader_service.task_order_row_drafts_payload(
+            db,
+            workspace_id=1,
+            task_id=task_id,
+            limit=500,
+            offset=0,
+        )
+
+    assert response["status"] == "parsed"
+    assert calls[0]["raw_records"][0]["ai_field_selections"][
+        "CLOUD-PRODUCT-INFO"
+    ] == ["product_info", "product_count"]
+
+
 def parser_payload_from_parents(task_id: int, parents: list) -> dict:
     return {
         "contract_version": "order_row_drafts_v1",

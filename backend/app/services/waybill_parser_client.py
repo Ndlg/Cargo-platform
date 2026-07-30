@@ -42,6 +42,29 @@ def explain_rule_pack_with_service(*, rule_pack: dict[str, Any]) -> dict[str, An
     )
 
 
+def synthesize_rule_with_service(
+    *,
+    raw_payload: dict[str, Any],
+    source_component: str,
+    corrected_rows: list[dict[str, Any]],
+    gold_samples: list[dict[str, Any]],
+    negative_samples: list[dict[str, Any]],
+    selected_fields: list[str] | None = None,
+) -> dict[str, Any]:
+    return post_waybill_parser_service(
+        "/api/v1/rules/synthesize",
+        {
+            "raw_payload": raw_payload,
+            "source_component": source_component,
+            "corrected_rows": corrected_rows,
+            "gold_samples": gold_samples,
+            "negative_samples": negative_samples,
+            "selected_fields": selected_fields,
+        },
+        timeout=60.0,
+    )
+
+
 def preview_order_row_drafts_with_service(
     *,
     task_id: int,

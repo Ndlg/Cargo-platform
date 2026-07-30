@@ -1,308 +1,68 @@
 from __future__ import annotations
 
-import copy
 import json
 from typing import Any
 
 import httpx
 
 
-SYSTEM_PROMPT = """你是面单商品订单行解析器。只处理提供的脱敏商品相关数据，不做 OCR，不猜测收件人、订单号或快递单号。
-输出必须完全符合 JSON Schema，并且只输出 parents 和 candidate_rule。每个商品生成独立订单行，不去重。
-订单行只能填写当前样本里的实际值，不得填写代码、JSONPath、“无”、“完整商品行原文”等占位文字。
-商品、销售属性1、销售属性2、数量和备注只填写字段值，不得包含字段名称或“商品是”“销售属性1是”等说明文字。
-若 administrator_feedback 包含 corrected_rows，parents 必须逐字段原样复制 corrected_rows，不得改写；只重新生成能复现这些正确订单行的 candidate_rule。
-若 administrator_feedback 包含 rule_validation_error，必须修复该规则错误；defaults.quantity 只能省略或使用大于等于 1 的整数。
-candidate_rule 必须能在当前脱敏数据上重放出与 parents 完全相同的订单行。text_path 必须是从根开始的完整路径，数组段写成 []，例如 task.documents[].contents[].data.ITEM_INFO。
-items_path、text_path 和 fields 只能写点分隔字段路径，不能写 .split()、数组下标、表达式或代码。fields 的值必须从 JSON Schema enum 中原样选择真实字段路径，不得添加派生后缀；拆分只能写在 steps。printXML 是文本字段，只能使用 text_pipeline_v1，路径通常为 task.documents[].contents[].printXML。
-文本规则按顺序执行，初始只有 text 和 defaults；后续步骤只能读取 text、defaults 或前一步已写入的字段。extract_between 默认不保留 start/end；若确认后的字段值包含这两个边界符，必须设置 include_delimiters:true。
-同时生成 candidate_rule。结构化数据只能使用：
-{"strategy":"structured_items_v1","items_path":"数组路径[]","fields":{"product":"相对字段路径","sales_attr1":"相对字段路径","sales_attr2":"相对字段路径","quantity":"相对字段路径","remark":"相对字段路径"}}
-结构化规则可选 steps，先映射 fields 再按顺序执行；steps 只能读写 product、sales_attr1、sales_attr2、quantity、remark，禁止使用 text。通用拆分示例：{"op":"rsplit","source":"sales_attr1","delimiter":" ","targets":["sales_attr1","sales_attr2"]}。
-若 ITEM_INFO 为“商品名称 属性1;属性2 【1件】”，文本规则示例为：
-{"strategy":"text_pipeline_v1","text_path":"task.documents[].contents[].data.ITEM_INFO","steps":[{"op":"extract_between","source":"text","start":"【","end":"件】","target":"quantity","consume":true},{"op":"rsplit","source":"text","delimiter":";","targets":["product","sales_attr2"]},{"op":"rsplit","source":"product","delimiter":" ","targets":["product","sales_attr1"]},{"op":"to_positive_int","target":"quantity"}],"defaults":{"remark":""}}
-若 printXML 纯文本为“编号 商品，,属性，尺码*数量”，文本规则示例为：
-{"strategy":"text_pipeline_v1","text_path":"task.documents[].contents[].printXML","steps":[{"op":"split","source":"text","delimiter":"，","targets":["product","sales_attr1","sales_attr2"]},{"op":"split","source":"product","delimiter":" ","targets":["text","product"]},{"op":"trim","target":"sales_attr1","chars":","},{"op":"rsplit","source":"sales_attr2","delimiter":"*","targets":["sales_attr2","quantity"]},{"op":"to_positive_int","target":"quantity"}],"defaults":{"remark":""}}
-若商品文本为“【商品标题】紫色 42.5 1 件”，且商品值需要保留书名号，文本规则示例为：
-{"strategy":"text_pipeline_v1","text_path":"task.documents[].contents[].data.productInfo","steps":[{"op":"extract_between","source":"text","start":"【","end":"】","target":"product","consume":true,"include_delimiters":true},{"op":"strip_suffix","target":"text","literal":" 件"},{"op":"rsplit","source":"text","delimiter":" ","targets":["sales_attr1","sales_attr2","quantity"]},{"op":"to_positive_int","target":"quantity"}],"defaults":{"remark":""}}
-不得输出 operations、脚本、正则、文件或网络操作。"""
-
-ABSOLUTE_PATH_PATTERN = r"^[A-Za-z0-9_]+(?:\[\])?(?:\.[A-Za-z0-9_]+(?:\[\])?)*$"
-RELATIVE_PATH_PATTERN = r"^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*$"
-
-ROW_FIELDS = [
-    "product",
-    "sales_attr1",
-    "sales_attr2",
-    "quantity",
-    "remark",
-]
-
-ROW_FIELD_PROPERTIES = {
-    "product": {"type": "string"},
-    "sales_attr1": {"type": "string"},
-    "sales_attr2": {"type": "string"},
-    "quantity": {"type": "string"},
-    "remark": {"type": "string"},
-}
-
-RULE_FIELD_PROPERTIES = {
-    field: {"type": "string", "pattern": RELATIVE_PATH_PATTERN}
-    for field in ROW_FIELD_PROPERTIES
-}
-
-DEFAULT_PROPERTIES = {
-    **ROW_FIELD_PROPERTIES,
-    "quantity": {"type": "integer", "minimum": 1, "maximum": 100_000},
-}
-
-TEXT_STATE_FIELDS = ["text", *ROW_FIELDS]
+SYSTEM_PROMPT = """你只负责从给定证据片段中选择字段来源，不解析原始面单，也不编写规则。
+每个商品输出一行；同一打印中的重复商品行不得去重。
+只能原样返回证据中存在的 span_id，不得输出商品文字、字段路径、解析步骤、规则或解释。
+product_span_ids 至少一个；quantity_span_id 必须选择正整数数量片段。
+同一个 span_id 在一行内只能属于一个字段。"""
 
 
-def step_schema(state_fields: list[str]) -> dict[str, Any]:
-    return {"oneOf": [
-        {
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["op", "source", "delimiter", "targets"],
-            "properties": {
-                "op": {"type": "string", "enum": ["split", "rsplit"]},
-                "source": {"type": "string", "enum": state_fields},
-                "delimiter": {"type": "string", "minLength": 1, "maxLength": 64},
-                "targets": {
-                    "type": "array",
-                    "minItems": 2,
-                    "maxItems": 10,
-                    "uniqueItems": True,
-                    "items": {"type": "string", "enum": state_fields},
-                },
-            },
-        },
-        {
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["op", "source", "start", "end", "target"],
-            "properties": {
-                "op": {"const": "extract_between"},
-                "source": {"type": "string", "enum": state_fields},
-                "start": {"type": "string", "minLength": 1, "maxLength": 64},
-                "end": {"type": "string", "minLength": 1, "maxLength": 64},
-                "target": {"type": "string", "enum": state_fields},
-                "consume": {"type": "boolean"},
-                "include_delimiters": {"type": "boolean"},
-            },
-        },
-        {
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["op", "target"],
-            "properties": {
-                "op": {"const": "trim"},
-                "target": {"type": "string", "enum": state_fields},
-                "chars": {"type": "string", "maxLength": 64},
-            },
-        },
-        {
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["op", "target", "literal"],
-            "properties": {
-                "op": {"type": "string", "enum": ["strip_prefix", "strip_suffix"]},
-                "target": {"type": "string", "enum": state_fields},
-                "literal": {"type": "string", "minLength": 1, "maxLength": 64},
-            },
-        },
-        {
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["op", "target"],
-            "properties": {
-                "op": {"const": "to_positive_int"},
-                "target": {"const": "quantity"},
-            },
-        },
-    ]}
+def _id_array(span_ids: list[str], *, minimum: int = 0) -> dict[str, Any]:
+    return {
+        "type": "array",
+        "minItems": minimum,
+        "maxItems": 50,
+        "uniqueItems": True,
+        "items": {"type": "string", "enum": span_ids},
+    }
 
 
-TEXT_STEP_SCHEMA = step_schema(TEXT_STATE_FIELDS)
-STRUCTURED_STEP_SCHEMA = step_schema(ROW_FIELDS)
-
-STRUCTURED_RULE_SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["strategy", "items_path", "fields"],
-    "properties": {
-        "strategy": {"const": "structured_items_v1"},
-        "name": {"type": "string"},
-        "description": {"type": "string"},
-        "items_path": {"type": "string", "pattern": ABSOLUTE_PATH_PATTERN},
-        "fields": {
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["product", "quantity"],
-            "properties": RULE_FIELD_PROPERTIES,
-        },
-        "steps": {
-            "type": "array",
-            "minItems": 1,
-            "maxItems": 20,
-            "items": STRUCTURED_STEP_SCHEMA,
-        },
-        "defaults": {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": DEFAULT_PROPERTIES,
-        },
-    },
-}
-
-TEXT_RULE_SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["strategy", "text_path", "steps"],
-    "properties": {
-        "strategy": {"const": "text_pipeline_v1"},
-        "name": {"type": "string"},
-        "description": {"type": "string"},
-        "text_path": {"type": "string", "pattern": ABSOLUTE_PATH_PATTERN},
-        "item_split": {"type": "string"},
-        "steps": {
-            "type": "array",
-            "minItems": 1,
-            "maxItems": 20,
-            "items": TEXT_STEP_SCHEMA,
-        },
-        "defaults": {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": DEFAULT_PROPERTIES,
-        },
-    },
-}
-
-CANDIDATE_RULE_SCHEMA = {
-    "oneOf": [
-        STRUCTURED_RULE_SCHEMA,
-        TEXT_RULE_SCHEMA,
+def ollama_json_schema(evidence: dict[str, Any] | None = None) -> dict[str, Any]:
+    spans = evidence.get("spans", []) if isinstance(evidence, dict) else []
+    span_ids = [
+        str(span["span_id"])
+        for span in spans
+        if isinstance(span, dict) and str(span.get("span_id") or "")
     ]
-}
-
-ORDER_ROW_SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": [
-        "product",
-        "sales_attr1",
-        "sales_attr2",
-        "quantity",
-        "remark",
-    ],
-    "properties": {
-        **ROW_FIELD_PROPERTIES,
-        "product": {"type": "string", "description": "商品值本身，不包含“商品”等字段名称"},
-        "sales_attr1": {"type": "string", "description": "销售属性1的值本身，不包含字段名称"},
-        "sales_attr2": {"type": "string", "description": "销售属性2的值本身，不包含字段名称"},
-        "quantity": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 100_000,
-            "description": "数量值本身，不包含“数量”等字段名称",
+    quantity_ids = [
+        str(span["span_id"])
+        for span in spans
+        if isinstance(span, dict)
+        and str(span.get("span_id") or "")
+        and str(span.get("label") or span.get("token_class") or "")
+        == "positive_integer_quantity"
+    ] or span_ids
+    row_schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["product_span_ids", "quantity_span_id"],
+        "properties": {
+            "product_span_ids": _id_array(span_ids, minimum=1),
+            "sales_attr1_span_ids": _id_array(span_ids),
+            "sales_attr2_span_ids": _id_array(span_ids),
+            "quantity_span_id": {"type": "string", "enum": quantity_ids},
+            "remark_span_ids": _id_array(span_ids),
         },
-        "remark": {"type": "string", "description": "备注值本身，不包含“备注”等字段名称"},
-    },
-}
-
-OLLAMA_OUTPUT_SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["parents", "candidate_rule"],
-    "properties": {
-        "parents": {
-            "type": "array",
-            "minItems": 1,
-            "maxItems": 1,
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["rows"],
-                "properties": {
-                    "rows": {
-                        "type": "array",
-                        "minItems": 1,
-                        "maxItems": 100,
-                        "items": ORDER_ROW_SCHEMA,
-                    },
-                },
-            },
+    }
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["rows"],
+        "properties": {
+            "rows": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 100,
+                "items": row_schema,
+            }
         },
-        "candidate_rule": CANDIDATE_RULE_SCHEMA,
-    },
-}
-
-
-def _scalar_paths(value: Any, prefix: tuple[str, ...] = ()) -> set[str]:
-    if isinstance(value, dict):
-        return {
-            path
-            for key, item in value.items()
-            for path in _scalar_paths(item, (*prefix, str(key)))
-        }
-    if isinstance(value, list) or value is None or not prefix:
-        return set()
-    return {".".join(prefix)}
-
-
-def _structured_sources(
-    value: Any,
-    path: tuple[str, ...] = (),
-    result: dict[str, set[str]] | None = None,
-) -> dict[str, set[str]]:
-    sources = result if result is not None else {}
-    if isinstance(value, dict):
-        for key, item in value.items():
-            _structured_sources(item, (*path, str(key)), sources)
-    elif isinstance(value, list) and path:
-        list_path = (*path[:-1], f"{path[-1]}[]")
-        items = [item for item in value[:100] if isinstance(item, dict)]
-        if items:
-            common = set.intersection(*(_scalar_paths(item) for item in items))
-            dotted_path = ".".join(list_path)
-            if common:
-                sources[dotted_path] = (
-                    sources[dotted_path] & common
-                    if dotted_path in sources
-                    else common
-                )
-            for item in items:
-                _structured_sources(item, list_path, sources)
-    return sources
-
-
-def ollama_json_schema(payload: dict[str, Any] | None = None) -> dict[str, Any]:
-    schema = copy.deepcopy(OLLAMA_OUTPUT_SCHEMA)
-    if payload is None:
-        return schema
-    sources = _structured_sources(payload)
-    if not sources:
-        schema["properties"]["candidate_rule"]["oneOf"] = [
-            copy.deepcopy(TEXT_RULE_SCHEMA),
-        ]
-        return schema
-
-    structured_rules: list[dict[str, Any]] = []
-    for items_path, field_paths in sorted(sources.items()):
-        rule_schema = copy.deepcopy(STRUCTURED_RULE_SCHEMA)
-        rule_schema["properties"]["items_path"] = {"const": items_path}
-        allowed_paths = sorted(field_paths)
-        for field_schema in rule_schema["properties"]["fields"]["properties"].values():
-            field_schema.clear()
-            field_schema["enum"] = allowed_paths
-        structured_rules.append(rule_schema)
-    schema["properties"]["candidate_rule"]["oneOf"] = [
-        *structured_rules,
-        copy.deepcopy(TEXT_RULE_SCHEMA),
-    ]
-    return schema
+    }
 
 
 class OllamaModelClient:
@@ -317,17 +77,7 @@ class OllamaModelClient:
         self.model = model
         self.http_client = http_client or httpx.Client(timeout=120.0)
 
-    def recognize(
-        self,
-        payload: dict[str, Any],
-        fingerprint: str,
-        feedback: list[str] | None = None,
-    ) -> dict[str, Any]:
-        user_payload = {
-            "fingerprint": fingerprint,
-            "sanitized_payload": payload,
-            "administrator_feedback": feedback or [],
-        }
+    def recognize(self, evidence: dict[str, Any]) -> dict[str, Any]:
         response = self.http_client.post(
             f"{self.base_url}/api/chat",
             json={
@@ -336,10 +86,10 @@ class OllamaModelClient:
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {
                         "role": "user",
-                        "content": json.dumps(user_payload, ensure_ascii=False, sort_keys=True),
+                        "content": json.dumps(evidence, ensure_ascii=False, sort_keys=True),
                     },
                 ],
-                "format": ollama_json_schema(payload),
+                "format": ollama_json_schema(evidence),
                 "stream": False,
                 "think": False,
                 "keep_alive": "10m",
@@ -347,8 +97,7 @@ class OllamaModelClient:
             },
         )
         response.raise_for_status()
-        body = response.json()
-        content = body.get("message", {}).get("content")
+        content = response.json().get("message", {}).get("content")
         if not isinstance(content, str):
             raise ValueError("Ollama response has no message content")
         result = json.loads(content)

@@ -178,6 +178,23 @@ class RecognitionRulePack(WorkspaceModel):
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
+class RecognitionRulePackRevision(WorkspaceModel):
+    __tablename__ = "recognition_rule_pack_revisions"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id",
+            "code",
+            "revision",
+            name="uk_recognition_rule_pack_revisions_workspace_code_revision",
+        ),
+    )
+
+    code: Mapped[str] = mapped_column(String(128), nullable=False)
+    revision: Mapped[int] = mapped_column(nullable=False)
+    version: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
 class TenantFingerprintConfig(BaseModel):
     __tablename__ = "tenant_fingerprint_configs"
     __table_args__ = (

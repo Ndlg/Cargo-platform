@@ -6,7 +6,13 @@ from typing import Any
 import httpx
 
 
-AI_STATUSES = {"model_running", "approving", "ai_rule_pending", "ai_rule_invalid", "ai_result_invalid", "ai_parse_failed"}
+AI_STATUSES = {
+    "model_running",
+    "approving",
+    "ai_rule_pending",
+    "candidate_invalid",
+    "ai_unavailable",
+}
 
 
 class AiRecognitionUnavailable(RuntimeError):
@@ -29,8 +35,7 @@ def recognize_with_ai(
     document_sequence: int,
     source_component: str,
     deterministic_failure_reason: str,
-    payload: dict[str, Any],
-    field_selections: dict[str, list[str]] | None = None,
+    evidence: dict[str, Any],
 ) -> dict[str, Any]:
     base_url = ai_recognition_url()
     if not base_url:
@@ -45,8 +50,7 @@ def recognize_with_ai(
                 "document_sequence": document_sequence,
                 "source_component": source_component or "unknown",
                 "deterministic_failure_reason": deterministic_failure_reason,
-                "payload": payload,
-                "field_selections": field_selections or {},
+                "evidence": evidence,
             },
             timeout=35,
         )

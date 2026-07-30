@@ -9,9 +9,10 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.deps import get_current_user, get_workspace_id, require_write
-from app.models import RawCaptureRecord, TenantFingerprintConfig, Workspace
+from app.models import RawCaptureRecord
 from app.services.order_row_reader import parser_raw_record_inputs, task_order_row_drafts_payload
 from app.services.recognition_rule_packs import active_recognition_rule_pack
+from app.services.tenant_fingerprint_configs import tenant_fingerprint_field_selections
 from app.services.waybill_parser_client import parse_order_row_drafts_with_service
 from app.services.waybill_reading import task_documents
 
@@ -23,23 +24,6 @@ class ManualAiParseRequest(BaseModel):
     raw_record_id: int = Field(ge=1)
     document_sequence: int = Field(default=1, ge=1)
     parent_sequence: int = Field(ge=1)
-
-
-def tenant_ai_field_selections(db: Session, workspace_id: int) -> dict[str, list[str]]:
-    workspace = db.get(Workspace, workspace_id)
-    if workspace is None or workspace.tenant_id is None:
-        return {}
-    configs = db.scalars(
-        select(TenantFingerprintConfig).where(
-            TenantFingerprintConfig.tenant_id == workspace.tenant_id,
-            TenantFingerprintConfig.is_enabled.is_(True),
-            TenantFingerprintConfig.is_deleted.is_(False),
-        )
-    ).all()
-    return {
-        config.fingerprint_code: list(config.selected_fields)
-        for config in configs
-    }
 
 
 @router.get("/tasks/{task_id}")
@@ -98,7 +82,10 @@ def start_manual_ai_parse(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Waybill document not found.")
     parser_input["parent_sequence"] = request.parent_sequence
     parser_input["document_sequence"] = request.document_sequence
-    parser_input["ai_field_selections"] = tenant_ai_field_selections(db, workspace_id)
+    parser_input["ai_field_selections"] = tenant_fingerprint_field_selections(
+        db,
+        workspace_id=workspace_id,
+    )
 
     active_pack = active_recognition_rule_pack(db, workspace_id=workspace_id)
     try:

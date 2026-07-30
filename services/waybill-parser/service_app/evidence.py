@@ -5,8 +5,8 @@ from hashlib import sha256
 import re
 from typing import Any, Iterator
 import unicodedata
-from xml.etree import ElementTree
 
+from service_app.order_row_engine import print_xml_text_blocks
 from services.shared.waybill_fingerprint import (
     business_shape_fingerprint,
     fingerprint_catalog,
@@ -238,33 +238,12 @@ def _text_records(
     return records
 
 
-def _custom_area_marker(value: object) -> bool:
-    return re.sub(r"[^A-Z0-9]", "", str(value).upper()) == "CUSTOMAREA"
-
-
-def _xml_texts(
-    element: ElementTree.Element,
-    marked: bool = False,
-) -> Iterator[tuple[str, bool]]:
-    marked = marked or _custom_area_marker(element.tag) or any(
-        _custom_area_marker(key) or _custom_area_marker(value)
-        for key, value in element.attrib.items()
-    )
-    if element.tag.rsplit("}", 1)[-1] == "text":
-        yield "".join(element.itertext()), marked
-        return
-    for child in element:
-        yield from _xml_texts(child, marked)
-
-
 def _print_xml_records(leaf: _Leaf) -> tuple[list[_SpanRecord], int]:
     if not isinstance(leaf.value, str) or not leaf.value.strip():
         return [], 0
-    try:
-        root = ElementTree.fromstring(leaf.value)
-    except ElementTree.ParseError:
+    texts = print_xml_text_blocks(leaf.value)
+    if texts is None:
         return [], 1
-    texts = list(_xml_texts(root))
     records = [
         record
         for index, (text, marked) in enumerate(texts)

@@ -464,6 +464,83 @@ def test_text_pipeline_extract_between_can_preserve_business_delimiters() -> Non
     assert any("defaults.quantity" in error for error in invalid_default.json()["errors"])
 
 
+def test_same_fingerprint_text_grammars_coexist_and_match_exactly() -> None:
+    _app, rules = load_parser()
+    synthesizer = importlib.import_module("service_app.rule_synthesizer")
+
+    def item_info(text: str) -> dict[str, Any]:
+        return {"contents": [{"data": {"ITEM_INFO": text}}]}
+
+    def row(
+        product: str,
+        sales_attr1: str,
+        sales_attr2: str,
+        quantity: int,
+    ) -> dict[str, Any]:
+        return {
+            "product": product,
+            "sales_attr1": sales_attr1,
+            "sales_attr2": sales_attr2,
+            "quantity": quantity,
+            "remark": "",
+        }
+
+    comma = synthesizer.synthesize_rule(
+        payload=item_info("灰黑，38 商品甲*1"),
+        source_component="cainiao-cnprint",
+        corrected_rows=[row("商品甲", "灰黑", "38", 1)],
+        gold_samples=[],
+        negative_samples=[],
+    )["rule"]
+    semicolon = synthesizer.synthesize_rule(
+        payload=item_info("蓝色;39;商品乙*2"),
+        source_component="cainiao-cnprint",
+        corrected_rows=[row("商品乙", "蓝色", "39", 2)],
+        gold_samples=[],
+        negative_samples=[],
+    )["rule"]
+
+    assert comma["fingerprint"] == semicolon["fingerprint"]
+    assert comma["grammar_signature"] != semicolon["grammar_signature"]
+    assert rules.validate_format_profiles([comma, semicolon]) == []
+
+    parent, diagnostic = rules.parse_declarative_payload(
+        item_info("绿色;40;商品丙*3"),
+        [comma, semicolon],
+        raw_record_id=1,
+        task_id=1,
+        source_component="cainiao-cnprint",
+        source_index="1",
+        parent_sequence=1,
+        fingerprint_strategy="business_shape_v2",
+    )
+    assert diagnostic["reason"] == ""
+    assert [
+        (item.product, item.sales_attr1, item.sales_attr2, item.quantity)
+        for item in parent.rows
+    ] == [("商品丙", "绿色", "40", 3)]
+
+    unknown, diagnostic = rules.parse_declarative_payload(
+        item_info("紫色|41|未知商品*1"),
+        [comma, semicolon],
+        raw_record_id=2,
+        task_id=1,
+        source_component="cainiao-cnprint",
+        source_index="2",
+        parent_sequence=2,
+        fingerprint_strategy="business_shape_v2",
+    )
+    assert unknown.rows == []
+    assert diagnostic["reason"] == "format_profile_missing"
+
+    duplicate = rules.validate_format_profiles([comma, dict(comma)])
+    assert "parser_policy.format_profiles[1].fingerprint" in duplicate
+    invalid = {**comma, "grammar_signature": "not-a-grammar"}
+    assert "parser_policy.format_profiles[0].grammar_signature" in (
+        rules.validate_format_profiles([invalid])
+    )
+
+
 def test_rule_pack_validation_rejects_regex_script_and_unbounded_paths() -> None:
     app, _rules = load_parser()
     profiles = [

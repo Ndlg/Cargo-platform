@@ -10,12 +10,11 @@ from typing import Any, Callable
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse
 import httpx
-from pydantic import ValidationError
 
-from .contracts import AiCandidate, AiOrderRow, FeedbackRequest, FingerprintInspectRequest, RecognizeRequest
-from .fingerprint import business_shape_fingerprint, fingerprint_catalog, inspect_fingerprint
-from .model_client import OllamaModelClient
-from .sanitizer import sanitize_payload
+from .contracts import AiOrderRow, FeedbackRequest, FingerprintInspectRequest, RecognizeRequest
+from .fingerprint import fingerprint_catalog, inspect_fingerprint
+from .model_client import OllamaModelClient, ollama_json_schema
+from .sanitizer import sanitize_evidence, validate_selection
 from .store import SessionStore
 
 
@@ -24,53 +23,6 @@ ApprovalSender = Callable[[dict[str, Any], str], dict[str, Any]]
 
 class RuleValidationRejected(ValueError):
     pass
-
-
-def _dict_nodes(value: Any, path: tuple[str, ...] = ()) -> list[tuple[str, dict[str, Any]]]:
-    nodes: list[tuple[str, dict[str, Any]]] = []
-    if isinstance(value, dict):
-        if path:
-            nodes.append((".".join(path), value))
-        for key, item in value.items():
-            nodes.extend(_dict_nodes(item, (*path, str(key))))
-    elif isinstance(value, list) and path:
-        list_path = (*path[:-1], f"{path[-1]}[]")
-        for item in value[:100]:
-            nodes.extend(_dict_nodes(item, list_path))
-    return nodes
-
-
-def _has_relative_path(value: dict[str, Any], path: str) -> bool:
-    current: Any = value
-    for part in path.split("."):
-        if not isinstance(current, dict) or part not in current:
-            return False
-        current = current[part]
-    return True
-
-
-def normalize_candidate_rule(result: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
-    rule = result.get("candidate_rule")
-    if not isinstance(rule, dict) or rule.get("strategy") != "structured_items_v1":
-        return result
-    fields = rule.get("fields")
-    if not isinstance(fields, dict):
-        return result
-
-    normalized_fields = {
-        str(field): str(path).removeprefix("sanitized_payload.").lstrip(".")
-        for field, path in fields.items()
-    }
-    matching_paths = {
-        path
-        for path, item in _dict_nodes(payload)
-        if normalized_fields
-        and all(_has_relative_path(item, field_path) for field_path in normalized_fields.values())
-    }
-    normalized_rule = {**rule, "fields": normalized_fields}
-    if len(matching_paths) == 1:
-        normalized_rule["items_path"] = matching_paths.pop()
-    return {**result, "candidate_rule": normalized_rule}
 
 
 def administrator_corrected_rows(feedback: list[str]) -> list[dict[str, Any]] | None:
@@ -92,7 +44,7 @@ def default_approval_sender(platform_url: str) -> ApprovalSender:
             endpoint,
             json=payload,
             headers={"X-AI-Recognition-Token": token},
-            timeout=30,
+            timeout=90,
         )
         if response.status_code == 422:
             try:
@@ -112,8 +64,6 @@ def default_approval_sender(platform_url: str) -> ApprovalSender:
 def platform_rule_payload(
     session: dict[str, Any],
     candidate: dict[str, Any],
-    *,
-    validate_only: bool = False,
 ) -> dict[str, Any]:
     return {
         "session_id": session["session_id"],
@@ -122,10 +72,8 @@ def platform_rule_payload(
         "raw_record_id": session["raw_record_id"],
         "document_sequence": session["document_sequence"],
         "format_fingerprint": session["fingerprint"],
-        "candidate_rule": candidate["candidate_rule"],
-        "rule_evidence": candidate["rule_evidence"],
+        "fingerprint_code": session["sanitized_payload"]["fingerprint_code"],
         "candidate_output": candidate,
-        "validate_only": validate_only,
     }
 
 
@@ -186,109 +134,66 @@ def create_app(
         }
         if include_model_input:
             payload["model_input"] = {
-                "fingerprint": session["fingerprint"],
                 "sanitized_payload": session["sanitized_payload"],
-                "administrator_feedback": session["feedback"],
             }
         return payload
 
     def run_model(session: dict[str, Any]) -> dict[str, Any]:
-        try:
-            corrected_rows = administrator_corrected_rows(session["feedback"])
-            model_feedback = list(session["feedback"])
-            for attempt in range(2):
-                result = model.recognize(
-                    session["sanitized_payload"],
-                    session["fingerprint"],
-                    model_feedback,
-                )
-                result = normalize_candidate_rule(result, session["sanitized_payload"])
-                if corrected_rows:
-                    parents = result.get("parents")
-                    parent = parents[0] if isinstance(parents, list) and parents and isinstance(parents[0], dict) else {}
-                    result["parents"] = [{**parent, "rows": corrected_rows}]
-                for parent in result.get("parents") or []:
-                    if isinstance(parent, dict):
-                        parent["source"] = {"sanitized_payload": session["sanitized_payload"]}
-                result.update(
-                    {
-                        "contract_version": "ai_waybill_candidate_v1",
-                        "fingerprint": session["fingerprint"],
-                        "rule_evidence": [
-                            json.dumps(session["sanitized_payload"], ensure_ascii=False, sort_keys=True)
-                        ],
-                        "warnings": [],
-                    }
-                )
-                try:
-                    candidate = AiCandidate.model_validate(result)
-                except ValidationError as exc:
-                    parents = result.get("parents")
-                    rows = [
-                        row
-                        for parent in parents or []
-                        if isinstance(parent, dict)
-                        for row in parent.get("rows") or []
-                        if isinstance(row, dict)
-                    ] if isinstance(parents, list) else []
-                    if not rows:
-                        raise
-                    updated = store.set_candidate(
-                        session["session_id"],
-                        generation=session["generation"],
-                        candidate=result,
-                        status="ai_result_invalid",
-                        error=(
-                            "AI 返回的字段值包含字段名称，请修改后重新生成规则。"
-                            if any(
-                                "field value contains its field name" in str(error.get("msg") or "")
-                                for error in exc.errors()
-                            )
-                            else "AI 未完整识别商品或数量，请修改后重新生成规则。"
-                        ),
-                    )
-                    return response_payload(updated)
-                candidate_payload = candidate.model_dump(mode="json")
-                validation_error = None
-                repairable = False
-                if sender is not None and token:
-                    try:
-                        sender(platform_rule_payload(session, candidate_payload, validate_only=True), token)
-                    except RuleValidationRejected as exc:
-                        validation_error = str(exc)[:2000]
-                        repairable = True
-                    except (ValueError, httpx.HTTPError) as exc:
-                        validation_error = str(exc)[:2000]
-                if validation_error and corrected_rows and repairable and attempt == 0:
-                    model_feedback = [
-                        *model_feedback,
-                        json.dumps(
-                            {
-                                "corrected_rows": corrected_rows,
-                                "rule_validation_error": validation_error,
-                            },
-                            ensure_ascii=False,
-                            sort_keys=True,
-                        ),
-                    ]
-                    continue
-                updated = store.set_candidate(
+        corrected_rows = administrator_corrected_rows(session["feedback"])
+        if corrected_rows:
+            return response_payload(
+                store.set_candidate(
                     session["session_id"],
                     generation=session["generation"],
-                    candidate=candidate_payload,
-                    status="ai_rule_invalid" if validation_error else "ai_rule_pending",
-                    error=validation_error,
+                    candidate={
+                        "contract_version": "ai_span_selection_candidate_v1",
+                        "fingerprint": session["fingerprint"],
+                        "parents": [{"rows": corrected_rows}],
+                    },
+                    status="ai_rule_pending",
+                    count_model_call=False,
                 )
-                return response_payload(updated)
+            )
+        try:
+            result = model.recognize(session["sanitized_payload"])
         except Exception as exc:
-            updated = store.set_candidate(
+            return response_payload(
+                store.set_candidate(
+                    session["session_id"],
+                    generation=session["generation"],
+                    candidate=None,
+                    status="ai_unavailable",
+                    error=str(exc)[:2000],
+                )
+            )
+        resolved = (
+            validate_selection(result, session["sanitized_payload"])
+            if isinstance(result, dict)
+            else {"status": "candidate_invalid", "error": "model output is not an object"}
+        )
+        candidate = {
+            "contract_version": "ai_span_selection_candidate_v1",
+            "fingerprint": session["fingerprint"],
+            "span_selection": result if isinstance(result, dict) else {},
+            "parents": (
+                [{"rows": resolved["rows"]}]
+                if resolved["status"] == "candidate_valid"
+                else []
+            ),
+        }
+        return response_payload(
+            store.set_candidate(
                 session["session_id"],
                 generation=session["generation"],
-                candidate=None,
-                status="ai_parse_failed",
-                error=str(exc)[:2000],
+                candidate=candidate,
+                status=(
+                    "ai_rule_pending"
+                    if resolved["status"] == "candidate_valid"
+                    else "candidate_invalid"
+                ),
+                error=resolved.get("error"),
             )
-        return response_payload(updated)
+        )
 
     @app.get("/health")
     def health() -> dict[str, Any]:
@@ -314,20 +219,14 @@ def create_app(
 
     @app.post("/api/v1/recognize")
     def recognize(request: RecognizeRequest) -> dict[str, Any]:
-        inspected = inspect_fingerprint(request.payload, request.source_component)
-        fingerprint = business_shape_fingerprint(request.payload, request.source_component)
-        allowed_source_keys = None
-        if inspected and inspected["fingerprint_code"] in request.field_selections:
-            selected_fields = set(request.field_selections[inspected["fingerprint_code"]])
-            allowed_source_keys = {
-                str(field["path"]).rsplit(".", 1)[-1].split("//", 1)[0]
-                for field in inspected["fields"]
-                if field["key"] in selected_fields
-            }
-        sanitized = sanitize_payload(
-            request.payload,
-            allowed_source_keys=allowed_source_keys,
-        )
+        evidence_source = str(request.evidence.get("source_component") or "")
+        fingerprint = str(request.evidence.get("structural_fingerprint") or "")
+        if evidence_source != request.source_component or not fingerprint or len(fingerprint) > 256:
+            raise HTTPException(status_code=422, detail="invalid_evidence_identity")
+        try:
+            sanitized = sanitize_evidence(request.evidence)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         payload_hash = sha256(
             json.dumps(sanitized, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
@@ -453,6 +352,8 @@ def create_app(
                 expected_statuses=(
                     "model_running",
                     "ai_rule_pending",
+                    "candidate_invalid",
+                    "ai_unavailable",
                     "ai_rule_invalid",
                     "ai_result_invalid",
                     "ai_parse_failed",
@@ -473,4 +374,12 @@ def create_app(
 app = create_app()
 
 
-__all__ = ["OllamaModelClient", "RuleValidationRejected", "app", "create_app"]
+__all__ = [
+    "OllamaModelClient",
+    "RuleValidationRejected",
+    "app",
+    "create_app",
+    "ollama_json_schema",
+    "sanitize_evidence",
+    "validate_selection",
+]

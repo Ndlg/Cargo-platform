@@ -14,6 +14,7 @@ from app.services.recognition_rule_packs import (
     recognition_rule_pack_summary,
     rule_pack_missing_order_rows_response,
 )
+from app.services.tenant_fingerprint_configs import tenant_fingerprint_field_selections
 from app.services.waybill_parser_client import (
     parse_order_row_drafts_with_service,
     waybill_parser_service_enabled,
@@ -419,10 +420,17 @@ def parse_raw_records_to_order_rows(
         raise parser_service_required("订单行")
 
     try:
+        field_selections = tenant_fingerprint_field_selections(
+            db,
+            workspace_id=workspace_id,
+        )
+        raw_inputs = parser_raw_record_inputs(records)
+        for parser_input in raw_inputs:
+            parser_input["ai_field_selections"] = field_selections
         parser_kwargs = {
             "task_id": task_id,
             "standard_details": [],
-            "raw_records": parser_raw_record_inputs(records),
+            "raw_records": raw_inputs,
             "waybill_samples": [],
             "rule_pack": active_pack.payload,
         }
@@ -607,6 +615,12 @@ def task_order_row_drafts_payload(
 ) -> dict[str, Any]:
     records = raw_records_for_task(db, workspace_id=workspace_id, task_id=task_id)
     raw_inputs = parser_raw_record_inputs(records)
+    field_selections = tenant_fingerprint_field_selections(
+        db,
+        workspace_id=workspace_id,
+    )
+    for parser_input in raw_inputs:
+        parser_input["ai_field_selections"] = field_selections
     sample_inputs = order_row_sample_inputs_from_records(records)
     if raw_inputs and has_readable_waybill_samples(sample_inputs):
         active_pack = active_recognition_rule_pack(db, workspace_id=workspace_id)

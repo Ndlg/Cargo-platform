@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from service_app.ai_client import (
     AiRecognitionUnavailable,
@@ -111,12 +112,72 @@ class AnalyzeRequest(BaseModel):
     selected_fields: list[str] = Field(default_factory=list)
 
 
-class RuleSynthesisRequest(BaseModel):
+class RuleSynthesisRow(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    product: str = Field(min_length=1, max_length=512)
+    sales_attr1: str = Field(default="", max_length=512)
+    sales_attr2: str = Field(default="", max_length=512)
+    quantity: int = Field(ge=1, le=100_000)
+    remark: str = Field(default="", max_length=1000)
+
+
+class RuleSynthesisGoldSample(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     raw_payload: dict[str, Any]
-    source_component: str
-    corrected_rows: list[dict[str, Any]]
-    gold_samples: list[dict[str, Any]] = Field(default_factory=list)
-    negative_samples: list[dict[str, Any]] = Field(default_factory=list)
+    source_component: str | None = Field(default=None, min_length=1, max_length=128)
+    rows: list[RuleSynthesisRow] = Field(min_length=1, max_length=100)
+
+
+class RuleSynthesisNegativeSample(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    raw_payload: dict[str, Any]
+    source_component: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+def _json_depth_within_limit(value: Any, limit: int = 64) -> bool:
+    stack = [(value, 0)]
+    while stack:
+        current, depth = stack.pop()
+        if depth > limit:
+            return False
+        if isinstance(current, dict):
+            stack.extend((item, depth + 1) for item in current.values())
+        elif isinstance(current, list):
+            stack.extend((item, depth + 1) for item in current)
+    return True
+
+
+class RuleSynthesisRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    raw_payload: dict[str, Any]
+    source_component: str = Field(min_length=1, max_length=128)
+    corrected_rows: list[RuleSynthesisRow] = Field(min_length=1, max_length=100)
+    gold_samples: list[RuleSynthesisGoldSample] = Field(default_factory=list, max_length=100)
+    negative_samples: list[RuleSynthesisNegativeSample] = Field(
+        default_factory=list,
+        max_length=100,
+    )
+    selected_fields: list[str] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_input_size(cls, value: Any) -> Any:
+        if (
+            isinstance(value, dict)
+            and (
+                not _json_depth_within_limit(value)
+                or len(json.dumps(value, ensure_ascii=False).encode("utf-8")) > 2_000_000
+            )
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="Rule synthesis input exceeds size or depth limit.",
+            )
+        return value
 
 
 def rule_pack_validation_errors(rule_pack: dict[str, Any] | None) -> list[str]:
@@ -355,15 +416,26 @@ def ai_diagnostic(
     deterministic_reason: str,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     try:
+        source_component = str(record.source_component or "unknown")
+        evidence = build_evidence(
+            document_payload,
+            source_component,
+        )
+        selected_fields = record.ai_field_selections.get(evidence["fingerprint_code"])
+        if selected_fields is not None:
+            evidence = build_evidence(
+                document_payload,
+                source_component,
+                selected_fields,
+            )
         result = recognize_with_ai(
             workspace_id=workspace_id,
             task_id=task_id,
             raw_record_id=record.raw_record_id,
             document_sequence=document_sequence,
-            source_component=str(record.source_component or ""),
+            source_component=source_component,
             deterministic_failure_reason=deterministic_reason,
-            payload=document_payload,
-            field_selections=record.ai_field_selections,
+            evidence=evidence,
         )
         session = safe_ai_session(result)
         return {
@@ -406,6 +478,8 @@ def overall_ai_status(diagnostics: list[dict[str, Any]]) -> str:
         return "model_running"
     if "approving" in reasons:
         return "approving"
+    if "candidate_invalid" in reasons:
+        return "candidate_invalid"
     if "ai_result_invalid" in reasons:
         return "ai_result_invalid"
     if "ai_rule_invalid" in reasons:
@@ -447,7 +521,14 @@ def ai_fallback_response(payload: BatchParseRequest, deterministic_reason: str) 
     summary = order_row_draft_summary(parents)
     summary["needs_review_count"] = len(parents)
     summary["pending_rule_pack_count"] = sum(
-        diagnostic["reason"] in {"model_running", "approving", "ai_rule_pending", "ai_rule_invalid", "ai_result_invalid"}
+        diagnostic["reason"] in {
+            "model_running",
+            "approving",
+            "ai_rule_pending",
+            "candidate_invalid",
+            "ai_rule_invalid",
+            "ai_result_invalid",
+        }
         for diagnostic in diagnostics
     )
     return {
@@ -489,9 +570,10 @@ def synthesize_rule(payload: RuleSynthesisRequest) -> dict[str, Any]:
     return synthesize_waybill_rule(
         payload=payload.raw_payload,
         source_component=payload.source_component,
-        corrected_rows=payload.corrected_rows,
-        gold_samples=payload.gold_samples,
-        negative_samples=payload.negative_samples,
+        corrected_rows=[row.model_dump() for row in payload.corrected_rows],
+        gold_samples=[sample.model_dump() for sample in payload.gold_samples],
+        negative_samples=[sample.model_dump() for sample in payload.negative_samples],
+        selected_fields=payload.selected_fields,
     )
 
 
@@ -720,6 +802,7 @@ def parse_batch(payload: BatchParseRequest) -> dict[str, Any]:
             "model_running",
             "approving",
             "ai_rule_pending",
+            "candidate_invalid",
             "ai_rule_invalid",
             "ai_result_invalid",
             "ai_unavailable",
@@ -738,7 +821,14 @@ def parse_batch(payload: BatchParseRequest) -> dict[str, Any]:
         summary = order_row_draft_summary(parents)
         summary["needs_review_count"] += unresolved_parent_count
         summary["pending_rule_pack_count"] = sum(
-            diagnostic["reason"] in {"model_running", "approving", "ai_rule_pending", "ai_rule_invalid", "ai_result_invalid"}
+            diagnostic["reason"] in {
+                "model_running",
+                "approving",
+                "ai_rule_pending",
+                "candidate_invalid",
+                "ai_rule_invalid",
+                "ai_result_invalid",
+            }
             for diagnostic in diagnostics
         )
         return {

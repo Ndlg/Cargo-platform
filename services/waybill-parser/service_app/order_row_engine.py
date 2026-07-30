@@ -81,23 +81,69 @@ ATTRIBUTE_SUFFIX_TERMS = tuple(
 )
 
 
-def print_xml_text(value: Any) -> str:
+def _custom_area_marker(value: object) -> bool:
+    return re.sub(r"[^A-Z0-9]", "", str(value).upper()) == "CUSTOMAREA"
+
+
+def _xml_text_blocks(
+    element: ElementTree.Element,
+    marked: bool = False,
+) -> list[tuple[str, bool]]:
+    marked = marked or _custom_area_marker(element.tag) or any(
+        _custom_area_marker(key) or _custom_area_marker(value)
+        for key, value in element.attrib.items()
+    )
+    if element.tag.rsplit("}", 1)[-1] == "text":
+        return [("".join(element.itertext()), marked)]
+    return [
+        block
+        for child in element
+        for block in _xml_text_blocks(child, marked)
+    ]
+
+
+def print_xml_text_blocks(value: Any) -> list[tuple[str, bool]] | None:
+    xml = text_value(value)
+    if not xml:
+        return []
+    try:
+        root = ElementTree.fromstring(xml)
+    except ElementTree.ParseError:
+        return None
+    return _xml_text_blocks(root)
+
+
+def print_xml_text(
+    value: Any,
+    *,
+    text_index: int | None = None,
+    require_custom_area: bool = False,
+) -> str:
     xml = text_value(value)
     if not xml:
         return ""
-    try:
-        root = ElementTree.fromstring(xml)
-        blocks = [
-            compact_spaces("".join(element.itertext()))
-            for element in root.iter()
-            if element.tag.rsplit("}", 1)[-1] == "text"
-        ]
-    except ElementTree.ParseError:
-        blocks = [
+    blocks = print_xml_text_blocks(xml)
+    if blocks is None:
+        if text_index is not None or require_custom_area:
+            return ""
+        fallback = [
             compact_spaces(item)
             for item in re.findall(r"<!\[CDATA\[(.*?)\]\]>", xml, re.DOTALL)
         ]
-    return "\n".join(block for block in blocks if block)
+        return "\n".join(block for block in fallback if block)
+    selected = (
+        [blocks[text_index]]
+        if text_index is not None and 0 <= text_index < len(blocks)
+        else blocks
+        if text_index is None
+        else []
+    )
+    return "\n".join(
+        text
+        for raw_text, marked in selected
+        if (not require_custom_area or marked)
+        and (text := compact_spaces(raw_text))
+    )
 
 
 @dataclass(frozen=True)

@@ -6,6 +6,7 @@ from typing import Any
 
 from service_app.declarative_rules import (
     parse_with_format_profile,
+    text_profile_grammar_signature,
     validate_format_profiles,
 )
 from service_app.evidence import build_evidence
@@ -25,7 +26,8 @@ ROW_FIELDS = ("product", "sales_attr1", "sales_attr2", "quantity", "remark")
 TEXT_FIELDS = ("product", "sales_attr1", "sales_attr2", "remark")
 QUANTITY_SUFFIX_UNITS = {"件", "个", "双", "套", "份", "盒", "包", "组"}
 FIELD_LABEL_PREFIX = re.compile(
-    r"^\s*(?:商品|销售属性\s*1|销售属性\s*2|数量|备注)\s*(?:是|[:：=])"
+    r"^\s*(?:商品(?:名称)?|产品(?:名称)?|销售属性\s*[12]|数量|备注)"
+    r"\s*(?:是|为|[:：=])"
 )
 ARRAY_INDEX = re.compile(r"\[\d+\]")
 
@@ -56,42 +58,80 @@ def _normalized_rows(rows: object) -> list[dict[str, Any]] | None:
     return normalized
 
 
-def _relative_scalars(value: Any, path: tuple[str, ...] = ()) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return {
-            field_path: scalar
-            for key, item in value.items()
-            for field_path, scalar in _relative_scalars(item, (*path, str(key))).items()
-        }
-    if isinstance(value, list) or value is None or not path:
-        return {}
-    return {".".join(path): value}
+def _common_item_prefix(source_paths: list[str]) -> str | None:
+    if not source_paths:
+        return None
+    common = source_paths[0].split(".")
+    for source_path in source_paths[1:]:
+        parts = source_path.split(".")
+        common_length = 0
+        while (
+            common_length < len(common)
+            and common_length < len(parts)
+            and common[common_length] == parts[common_length]
+        ):
+            common_length += 1
+        common = common[:common_length]
+    indexed = [index for index, part in enumerate(common) if re.search(r"\[\d+\]$", part)]
+    return ".".join(common[: indexed[-1] + 1]) if indexed else None
 
 
-def _business_item_paths(evidence: dict[str, Any]) -> list[str]:
+def _business_item_fields(evidence: dict[str, Any]) -> list[tuple[str, set[str]]]:
     spans = {span["span_id"]: span for span in evidence["spans"]}
-    paths: set[str] = set()
+    paths: dict[str, list[set[str]]] = defaultdict(list)
     for group in evidence["candidate_groups"]["structured_list_item"]:
         source_paths = [
             spans[span_id]["source_path"]
             for span_id in group
             if span_id in spans
         ]
-        for source_path in source_paths[:1]:
-            indexes = list(re.finditer(r"\[\d+\]", source_path))
-            if not indexes:
+        item_path = _common_item_prefix(source_paths)
+        if item_path is None:
+            continue
+        relative_paths = {
+            ARRAY_INDEX.sub("[]", source_path[len(item_path) + 1 :])
+            for source_path in source_paths
+            if source_path.startswith(f"{item_path}.")
+        }
+        if relative_paths:
+            paths[ARRAY_INDEX.sub("[]", item_path)].append(relative_paths)
+    return [
+        (item_path, set.intersection(*item_fields))
+        for item_path, item_fields in sorted(paths.items())
+        if item_fields and set.intersection(*item_fields)
+    ]
+
+
+def _allowlisted_scalars(
+    items: list[dict[str, Any]],
+    field_paths: set[str],
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for item in items:
+        values: dict[str, Any] = {}
+        for field_path in sorted(field_paths):
+            matches = values_at_structured_path(item, field_path)
+            if len(matches) != 1:
                 continue
-            item_path = source_path[: indexes[-1].end()]
-            paths.add(ARRAY_INDEX.sub("[]", item_path))
-    return sorted(paths)
+            value = matches[0][0]
+            if value is not None and not isinstance(value, (dict, list)):
+                values[field_path] = value
+        result.append(values)
+    return result
+
+
+def _structural_delimiter(value: str) -> bool:
+    return bool(value) and len(value) <= 64 and not any(
+        char.isalnum() for char in value
+    )
 
 
 def _compile_structured_rule(
     payload: dict[str, Any],
     corrected_rows: list[dict[str, Any]],
-    item_paths: list[str],
+    item_fields: list[tuple[str, set[str]]],
 ) -> dict[str, Any] | None:
-    for items_path in item_paths:
+    for items_path, allowed_fields in item_fields:
         items = [
             item
             for item, _path in values_at_structured_path(payload, items_path)
@@ -99,13 +139,16 @@ def _compile_structured_rule(
         ]
         if len(items) != len(corrected_rows):
             continue
-        leaves = [_relative_scalars(item) for item in items]
-        if not leaves:
+        leaves = _allowlisted_scalars(items, allowed_fields)
+        if not leaves or any(not item for item in leaves):
             continue
         common_paths = set.intersection(*(set(item) for item in leaves))
 
-        def exact_path(field: str) -> str | None:
+        def exact_paths(field: str) -> list[str]:
             expected = [row[field] for row in corrected_rows]
+            if field != "quantity" and not any(expected):
+                return []
+            matches: list[str] = []
             for path in sorted(common_paths):
                 actual = [item[path] for item in leaves]
                 if field == "quantity":
@@ -115,27 +158,36 @@ def _compile_structured_rule(
                         and str(value).strip().isdigit()
                         for value in actual
                     ) and [int(str(value).strip()) for value in actual] == expected:
-                        return path
+                        matches.append(path)
                 elif [str(value).strip() for value in actual] == expected:
-                    return path
-            return None
+                    matches.append(path)
+            return matches
 
-        product_path = exact_path("product")
-        quantity_path = exact_path("quantity")
-        if not product_path or not quantity_path:
+        candidates = {field: exact_paths(field) for field in ROW_FIELDS}
+        if len(candidates["product"]) != 1 or len(candidates["quantity"]) != 1:
             continue
+        if any(len(paths) > 1 for paths in candidates.values()):
+            continue
+        product_path = candidates["product"][0]
+        quantity_path = candidates["quantity"][0]
 
         fields = {"product": product_path, "quantity": quantity_path}
         defaults: dict[str, Any] = {}
         steps: list[dict[str, Any]] = []
-        attr1_path = exact_path("sales_attr1")
-        attr2_path = exact_path("sales_attr2")
+        attr1_path = next(iter(candidates["sales_attr1"]), None)
+        attr2_path = next(iter(candidates["sales_attr2"]), None)
         if attr1_path:
             fields["sales_attr1"] = attr1_path
         if attr2_path:
             fields["sales_attr2"] = attr2_path
 
-        if not attr1_path and any(row["sales_attr1"] for row in corrected_rows):
+        if (
+            not attr1_path
+            and not attr2_path
+            and any(row["sales_attr1"] for row in corrected_rows)
+            and any(row["sales_attr2"] for row in corrected_rows)
+        ):
+            combined: list[tuple[str, str]] = []
             for path in sorted(common_paths):
                 delimiters: list[str] = []
                 for item, row in zip(leaves, corrected_rows, strict=True):
@@ -150,29 +202,31 @@ def _compile_structured_rule(
                     ):
                         break
                     delimiter = value[len(attr1) : len(value) - len(attr2)]
-                    if not delimiter or len(delimiter) > 64:
+                    if not _structural_delimiter(delimiter):
                         break
                     delimiters.append(delimiter)
                 else:
                     if len(set(delimiters)) == 1:
-                        fields["sales_attr1"] = path
-                        fields["sales_attr2"] = path
-                        steps.append(
-                            {
-                                "op": "rsplit",
-                                "source": "sales_attr1",
-                                "delimiter": delimiters[0],
-                                "targets": ["sales_attr1", "sales_attr2"],
-                            }
-                        )
-                        attr1_path = path
-                        attr2_path = path
-                        break
+                        combined.append((path, delimiters[0]))
+            if len(combined) != 1:
+                continue
+            attr1_path, delimiter = combined[0]
+            attr2_path = attr1_path
+            fields["sales_attr1"] = attr1_path
+            fields["sales_attr2"] = attr1_path
+            steps.append(
+                {
+                    "op": "rsplit",
+                    "source": "sales_attr1",
+                    "delimiter": delimiter,
+                    "targets": ["sales_attr1", "sales_attr2"],
+                }
+            )
 
         for field, path in (
             ("sales_attr1", attr1_path),
             ("sales_attr2", attr2_path),
-            ("remark", exact_path("remark")),
+            ("remark", next(iter(candidates["remark"]), None)),
         ):
             if path:
                 fields.setdefault(field, path)
@@ -181,6 +235,11 @@ def _compile_structured_rule(
             else:
                 break
         else:
+            reused_paths = list(fields.values())
+            if len(set(reused_paths)) != len(reused_paths) - int(
+                bool(steps) and attr1_path is not None and attr1_path == attr2_path
+            ):
+                continue
             rule: dict[str, Any] = {
                 "strategy": "structured_items_v1",
                 "items_path": items_path,
@@ -194,18 +253,32 @@ def _compile_structured_rule(
     return None
 
 
-def _safe_text_sources(evidence: dict[str, Any]) -> list[tuple[str, str]]:
-    sources: list[tuple[str, str]] = []
-    seen: set[tuple[str, str]] = set()
+def _safe_text_sources(
+    evidence: dict[str, Any],
+) -> list[tuple[str, str, dict[str, Any] | None]]:
+    sources: list[tuple[str, str, dict[str, Any] | None]] = []
+    seen: set[tuple[str, str, int | None]] = set()
     for span in evidence["spans"]:
         if span["token_class"] != "text":
             continue
-        path = re.sub(r"\.text\[\d+\]$", "", span["source_path"])
+        xml_text = re.search(r"\.text\[(\d+)\]$", span["source_path"])
+        path = (
+            span["source_path"][: xml_text.start()]
+            if xml_text
+            else span["source_path"]
+        )
         path = ARRAY_INDEX.sub("[]", path)
-        item = (path, span["original_text"].strip())
-        if item[1] and item not in seen:
-            seen.add(item)
-            sources.append(item)
+        text = span["original_text"].strip()
+        text_index = int(xml_text.group(1)) if xml_text else None
+        key = (path, text, text_index)
+        if text and key not in seen:
+            seen.add(key)
+            selector = (
+                {"kind": "print_xml_custom_area", "text_index": text_index}
+                if text_index is not None
+                else None
+            )
+            sources.append((path, text, selector))
     return sources
 
 
@@ -213,6 +286,7 @@ def _compile_source_order_text_rule(
     text_path: str,
     text: str,
     row: dict[str, Any],
+    text_selector: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     segments: list[tuple[int, int, str, str]] = []
     for field in ("product", "sales_attr1", "sales_attr2", "quantity"):
@@ -283,7 +357,7 @@ def _compile_source_order_text_rule(
             }
         )
     steps.append({"op": "to_positive_int", "target": "quantity"})
-    return {
+    rule = {
         "strategy": "text_pipeline_v1",
         "text_path": text_path,
         "steps": steps,
@@ -293,19 +367,22 @@ def _compile_source_order_text_rule(
             if not str(row[field]).strip()
         },
     }
+    if text_selector is not None:
+        rule["text_selector"] = text_selector
+    return rule
 
 
 def _compile_text_rule(
     corrected_rows: list[dict[str, Any]],
-    text_sources: list[tuple[str, str]],
+    text_sources: list[tuple[str, str, dict[str, Any] | None]],
 ) -> dict[str, Any] | None:
     # ponytail: one corrected text row is enough for delimiter programs;
     # repeated text needs a real failed sample before adding another primitive.
     if len(corrected_rows) != 1 or corrected_rows[0]["remark"]:
         return None
     row = corrected_rows[0]
-    for text_path, text in text_sources:
-        rule = _compile_source_order_text_rule(text_path, text, row)
+    for text_path, text, selector in text_sources:
+        rule = _compile_source_order_text_rule(text_path, text, row, selector)
         if rule:
             return rule
     return None
@@ -319,16 +396,22 @@ def _rule_operations(rule: dict[str, Any]) -> set[str]:
     }
 
 
-def replay_rule(
+def _replay_rule(
     rule: dict[str, Any] | None,
     payload: dict[str, Any],
     source_component: str = "cainiao-cnprint",
-) -> list[dict[str, Any]]:
+) -> tuple[int, list[dict[str, Any]]]:
     if not isinstance(rule, dict):
-        return []
+        return 0, []
     evidence = build_evidence(payload, source_component)
     if rule.get("fingerprint") != evidence["structural_fingerprint"]:
-        return []
+        return 0, []
+    if (
+        rule.get("strategy") == "text_pipeline_v1"
+        and rule.get("grammar_signature")
+        and rule["grammar_signature"] != text_profile_grammar_signature(payload, rule)
+    ):
+        return 0, []
     parent = parse_with_format_profile(
         payload,
         rule,
@@ -348,7 +431,15 @@ def replay_rule(
         }
         for row in parent.rows
     ]
-    return _normalized_rows(rows) or []
+    return len(parent.rows), _normalized_rows(rows) or []
+
+
+def replay_rule(
+    rule: dict[str, Any] | None,
+    payload: dict[str, Any],
+    source_component: str = "cainiao-cnprint",
+) -> list[dict[str, Any]]:
+    return _replay_rule(rule, payload, source_component)[1]
 
 
 def _sample_payload(sample: dict[str, Any]) -> dict[str, Any] | None:
@@ -363,16 +454,17 @@ def synthesize_rule(
     corrected_rows: list[dict[str, Any]],
     gold_samples: list[dict[str, Any]],
     negative_samples: list[dict[str, Any]],
+    selected_fields: list[str] | None = None,
 ) -> dict[str, Any]:
     expected = _normalized_rows(corrected_rows)
     if expected is None:
         return {"status": "candidate_invalid", "rule": None, "replay_report": []}
 
-    evidence = build_evidence(payload, source_component)
+    evidence = build_evidence(payload, source_component, selected_fields)
     rule = _compile_structured_rule(
         payload,
         expected,
-        _business_item_paths(evidence),
+        _business_item_fields(evidence),
     ) or _compile_text_rule(expected, _safe_text_sources(evidence))
     if rule is None:
         return {
@@ -380,6 +472,8 @@ def synthesize_rule(
             "rule": None,
             "replay_report": [],
         }
+    if rule["strategy"] == "text_pipeline_v1":
+        rule["grammar_signature"] = text_profile_grammar_signature(payload, rule)
     rule = {**rule, "fingerprint": evidence["structural_fingerprint"]}
     if (
         _rule_operations(rule) - ALLOWED_OPERATIONS
@@ -398,15 +492,22 @@ def synthesize_rule(
         sample_payload: dict[str, Any],
         sample_source: str,
         sample_expected: list[dict[str, Any]],
+        *,
+        require_no_rows: bool = False,
     ) -> bool:
-        actual = replay_rule(rule, sample_payload, sample_source)
-        passed = actual == sample_expected
+        emitted_row_count, actual = _replay_rule(rule, sample_payload, sample_source)
+        passed = (
+            emitted_row_count == 0
+            if require_no_rows
+            else actual == sample_expected
+        )
         report.append(
             {
                 "kind": kind,
                 "passed": passed,
                 "expected": sample_expected,
                 "actual": actual,
+                "emitted_row_count": emitted_row_count,
             }
         )
         return passed
@@ -421,11 +522,21 @@ def synthesize_rule(
                 "rule": None,
                 "replay_report": report,
             }
+        sample_source = str(sample.get("source_component") or source_component)
+        sample_evidence = build_evidence(sample_payload, sample_source)
+        grammar_neighbor = (
+            rule.get("strategy") == "text_pipeline_v1"
+            and bool(rule.get("grammar_signature"))
+            and rule["fingerprint"] == sample_evidence["structural_fingerprint"]
+            and rule["grammar_signature"]
+            != text_profile_grammar_signature(sample_payload, rule)
+        )
         passed = check(
-            "gold",
+            "gold_neighbor" if grammar_neighbor else "gold",
             sample_payload,
-            str(sample.get("source_component") or source_component),
-            sample_expected,
+            sample_source,
+            [] if grammar_neighbor else sample_expected,
+            require_no_rows=grammar_neighbor,
         ) and passed
     for sample in negative_samples:
         sample_payload = _sample_payload(sample)
@@ -440,6 +551,7 @@ def synthesize_rule(
             sample_payload,
             str(sample.get("source_component") or source_component),
             [],
+            require_no_rows=True,
         ) and passed
 
     return {

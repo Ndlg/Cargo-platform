@@ -24,7 +24,17 @@ def test_backend_runtime_does_not_import_embedded_order_row_parser() -> None:
     offenders: list[str] = []
     for path in BACKEND_APP.rglob("*.py"):
         text = path.read_text(encoding="utf-8")
-        if "app.services.order_row_drafts" in text or "services.order_row_drafts" in text:
+        if any(
+            forbidden in text
+            for forbidden in (
+                "app.services.order_row_drafts",
+                "services.order_row_drafts",
+                "service_app.declarative_rules",
+                "service_app.rule_synthesizer",
+                "services.ai-recognition.service_app",
+                "services.waybill-parser.service_app",
+            )
+        ):
             offenders.append(str(path.relative_to(REPO_ROOT)).replace("\\", "/"))
 
     assert offenders == []
