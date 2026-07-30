@@ -71,6 +71,23 @@ def print_xml_with_private_text(private_text: str, business_text: str) -> dict[s
     }
 
 
+def labeled_variant_document(size: str) -> dict[str, object]:
+    return {
+        "task": {
+            "documents": [
+                {
+                    "contents": [
+                        {},
+                        print_xml(
+                            f"颜色分类:4.0二代黑白;鞋码:{size}，,*1"
+                        )["contents"][0],
+                    ]
+                }
+            ]
+        }
+    }
+
+
 def item_info(text: str) -> dict[str, object]:
     return {"contents": [{"data": {"ITEM_INFO": text}}]}
 
@@ -317,6 +334,39 @@ def test_synthesizer_projects_safe_transforms_and_concatenation() -> None:
             2,
         )
     ]
+
+
+def test_synthesizer_compiles_labeled_variant_text_with_shared_dynamic_product() -> None:
+    learning = labeled_variant_document("41")
+    holdout = labeled_variant_document("39")
+    special = print_xml("补差价，拍多少数量提前沟通")
+    learning_row = row("4.0二代黑白", "4.0二代黑白", "41", 1)
+    holdout_row = row("4.0二代黑白", "4.0二代黑白", "39", 1)
+
+    result = synthesize_rule(
+        payload=learning,
+        source_component="cainiao-cnprint",
+        corrected_rows=[learning_row],
+        gold_samples=[
+            {
+                "raw_payload": holdout,
+                "source_component": "cainiao-cnprint",
+                "rows": [holdout_row],
+            }
+        ],
+        negative_samples=[
+            {
+                "raw_payload": special,
+                "source_component": "cainiao-cnprint",
+            }
+        ],
+    )
+
+    assert result["status"] == "compiled"
+    assert result["rule"]["strategy"] == "source_projection_v1"
+    assert replay_rule(result["rule"], learning) == [learning_row]
+    assert replay_rule(result["rule"], holdout) == [holdout_row]
+    assert replay_rule(result["rule"], special) == []
 
 
 def test_projection_synthesis_rejects_ambiguous_same_path_occurrences() -> None:

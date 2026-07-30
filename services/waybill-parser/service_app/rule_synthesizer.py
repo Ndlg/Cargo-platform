@@ -539,6 +539,51 @@ def _projection_candidates(
                         ],
                     ]
                 )
+                if index == 0:
+                    continue
+                first_part = apply_projection_operations(text, [split_part])
+                nested_delimiters = dict.fromkeys(
+                    match.group()
+                    for match in PROJECTION_DELIMITER_RUN.finditer(first_part)
+                )
+                for nested_delimiter in nested_delimiters:
+                    nested_count = first_part.count(nested_delimiter) + 1
+                    if nested_count > MAX_PROJECTION_SPLIT_PARTS:
+                        return None
+                    operation_variant_count += nested_count * 5
+                    if (
+                        operation_variant_count
+                        > MAX_PROJECTION_OPERATION_VARIANTS
+                    ):
+                        return None
+                    for nested_index in range(nested_count):
+                        nested_split = {
+                            "op": "split_part",
+                            "delimiter": nested_delimiter,
+                            "index": nested_index,
+                        }
+                        nested_steps = [split_part, nested_split]
+                        operations.extend(
+                            [
+                                nested_steps,
+                                [
+                                    *nested_steps,
+                                    {"op": "strip_field_label"},
+                                ],
+                                [
+                                    *nested_steps,
+                                    {"op": "strip_trailing_quantity"},
+                                ],
+                                [
+                                    *nested_steps,
+                                    {"op": "extract_quantity"},
+                                ],
+                                [
+                                    *nested_steps,
+                                    {"op": "collapse_adjacent_delimiters"},
+                                ],
+                            ]
+                        )
         seen_values: set[str] = set()
         for steps in operations:
             value = apply_projection_operations(text, steps)
