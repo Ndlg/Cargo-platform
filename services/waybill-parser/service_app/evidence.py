@@ -239,7 +239,7 @@ def _text_records(
 
 
 def _custom_area_marker(value: object) -> bool:
-    return "CUSTOMAREA" in re.sub(r"[^A-Z0-9]", "", str(value).upper())
+    return re.sub(r"[^A-Z0-9]", "", str(value).upper()) == "CUSTOMAREA"
 
 
 def _xml_texts(

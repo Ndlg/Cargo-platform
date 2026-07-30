@@ -107,6 +107,7 @@ def test_print_xml_excludes_unclassified_and_sensitive_text_nodes() -> None:
                     "<text>福建省某地址</text>"
                     "<text>手机 13800000000</text>"
                     "<text>未标记商品，43*1</text>"
+                    '<text area="NOT_CUSTOM_AREA">张三 13900000000 厦门市某地址</text>'
                     '<text area="CUSTOM_AREA"><![CDATA[灰黑，38 商品名称*1]]></text>'
                     "</layout>"
                 )
@@ -121,7 +122,10 @@ def test_print_xml_excludes_unclassified_and_sensitive_text_nodes() -> None:
     assert "福建省某地址" not in encoded
     assert "13800000000" not in encoded
     assert "未标记商品" not in encoded
-    assert evidence["excluded_field_counts"]["non_business"] == 3
+    assert "张三" not in encoded
+    assert "13900000000" not in encoded
+    assert "厦门市某地址" not in encoded
+    assert evidence["excluded_field_counts"]["non_business"] == 4
 
 
 def test_quantity_unit_layout_changes_grammar_and_fingerprint() -> None:
