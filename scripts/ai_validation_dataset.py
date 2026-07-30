@@ -264,7 +264,102 @@ def _raw_records_for_task(db: sqlite3.Connection, task_id: int) -> list[dict[str
     return records
 
 
-def export_answer_set(source_db: Path, parser_url: str, output: Path) -> dict[str, object]:
+def _completed_task_ids(db: sqlite3.Connection, task_ids: list[int] | None) -> list[int]:
+    if not task_ids:
+        return [
+            int(row[0])
+            for row in db.execute(
+                """
+                SELECT id FROM capture_tasks
+                WHERE status = 'completed' AND is_deleted = 0
+                ORDER BY id
+                """
+            )
+        ]
+    requested = sorted(set(task_ids))
+    placeholders = ", ".join("?" for _ in requested)
+    completed = [
+        int(row[0])
+        for row in db.execute(
+            f"""
+            SELECT id FROM capture_tasks
+            WHERE status = 'completed' AND is_deleted = 0 AND id IN ({placeholders})
+            ORDER BY id
+            """,
+            requested,
+        )
+    ]
+    missing = sorted(set(requested) - set(completed))
+    if missing:
+        raise ValueError(f"selected capture tasks are not completed: {missing}")
+    return completed
+
+
+def _expected_parent_order(response: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {
+            "raw_record_id": parent.get("raw_record_id"),
+            "parent_label": parent.get("parent_label"),
+        }
+        for parent in response.get("parents") or []
+        if isinstance(parent, dict)
+    ]
+
+
+def _gold_rows(response: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for parent_index, parent in enumerate(response.get("parents") or [], start=1):
+        if not isinstance(parent, dict):
+            continue
+        for child_index, row in enumerate(parent.get("rows") or [], start=1):
+            if not isinstance(row, dict):
+                continue
+            rows.append(
+                {
+                    "raw_record_id": row.get("raw_record_id"),
+                    "parent_index": parent_index,
+                    "child_index": child_index,
+                    "fields": {
+                        field: row.get(field)
+                        for field in ("product", "sales_attr1", "sales_attr2", "quantity", "remark")
+                    },
+                }
+            )
+    return rows
+
+
+def _without_rule_payloads(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _without_rule_payloads(item)
+            for key, item in value.items()
+            if key not in {"recognition_rule_pack", "rule_pack", "ai_sessions", "ai_session_rules"}
+        }
+    if isinstance(value, list):
+        return [_without_rule_payloads(item) for item in value]
+    return value
+
+
+def _answer_set_entry(
+    task_id: int, raw_records: list[dict[str, Any]], response: dict[str, Any]
+) -> dict[str, Any]:
+    return {
+        "task_id": task_id,
+        "raw_record_ids": [row["raw_record_id"] for row in raw_records],
+        "raw_records": raw_records,
+        "expected_parent_order": _expected_parent_order(response),
+        "gold_rows": _gold_rows(response),
+        "response": _without_rule_payloads(response),
+    }
+
+
+def export_answer_set(
+    source_db: Path,
+    parser_url: str,
+    output: Path,
+    *,
+    task_ids: list[int] | None = None,
+) -> dict[str, object]:
     source = source_db.resolve()
     answer_set = output.resolve()
     manifest_path = answer_set.with_suffix(".manifest.json")
@@ -285,17 +380,7 @@ def export_answer_set(source_db: Path, parser_url: str, output: Path) -> dict[st
             "w", encoding="utf-8", newline="\n"
         ) as stream:
             rule_pack = _active_rule_pack(db)
-            task_ids = [
-                int(row[0])
-                for row in db.execute(
-                    """
-                    SELECT id FROM capture_tasks
-                    WHERE status = 'completed' AND is_deleted = 0
-                    ORDER BY id
-                    """
-                )
-            ]
-            for task_id in task_ids:
+            for task_id in _completed_task_ids(db, task_ids):
                 raw_records = _raw_records_for_task(db, task_id)
                 if not raw_records:
                     continue
@@ -313,11 +398,7 @@ def export_answer_set(source_db: Path, parser_url: str, output: Path) -> dict[st
                     raise ValueError(f"parser contract mismatch for task {task_id}")
                 stream.write(
                     json.dumps(
-                        {
-                            "task_id": task_id,
-                            "raw_record_ids": [row["raw_record_id"] for row in raw_records],
-                            "response": response,
-                        },
+                        _answer_set_entry(task_id, raw_records, response),
                         ensure_ascii=False,
                         sort_keys=True,
                     )
@@ -353,21 +434,115 @@ def export_answer_set(source_db: Path, parser_url: str, output: Path) -> dict[st
     return manifest
 
 
+def export_gold_rows(
+    source_db: Path,
+    parser_url: str,
+    output: Path,
+    *,
+    task_ids: list[int] | None = None,
+    exclude_rule_tables: bool = False,
+) -> dict[str, object]:
+    if not exclude_rule_tables:
+        raise ValueError("gold row export requires --exclude-rule-tables")
+    source = source_db.resolve()
+    gold_output = output.resolve()
+    manifest_path = gold_output.with_name("oracle-manifest.json")
+    if not source.is_file():
+        raise FileNotFoundError(source)
+    if gold_output.exists() or manifest_path.exists():
+        raise FileExistsError(gold_output if gold_output.exists() else manifest_path)
+    gold_output.parent.mkdir(parents=True, exist_ok=True)
+
+    parser_base = parser_url.rstrip("/")
+    parser_health = request_json(f"{parser_base}/health")
+    source_sha = sha256_file(source)
+    temporary = gold_output.with_name(f".{gold_output.name}.{uuid4().hex}.tmp")
+    task_count = 0
+    raw_record_count = 0
+    try:
+        with closing(readonly_connection(source)) as db, temporary.open(
+            "w", encoding="utf-8", newline="\n"
+        ) as stream:
+            rule_pack = _active_rule_pack(db)
+            for task_id in _completed_task_ids(db, task_ids):
+                raw_records = _raw_records_for_task(db, task_id)
+                if not raw_records:
+                    continue
+                response = request_json(
+                    f"{parser_base}/api/v1/parse/batch",
+                    {
+                        "task_id": task_id,
+                        "standard_details": [],
+                        "raw_records": raw_records,
+                        "waybill_samples": [],
+                        "rule_pack": rule_pack,
+                    },
+                )
+                if response.get("contract_version") != "order_row_drafts_v1":
+                    raise ValueError(f"parser contract mismatch for task {task_id}")
+                entry = _answer_set_entry(task_id, raw_records, response)
+                entry.pop("raw_record_ids")
+                entry.pop("response")
+                stream.write(json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n")
+                task_count += 1
+                raw_record_count += len(raw_records)
+        temporary.replace(gold_output)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        gold_output.unlink(missing_ok=True)
+        raise
+
+    if sha256_file(source) != source_sha:
+        gold_output.unlink(missing_ok=True)
+        raise RuntimeError("source database changed while gold rows were exported")
+
+    manifest: dict[str, object] = {
+        "contract_version": "ai_recognition_gold_rows_v1",
+        "source_path": str(source),
+        "source_sha256": source_sha,
+        "gold_output_path": str(gold_output),
+        "gold_output_sha256": sha256_file(gold_output),
+        "parser_url": parser_base,
+        "parser_health": parser_health,
+        "task_count": task_count,
+        "raw_record_count": raw_record_count,
+        "exclude_rule_tables": exclude_rule_tables,
+    }
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return manifest
+
+
 def main() -> int:
     parser = ArgumentParser(description="Create an isolated cold-start AI validation dataset.")
     parser.add_argument("--source-db", type=Path, required=True)
     parser.add_argument("--cold-db", type=Path)
     parser.add_argument("--answer-set", type=Path)
+    parser.add_argument("--task-id", action="append", type=int)
+    parser.add_argument("--gold-output", type=Path)
+    parser.add_argument("--exclude-rule-tables", action="store_true")
     parser.add_argument("--parser-url")
     args = parser.parse_args()
-    if args.cold_db is None and args.answer_set is None:
-        parser.error("provide --cold-db, --answer-set, or both")
-    if args.answer_set is not None and not args.parser_url:
-        parser.error("--answer-set requires --parser-url")
+    if args.cold_db is None and args.answer_set is None and args.gold_output is None:
+        parser.error("provide --cold-db, --answer-set, --gold-output, or a combination")
+    if (args.answer_set is not None or args.gold_output is not None) and not args.parser_url:
+        parser.error("--answer-set and --gold-output require --parser-url")
 
     results: dict[str, object] = {}
     if args.answer_set is not None:
-        results["answer_set"] = export_answer_set(args.source_db, args.parser_url, args.answer_set)
+        results["answer_set"] = export_answer_set(
+            args.source_db, args.parser_url, args.answer_set, task_ids=args.task_id
+        )
+    if args.gold_output is not None:
+        results["gold_rows"] = export_gold_rows(
+            args.source_db,
+            args.parser_url,
+            args.gold_output,
+            task_ids=args.task_id,
+            exclude_rule_tables=args.exclude_rule_tables,
+        )
     if args.cold_db is not None:
         results["cold_start"] = build_cold_start_database(args.source_db, args.cold_db)
     print(json.dumps(results, ensure_ascii=False, indent=2, sort_keys=True))

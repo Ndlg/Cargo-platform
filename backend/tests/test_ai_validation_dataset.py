@@ -14,6 +14,7 @@ import pytest
 from scripts.ai_validation_dataset import (
     build_cold_start_database,
     export_answer_set,
+    export_gold_rows,
     sha256_file,
 )
 
@@ -221,15 +222,36 @@ def fake_parser() -> Iterator[tuple[str, list[dict[str, object]]]]:
                         "needs_review_count": 0,
                         "special_count": 0,
                     },
-                    "parents": [],
+                    "parents": [
+                        {
+                            "raw_record_id": row["raw_record_id"],
+                            "parent_label": f"parent-{row['raw_record_id']}",
+                            "rows": [
+                                {
+                                    "raw_record_id": row["raw_record_id"],
+                                    "product": f"task-{task_id}",
+                                    "sales_attr1": "红",
+                                    "sales_attr2": "40",
+                                    "quantity": 1,
+                                    "remark": "",
+                                }
+                            ],
+                        }
+                        for row in raw_records
+                    ],
                     "rows": [
                         {
                             "raw_record_id": row["raw_record_id"],
                             "product": f"task-{task_id}",
+                            "sales_attr1": "红",
+                            "sales_attr2": "40",
                             "quantity": 1,
+                            "remark": "",
                         }
                         for row in raw_records
                     ],
+                    "recognition_rule_pack": {"payload": "must-not-export"},
+                    "ai_sessions": [{"rules": "must-not-export"}],
                 }
             ).encode()
             self.send_response(200)
@@ -270,3 +292,57 @@ def test_export_answer_set_uses_active_pack_and_records_manifest(tmp_path: Path)
     assert manifest["parser_health"]["version"] == "answer-set-test"
     manifest_path = output.with_suffix(".manifest.json")
     assert json.loads(manifest_path.read_text(encoding="utf-8")) == manifest
+    assert "recognition_rule_pack" not in rows[0]["response"]
+    assert "ai_sessions" not in rows[0]["response"]
+
+
+def test_export_gold_rows_keeps_raw_payloads_and_excludes_rule_payloads(tmp_path: Path) -> None:
+    source = tmp_path / "source.db"
+    output = tmp_path / "gold-rows.jsonl"
+    create_source_database(source)
+
+    with fake_parser() as (parser_url, requests):
+        manifest = export_gold_rows(
+            source,
+            parser_url,
+            output,
+            task_ids=[12],
+            exclude_rule_tables=True,
+        )
+
+    assert [request["task_id"] for request in requests] == [12]
+    rows = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
+    assert rows == [
+        {
+            "task_id": 12,
+            "raw_records": [
+                {
+                    "raw_record_id": 102,
+                    "task_id": 12,
+                    "source_component": "cainiao-cnprint",
+                    "source_index": "2",
+                    "payload": {"task": {"documents": [{"contents": [{"data": {"商品": "秒45"}}]}]}},
+                }
+            ],
+            "expected_parent_order": [
+                {"raw_record_id": 102, "parent_label": "parent-102"}
+            ],
+            "gold_rows": [
+                {
+                    "raw_record_id": 102,
+                    "parent_index": 1,
+                    "child_index": 1,
+                    "fields": {
+                        "product": "task-12",
+                        "sales_attr1": "红",
+                        "sales_attr2": "40",
+                        "quantity": 1,
+                        "remark": "",
+                    },
+                }
+            ],
+        }
+    ]
+    assert "recognition_rule_packs" not in output.read_text(encoding="utf-8")
+    assert manifest["gold_output_sha256"] == sha256_file(output)
+    assert json.loads((tmp_path / "oracle-manifest.json").read_text(encoding="utf-8")) == manifest
