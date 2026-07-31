@@ -170,6 +170,9 @@ def test_normal_export_requires_a_real_matched_product() -> None:
         ["鞋款A 黑色 42"],
         ["鞋款A 黑色 42"],
     ]
+    assert recognition_exception_export_rows(
+        [{**missing_id, "image_match_text": "", "exception_reason": "商品未命中"}]
+    ) == [["商品未命中"]]
 
 
 def test_normal_report_always_keeps_all_seven_business_columns() -> None:

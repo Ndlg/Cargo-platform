@@ -32,6 +32,14 @@ SHOE_ROW = {
     "remark": "",
 }
 APPROVAL_CLAIMS: dict[str, dict] = {}
+SESSION_SELECTED_FIELDS = ["item_name", "item_quantity"]
+SESSION_EVIDENCE = {
+    "fingerprint_code": "CN-PACKAGE-ITEMS",
+    "selected_fields": SESSION_SELECTED_FIELDS,
+    "evidence_sha256": "e" * 64,
+    "spans": [],
+    "candidate_groups": {},
+}
 
 
 @pytest.fixture(autouse=True)
@@ -111,6 +119,8 @@ def approval_request(
         "document_sequence": document_sequence,
         "fingerprint": FINGERPRINT,
         "fingerprint_code": "CN-PACKAGE-ITEMS",
+        "selected_fields": SESSION_SELECTED_FIELDS,
+        "evidence_sha256": SESSION_EVIDENCE["evidence_sha256"],
         "actor": {
             "id": 7,
             "username": "admin",
@@ -459,7 +469,7 @@ def test_internal_approval_synthesizes_from_original_and_preserves_duplicates(
 
     with Session(engine) as db:
         add_workspace(db)
-        add_field_config(db)
+        add_field_config(db, selected_fields=["live_config_changed_after_session"])
         add_record(
             db,
             payload={
@@ -491,6 +501,7 @@ def test_internal_approval_synthesizes_from_original_and_preserves_duplicates(
             "gold_samples": [],
             "negative_samples": [],
             "selected_fields": ["item_name", "item_quantity"],
+            "expected_evidence_sha256": SESSION_EVIDENCE["evidence_sha256"],
         }
     ]
     assert pack is not None
@@ -521,6 +532,8 @@ def test_internal_approval_synthesizes_from_original_and_preserves_duplicates(
     assert learning[0]["administrator_rows_sha256"] == canonical_hash(
         [SHOE_ROW, SHOE_ROW]
     )
+    assert learning[0]["selected_fields"] == SESSION_SELECTED_FIELDS
+    assert learning[0]["evidence_sha256"] == SESSION_EVIDENCE["evidence_sha256"]
     assert "sample_payload" not in learning[0]
     assert "rule_evidence" not in learning[0]
     assert revision is not None

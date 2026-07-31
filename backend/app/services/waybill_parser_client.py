@@ -50,6 +50,7 @@ def synthesize_rule_with_service(
     gold_samples: list[dict[str, Any]],
     negative_samples: list[dict[str, Any]],
     selected_fields: list[str] | None = None,
+    expected_evidence_sha256: str | None = None,
 ) -> dict[str, Any]:
     return post_waybill_parser_service(
         "/api/v1/rules/synthesize",
@@ -60,6 +61,7 @@ def synthesize_rule_with_service(
             "gold_samples": gold_samples,
             "negative_samples": negative_samples,
             "selected_fields": selected_fields,
+            "expected_evidence_sha256": expected_evidence_sha256,
         },
         timeout=60.0,
     )

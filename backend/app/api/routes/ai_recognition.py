@@ -8,7 +8,7 @@ from typing import Annotated, Any, Callable
 from fastapi import APIRouter, Depends, Header, HTTPException, Path, status
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -16,7 +16,7 @@ from app.core.config import get_settings
 from app.core.context import CurrentUser
 from app.core.database import get_db
 from app.core.deps import get_current_user, get_workspace_id, require_write
-from app.models import RawCaptureRecord, RecognitionRulePack, Workspace
+from app.models import RawCaptureRecord, RecognitionRulePack, Role, UserWorkspace, Workspace
 from app.services.ai_recognition_client import (
     AiRecognitionServiceError,
     approve_ai_recognition_session_with_service,
@@ -37,7 +37,6 @@ from app.services.recognition_rule_packs import (
     save_ai_rule_profile,
     utc_now_iso,
 )
-from app.services.tenant_fingerprint_configs import selected_fields_for_fingerprint
 from app.services.waybill_parser_client import (
     synthesize_rule_with_service,
     validate_rule_pack_with_service,
@@ -88,6 +87,8 @@ class AiApprovalClaim(BaseModel):
     document_sequence: int = Field(ge=1)
     fingerprint: str = Field(min_length=1, max_length=128)
     fingerprint_code: str = Field(min_length=1, max_length=128)
+    selected_fields: list[Annotated[str, Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]{0,63}$")]] = Field(min_length=1, max_length=100)
+    evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     actor: AiApprovalActor
     model_candidate_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     administrator_rows_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -127,6 +128,39 @@ def session_in_workspace(session_id: str, workspace_id: int) -> dict[str, Any]:
     return session
 
 
+def require_rule_admin(
+    db: Session,
+    *,
+    current_user: CurrentUser,
+    workspace_id: int,
+) -> None:
+    if current_user.is_system_admin:
+        return
+    membership = db.scalar(
+        select(UserWorkspace.id)
+        .join(
+            Role,
+            and_(
+                Role.id == UserWorkspace.role_id,
+                Role.tenant_id == UserWorkspace.tenant_id,
+                Role.workspace_id == UserWorkspace.workspace_id,
+                Role.is_deleted.is_(False),
+            ),
+        )
+        .where(
+            UserWorkspace.user_id == current_user.id,
+            UserWorkspace.workspace_id == workspace_id,
+            UserWorkspace.is_deleted.is_(False),
+            Role.name == "workspace_admin",
+        )
+    )
+    if membership is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="只有工作空间管理员可以确认识别规则。",
+        )
+
+
 @router.get("/ai-recognition/sessions/{session_id}")
 def get_ai_recognition_session(
     session_id: AiSessionId,
@@ -155,10 +189,23 @@ def feedback_ai_recognition_session(
 @router.post("/ai-recognition/sessions/{session_id}/approve")
 def approve_ai_recognition_session(
     session_id: AiSessionId,
-    current_user: CurrentUser = Depends(require_write),
+    current_user: CurrentUser = Depends(get_current_user),
     workspace_id: int = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
 ) -> dict[str, Any]:
+    require_rule_admin(db, current_user=current_user, workspace_id=workspace_id)
     session = session_in_workspace(session_id, workspace_id)
+    model_input = session.get("model_input")
+    sanitized_payload = (
+        model_input.get("sanitized_payload")
+        if isinstance(model_input, dict)
+        else None
+    )
+    selected_fields = (
+        sanitized_payload.get("selected_fields")
+        if isinstance(sanitized_payload, dict)
+        else None
+    )
     model_candidate = session.get("model_candidate")
     administrator_rows = comparable_rows(
         {"rows": session.get("administrator_rows")}
@@ -187,6 +234,12 @@ def approve_ai_recognition_session(
             document_sequence=session.get("document_sequence"),
             fingerprint=session.get("fingerprint"),
             fingerprint_code=session.get("fingerprint_code"),
+            selected_fields=selected_fields,
+            evidence_sha256=(
+                sanitized_payload.get("evidence_sha256")
+                if isinstance(sanitized_payload, dict)
+                else None
+            ),
             actor={
                 "id": current_user.id,
                 "username": current_user.username,
@@ -433,6 +486,7 @@ def ensure_idempotent_approval_matches(
     expected_rows: list[dict[str, Any]],
     model_candidate_sha256: str,
     administrator_rows_sha256: str,
+    claim: AiApprovalClaim,
 ) -> None:
     matches = (
         learning_record.get("task_id") == request.task_id
@@ -440,6 +494,14 @@ def ensure_idempotent_approval_matches(
         and learning_record.get("document_sequence") == request.document_sequence
         and learning_record.get("fingerprint") == request.format_fingerprint
         and learning_record.get("fingerprint_code") == request.fingerprint_code
+        and (
+            not learning_record.get("selected_fields")
+            or learning_record.get("selected_fields") == claim.selected_fields
+        )
+        and (
+            not learning_record.get("evidence_sha256")
+            or learning_record.get("evidence_sha256") == claim.evidence_sha256
+        )
         and comparable_rows(
             {
                 "rows": (
@@ -668,6 +730,7 @@ def approve_ai_rule(
             expected_rows=expected_rows,
             model_candidate_sha256=model_candidate_sha256,
             administrator_rows_sha256=administrator_rows_sha256,
+            claim=claim,
         )
         if request.validate_only:
             return {
@@ -707,18 +770,14 @@ def approve_ai_rule(
             fingerprint=request.format_fingerprint,
             current_session_id=request.session_id,
         )
-        selected_fields = selected_fields_for_fingerprint(
-            db,
-            workspace_id=request.workspace_id,
-            fingerprint_code=request.fingerprint_code,
-        )
         synthesis = synthesize_rule_with_service(
             raw_payload=parser_input["payload"],
             source_component=record.source_component or "unknown",
             corrected_rows=expected_rows,
             gold_samples=gold_samples,
             negative_samples=[],
-            selected_fields=selected_fields,
+            selected_fields=claim.selected_fields,
+            expected_evidence_sha256=claim.evidence_sha256,
         )
         profile = synthesis.get("rule")
         if (
@@ -730,6 +789,7 @@ def approve_ai_rule(
                 "compiler_capability_missing": "当前识别引擎还不能把这类面单固化成稳定规则。",
                 "rule_replay_failed": "新规则无法完整复现当前及历史确认结果。",
                 "candidate_invalid": "管理员确认的五字段结果无效。",
+                "evidence_changed": "面单原文或指纹字段已经变化，请重新识别后再确认。",
             }.get(str(synthesis.get("status") or ""), "识别规则合成失败。")
             raise ValueError(f"{reason}旧规则未修改。")
         compiler_result = {
@@ -752,6 +812,8 @@ def approve_ai_rule(
                 "document_sequence": request.document_sequence,
                 "source_component": record.source_component,
                 "fingerprint_code": request.fingerprint_code,
+                "selected_fields": claim.selected_fields,
+                "evidence_sha256": claim.evidence_sha256,
                 "grammar_signature": profile.get("grammar_signature"),
                 "confirmed_rows": expected_rows,
                 "model_candidate": request.model_candidate,

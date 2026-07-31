@@ -182,6 +182,10 @@ class RuleSynthesisRequest(BaseModel):
         max_length=100,
     )
     selected_fields: list[str] | None = None
+    expected_evidence_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -606,6 +610,7 @@ def synthesize_rule(payload: RuleSynthesisRequest) -> dict[str, Any]:
         gold_samples=[sample.model_dump() for sample in payload.gold_samples],
         negative_samples=[sample.model_dump() for sample in payload.negative_samples],
         selected_fields=payload.selected_fields,
+        expected_evidence_sha256=payload.expected_evidence_sha256,
     )
 
 

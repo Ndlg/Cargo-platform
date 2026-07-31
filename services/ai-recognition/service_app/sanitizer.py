@@ -13,6 +13,7 @@ MAX_SPANS = 200
 MAX_GROUPS = 100
 MAX_GROUP_SIZE = 100
 MAX_SPAN_VALUE_LENGTH = 512
+MAX_SELECTED_FIELDS = 100
 GROUP_KEYS = (
     "structured_list_item",
     "line",
@@ -71,6 +72,18 @@ def sanitize_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
     fingerprint_code = _short_text(evidence.get("fingerprint_code", ""), 128)
     if not re.fullmatch(r"[A-Z0-9][A-Z0-9_-]{0,127}", fingerprint_code):
         raise ValueError("evidence fingerprint code is invalid")
+    raw_selected_fields = evidence.get("selected_fields")
+    if not isinstance(raw_selected_fields, list) or not raw_selected_fields or len(raw_selected_fields) > MAX_SELECTED_FIELDS:
+        raise ValueError("evidence selected fields are invalid")
+    selected_fields = [_short_text(field, 64) for field in raw_selected_fields]
+    if len(selected_fields) != len(set(selected_fields)) or any(
+        not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", field)
+        for field in selected_fields
+    ):
+        raise ValueError("evidence selected fields are invalid")
+    evidence_sha256 = _short_text(evidence.get("evidence_sha256", ""), 64)
+    if not re.fullmatch(r"[0-9a-f]{64}", evidence_sha256):
+        raise ValueError("evidence hash is invalid")
     if not raw_spans or len(raw_spans) > MAX_SPANS:
         raise ValueError("evidence span count is invalid")
 
@@ -130,6 +143,8 @@ def sanitize_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
         groups[key] = entries
     return {
         "fingerprint_code": fingerprint_code,
+        "selected_fields": selected_fields,
+        "evidence_sha256": evidence_sha256,
         "spans": spans,
         "candidate_groups": groups,
     }

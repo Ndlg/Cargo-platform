@@ -12,6 +12,7 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 import httpx
+import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -84,6 +85,8 @@ def evidence_bundle(*, rows: int = 1) -> dict[str, Any]:
         "contract_version": "waybill_evidence_v1",
         "source_component": "cainiao-cnprint",
         "fingerprint_code": "CN-PACKAGE-ITEMS",
+        "selected_fields": ["item_name", "item_quantity"],
+        "evidence_sha256": "e" * 64,
         "structural_fingerprint": "v2:CN-PACKAGE-ITEMS:sha256:" + "a" * 64,
         "grammar_signature": "grammar:test",
         "spans": spans,
@@ -180,12 +183,33 @@ def test_evidence_given_to_model_has_only_ids_labels_short_values_and_groups(tmp
     sanitized = module.sanitize_evidence(evidence_bundle())
     encoded = json.dumps(sanitized, ensure_ascii=False)
 
-    assert set(sanitized) == {"fingerprint_code", "spans", "candidate_groups"}
+    assert set(sanitized) == {
+        "fingerprint_code",
+        "selected_fields",
+        "evidence_sha256",
+        "spans",
+        "candidate_groups",
+    }
     assert sanitized["fingerprint_code"] == "CN-PACKAGE-ITEMS"
+    assert sanitized["selected_fields"] == ["item_name", "item_quantity"]
+    assert sanitized["evidence_sha256"] == "e" * 64
     assert set(sanitized["spans"][0]) == {"span_id", "label", "value"}
     assert "source_path" not in encoded
     assert "original_text" not in encoded
     assert "excluded_field_counts" not in encoded
+
+
+@pytest.mark.parametrize("selected_fields", [[], ["item_name", "item_name"], ["receiver.address"]])
+def test_evidence_rejects_invalid_selected_field_snapshot(
+    tmp_path: Path,
+    selected_fields: list[str],
+) -> None:
+    module = load_ai_service(tmp_path / "import-default.db")
+    evidence = evidence_bundle()
+    evidence["selected_fields"] = selected_fields
+
+    with pytest.raises(ValueError, match="selected fields"):
+        module.sanitize_evidence(evidence)
 
 
 def test_obvious_pii_span_is_removed_before_model_input(tmp_path: Path) -> None:
@@ -456,6 +480,23 @@ def test_recognize_reuses_identical_safe_evidence_session(tmp_path: Path) -> Non
     }
     assert stored["model_input"] == {"sanitized_payload": model.calls[0]}
     assert len(model.calls) == 1
+
+
+def test_recognize_does_not_reuse_session_after_selected_fields_change(tmp_path: Path) -> None:
+    module = load_ai_service(tmp_path / "import-default.db")
+    app = module.create_app(
+        model_client=FakeModel(),
+        db_path=tmp_path / "sessions.db",
+        internal_token=AI_TOKEN,
+    )
+    changed = recognize_request()
+    changed["evidence"]["selected_fields"] = ["spec_name"]
+
+    with TestClient(app) as client:
+        first = client.post("/api/v1/recognize", json=recognize_request(), headers=AI_HEADERS)
+        second = client.post("/api/v1/recognize", json=changed, headers=AI_HEADERS)
+
+    assert first.json()["session_id"] != second.json()["session_id"]
 
 
 def test_recognize_rejects_raw_payload_and_mismatched_evidence_identity(tmp_path: Path) -> None:

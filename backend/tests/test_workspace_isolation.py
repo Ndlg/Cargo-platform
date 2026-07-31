@@ -234,6 +234,13 @@ def test_ai_session_proxy_enforces_auth_workspace_write_permission_and_actor(
         }
     ]
     model_candidate = {"parents": [{"rows": rows}]} if has_model_candidate else None
+    sanitized_payload = {
+        "fingerprint_code": "CN-PACKAGE-ITEMS",
+        "selected_fields": ["item_name", "item_quantity"],
+        "evidence_sha256": "e" * 64,
+        "spans": [],
+        "candidate_groups": {},
+    }
 
     def session_with_service(session_id: str) -> dict[str, object]:
         return {
@@ -247,6 +254,7 @@ def test_ai_session_proxy_enforces_auth_workspace_write_permission_and_actor(
             "status": "ai_rule_pending",
             "model_candidate": model_candidate,
             "administrator_rows": rows,
+            "model_input": {"sanitized_payload": sanitized_payload},
             "compiler_result": None,
         }
 
@@ -293,7 +301,7 @@ def test_ai_session_proxy_enforces_auth_workspace_write_permission_and_actor(
     )
 
     with TestClient(app) as client:
-        alice_username, alice_password, workspace_a_id, _role_id = _create_user_workspace_pair(
+        alice_username, alice_password, workspace_a_id, alice_role_id = _create_user_workspace_pair(
             f"proxy_alice_{case}",
             f"proxy_workspace_a_{case}",
         )
@@ -356,6 +364,15 @@ def test_ai_session_proxy_enforces_auth_workspace_write_permission_and_actor(
             "/api/v1/ai-recognition/sessions/workspace-a-session/reject",
             headers=readonly_headers,
         )
+        operator_approve = client.post(
+            "/api/v1/ai-recognition/sessions/workspace-a-session/approve",
+            headers=alice_headers,
+        )
+        with SessionLocal() as db:
+            alice_role = db.get(Role, alice_role_id)
+            assert alice_role is not None
+            alice_role.name = "workspace_admin"
+            db.commit()
         approved = client.post(
             "/api/v1/ai-recognition/sessions/workspace-a-session/approve",
             headers=alice_headers,
@@ -370,6 +387,7 @@ def test_ai_session_proxy_enforces_auth_workspace_write_permission_and_actor(
         readonly_reject.status_code,
     } == {403}
     assert approved.status_code == 200
+    assert operator_approve.status_code == 403
     assert approvals == ["opaque-claim"]
     assert claim_payloads == [
         {
@@ -380,6 +398,8 @@ def test_ai_session_proxy_enforces_auth_workspace_write_permission_and_actor(
             "document_sequence": 2,
             "fingerprint": "v2:CN-PACKAGE-ITEMS:test",
             "fingerprint_code": "CN-PACKAGE-ITEMS",
+            "selected_fields": ["item_name", "item_quantity"],
+            "evidence_sha256": "e" * 64,
             "actor": {
                 "id": alice_id,
                 "username": f"proxy_alice_{case}",
@@ -430,14 +450,28 @@ def test_ai_session_proxy_preserves_stale_closed_compiler_and_unavailable_errors
         "status": "ai_rule_pending",
         "model_candidate": {"parents": [{"rows": rows}]},
         "administrator_rows": rows,
+        "model_input": {
+            "sanitized_payload": {
+                "fingerprint_code": "CN-PACKAGE-ITEMS",
+                "selected_fields": ["item_name", "item_quantity"],
+                "evidence_sha256": "e" * 64,
+                "spans": [],
+                "candidate_groups": {},
+            }
+        },
         "compiler_result": None,
     }
 
     with TestClient(app) as client:
-        username, password, workspace_id, _role_id = _create_user_workspace_pair(
+        username, password, workspace_id, role_id = _create_user_workspace_pair(
             "proxy_errors",
             "proxy_errors_workspace",
         )
+        with SessionLocal() as db:
+            role = db.get(Role, role_id)
+            assert role is not None
+            role.name = "workspace_admin"
+            db.commit()
         headers = _login(client, username, password, workspace_id)
         session["workspace_id"] = workspace_id
 

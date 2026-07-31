@@ -55,7 +55,11 @@ from app.services.order_row_reader import (
     task_waybill_counts,
 )
 from app.services.product_sku_linking import exportable_product_sku_linking_result
-from app.services.regression_coverage import analyze_waybill_coverage
+from app.services.regression_coverage import (
+    analyze_waybill_coverage,
+    recognition_exception_text,
+    recognition_row_is_exportable,
+)
 from app.services.recognition_rule_packs import (
     RULE_PACK_MISSING_STATUS,
     active_recognition_rule_pack,
@@ -885,11 +889,7 @@ def expanded_sales_attr2_values(row: dict[str, Any]) -> list[str]:
 
 
 def recognition_report_row_is_exportable(row: dict[str, Any]) -> bool:
-    return (
-        row.get("status") == "matched"
-        and int_value(row.get("product_id")) is not None
-        and bool(text_value(row.get("product_name")))
-    )
+    return recognition_row_is_exportable(row)
 
 
 def recognition_report_base_line_item(row: dict[str, Any]) -> dict[str, Any]:
@@ -1048,7 +1048,7 @@ def recognition_report_rows_by_stall(report_rows: list[dict[str, Any]]) -> dict[
 
 def recognition_exception_export_rows(rows: list[dict[str, Any]]) -> list[list[Any]]:
     return [
-        [text_value(row.get("image_match_text")) or text_value(row.get("reason"))]
+        [recognition_exception_text(row)]
         for row in rows
         if not recognition_report_row_is_exportable(row)
     ]

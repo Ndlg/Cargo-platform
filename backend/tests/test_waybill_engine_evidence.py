@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 from pathlib import Path
 import sys
 
@@ -168,6 +169,16 @@ def test_normalization_preserves_original_offsets_and_selected_fields() -> None:
         "token_class": "text",
     }
     assert evidence["excluded_field_counts"]["unselected_business"] == 1
+    assert evidence["selected_fields"] == ["seller_memo"]
+    unsigned = {key: value for key, value in evidence.items() if key != "evidence_sha256"}
+    assert evidence["evidence_sha256"] == sha256(
+        json.dumps(
+            unsigned,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 def test_candidate_classes_use_independent_original_offset_subspans() -> None:

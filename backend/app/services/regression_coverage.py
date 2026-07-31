@@ -31,13 +31,24 @@ def _parent_key(values: dict[str, Any]) -> tuple[int, int] | None:
     return raw_record_id, parent_sequence
 
 
-def _actionable_reason(row: dict[str, Any]) -> str:
+def recognition_exception_text(row: dict[str, Any]) -> str:
     return str(
-        row.get("reason")
+        row.get("image_match_text")
+        or row.get("reason")
         or row.get("exception_reason")
         or row.get("review_reason")
         or ""
     ).strip()
+
+
+def recognition_row_is_exportable(row: dict[str, Any]) -> bool:
+    product_id = _int_value(row.get("product_id"))
+    return (
+        row.get("status") == "matched"
+        and product_id is not None
+        and product_id > 0
+        and bool(str(row.get("product_name") or "").strip())
+    )
 
 
 def analyze_waybill_coverage(
@@ -112,11 +123,11 @@ def analyze_waybill_coverage(
     mixed_parent_count = 0
     exception_not_actionable_count = 0
     for key, grouped_rows in parent_rows.items():
-        normal_rows = [row for row in grouped_rows if row.get("status") == "matched"]
-        exception_rows = [row for row in grouped_rows if row.get("status") != "matched"]
+        normal_rows = [row for row in grouped_rows if recognition_row_is_exportable(row)]
+        exception_rows = [row for row in grouped_rows if not recognition_row_is_exportable(row)]
         if exception_rows:
             mixed_parent_count += bool(normal_rows)
-            if all(_actionable_reason(row) for row in exception_rows):
+            if all(recognition_exception_text(row) for row in exception_rows):
                 exception_parent_keys.add(key)
             else:
                 exception_not_actionable_count += 1

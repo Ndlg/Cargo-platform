@@ -27,6 +27,8 @@ def row(
         "remark_text": "",
         "status": status,
         "reason": reason,
+        "product_id": 1,
+        "product_name": product,
     }
 
 
@@ -86,6 +88,26 @@ def test_unknown_status_requires_an_actionable_reason() -> None:
     result = analyze_waybill_coverage(
         expected_parent_documents=[parent(40, 1)],
         rows=[row(40, 1, status="future_status")],
+        normal_export_count=0,
+        exception_export_count=1,
+    )
+
+    assert result["ok"] is False
+    assert result["normal_parent_count"] == 0
+    assert result["exception_parent_count"] == 0
+    assert result["failures"] == [
+        {"code": "exception_not_actionable", "count": 1},
+        {"code": "parent_partition_incomplete", "count": 1},
+    ]
+
+
+def test_matched_status_without_exportable_product_is_an_exception() -> None:
+    broken = row(41, 1)
+    broken.update(product_id=None, product_name="", reason="")
+
+    result = analyze_waybill_coverage(
+        expected_parent_documents=[parent(41, 1)],
+        rows=[broken],
         normal_export_count=0,
         exception_export_count=1,
     )

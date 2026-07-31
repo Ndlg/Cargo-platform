@@ -44,6 +44,7 @@ def test_rule_synthesis_is_forwarded_to_parser_without_changing_rows(monkeypatch
         gold_samples=[],
         negative_samples=[],
         selected_fields=["item_name", "item_quantity"],
+        expected_evidence_sha256="e" * 64,
     )
 
     assert captured == {
@@ -55,6 +56,7 @@ def test_rule_synthesis_is_forwarded_to_parser_without_changing_rows(monkeypatch
             "gold_samples": [],
             "negative_samples": [],
             "selected_fields": ["item_name", "item_quantity"],
+            "expected_evidence_sha256": "e" * 64,
         },
         "timeout": 60.0,
     }

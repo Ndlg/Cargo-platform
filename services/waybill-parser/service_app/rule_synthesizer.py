@@ -1116,12 +1116,18 @@ def synthesize_rule(
     gold_samples: list[dict[str, Any]],
     negative_samples: list[dict[str, Any]],
     selected_fields: list[str] | None = None,
+    expected_evidence_sha256: str | None = None,
 ) -> dict[str, Any]:
     expected = _normalized_rows(corrected_rows)
     if expected is None:
         return {"status": "candidate_invalid", "rule": None, "replay_report": []}
 
     evidence = build_evidence(payload, source_component, selected_fields)
+    if (
+        expected_evidence_sha256 is not None
+        and evidence["evidence_sha256"] != expected_evidence_sha256
+    ):
+        return {"status": "evidence_changed", "rule": None, "replay_report": []}
     rule = _compile_structured_rule(
         payload,
         expected,

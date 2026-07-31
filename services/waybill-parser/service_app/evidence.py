@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from hashlib import sha256
+import json
 import re
 from typing import Any, Iterator
 import unicodedata
@@ -29,6 +30,18 @@ _NUMBER_CAPTURE_RE = re.compile(
 )
 _WRAPPER_ARRAY_KEYS = {"documents", "contents"}
 FIELD_ROLE_TOKEN_CLASSES = {"shoe_size_like_numeric_segment"}
+
+
+def evidence_sha256(evidence: dict[str, Any]) -> str:
+    unsigned = {key: value for key, value in evidence.items() if key != "evidence_sha256"}
+    return sha256(
+        json.dumps(
+            unsigned,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -380,6 +393,7 @@ def build_evidence(
         if selected_fields is not None
         else {field["key"] for field in fields if field["default_selected"]}
     )
+    selected_field_keys = [field["key"] for field in fields if field["key"] in selected]
     catalogue_entry = next(
         (
             entry
@@ -422,10 +436,11 @@ def build_evidence(
         else:
             excluded["non_business"] += 1
 
-    return {
+    evidence = {
         "contract_version": "waybill_evidence_v1",
         "source_component": source_component,
         "fingerprint_code": inspection["fingerprint_code"] if inspection else "UNKNOWN",
+        "selected_fields": selected_field_keys,
         "structural_fingerprint": business_shape_fingerprint(payload, source_component),
         "grammar_signature": grammar_signature_for_texts(
             record.span.original_text
@@ -439,3 +454,4 @@ def build_evidence(
         ),
         "excluded_field_counts": excluded,
     }
+    return {**evidence, "evidence_sha256": evidence_sha256(evidence)}

@@ -212,6 +212,7 @@ def test_zero_rule_learning_compiles_once_then_reuses_without_ai(
                 gold_samples=kwargs["gold_samples"],
                 negative_samples=kwargs["negative_samples"],
                 selected_fields=kwargs["selected_fields"],
+                expected_evidence_sha256=kwargs["expected_evidence_sha256"],
             )
         )
 
@@ -299,6 +300,8 @@ def test_zero_rule_learning_compiles_once_then_reuses_without_ai(
             assert len(model.calls) == 1
             assert set(model.calls[0]) == {
                 "fingerprint_code",
+                "selected_fields",
+                "evidence_sha256",
                 "spans",
                 "candidate_groups",
             }
@@ -348,6 +351,12 @@ def test_zero_rule_learning_compiles_once_then_reuses_without_ai(
                 "document_sequence": 1,
                 "fingerprint": corrected["fingerprint"],
                 "fingerprint_code": corrected["fingerprint_code"],
+                "selected_fields": corrected["model_input"]["sanitized_payload"][
+                    "selected_fields"
+                ],
+                "evidence_sha256": corrected["model_input"]["sanitized_payload"][
+                    "evidence_sha256"
+                ],
                 "actor": {
                     "id": 7,
                     "username": "admin",

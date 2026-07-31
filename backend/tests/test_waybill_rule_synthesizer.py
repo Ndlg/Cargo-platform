@@ -54,6 +54,24 @@ def print_xml(text: str) -> dict[str, object]:
     }
 
 
+def test_rule_synthesis_rejects_changed_session_evidence() -> None:
+    result = synthesize_rule(
+        payload=print_xml("黄色，43 商品甲*1"),
+        source_component="cainiao-cnprint",
+        corrected_rows=[row("商品甲", "黄色", "43", 1)],
+        gold_samples=[],
+        negative_samples=[],
+        selected_fields=["print_text"],
+        expected_evidence_sha256="0" * 64,
+    )
+
+    assert result == {
+        "status": "evidence_changed",
+        "rule": None,
+        "replay_report": [],
+    }
+
+
 def print_xml_with_private_text(private_text: str, business_text: str) -> dict[str, object]:
     return {
         "contents": [
