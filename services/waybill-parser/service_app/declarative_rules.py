@@ -414,20 +414,26 @@ def validate_format_profiles(value: object) -> list[str]:
     if not isinstance(value, list) or not 1 <= len(value) <= 100:
         return ["parser_policy.format_profiles"]
     errors: list[str] = []
-    identities: set[tuple[str, str | None]] = set()
+    identities: set[tuple[str, str, tuple[str, ...], str | None]] = set()
     for index, profile in enumerate(value):
         prefix = f"parser_policy.format_profiles[{index}]"
         if not isinstance(profile, dict):
             errors.append(prefix)
             continue
         fingerprint = text_value(profile.get("fingerprint"))
+        strategy = text_value(profile.get("strategy"))
         grammar_signature = text_value(profile.get("grammar_signature")) or None
-        identity = (fingerprint, grammar_signature)
+        selected_fields = tuple(profile.get("selected_fields") or ())
+        identity = (
+            fingerprint,
+            strategy,
+            selected_fields,
+            grammar_signature,
+        )
         if not FINGERPRINT_PATTERN.fullmatch(fingerprint) or identity in identities:
             errors.append(f"{prefix}.fingerprint")
         identities.add(identity)
         errors.extend(validate_profile_provenance(profile.get("provenance"), prefix))
-        strategy = profile.get("strategy")
         if strategy == "structured_items_v1":
             errors.extend(validate_structured_profile(profile, prefix))
         elif strategy == "text_pipeline_v1":
@@ -905,16 +911,6 @@ def parse_declarative_payload(
         for profile in profiles
         if profile.get("fingerprint") == fingerprint
     ]
-    structured_signatures = {
-        tuple(profile.get("selected_fields") or ()): build_evidence(
-            payload,
-            text_value(source_component),
-            profile.get("selected_fields"),
-        )["grammar_signature"]
-        for profile in candidates
-        if profile.get("strategy") == "structured_items_v1"
-        and profile.get("grammar_signature")
-    }
     projection_signatures = {
         tuple(profile.get("selected_fields") or ()): projection_grammar_signature(
             build_evidence(
@@ -926,43 +922,28 @@ def parse_declarative_payload(
         for profile in candidates
         if profile.get("strategy") == "source_projection_v1"
     }
-    profile = next(
-        (
-            candidate
-            for candidate in reversed(candidates)
-            if candidate.get("grammar_signature")
-            and (
-                (
-                    candidate.get("strategy") == "structured_items_v1"
-                    and candidate.get("grammar_signature")
-                    == structured_signatures.get(
-                        tuple(candidate.get("selected_fields") or ())
-                    )
-                )
-                or (
-                    candidate.get("strategy") == "text_pipeline_v1"
-                    and candidate.get("grammar_signature")
-                    == text_profile_grammar_signature(payload, candidate)
-                )
-                or (
-                    candidate.get("strategy") == "source_projection_v1"
-                    and candidate.get("grammar_signature")
-                    == projection_signatures.get(
-                        tuple(candidate.get("selected_fields") or ())
-                    )
+    compatible = [
+        candidate
+        for candidate in candidates
+        if (
+            candidate.get("strategy") == "structured_items_v1"
+            or not candidate.get("grammar_signature")
+            or (
+                candidate.get("strategy") == "text_pipeline_v1"
+                and candidate.get("grammar_signature")
+                == text_profile_grammar_signature(payload, candidate)
+            )
+            or (
+                candidate.get("strategy") == "source_projection_v1"
+                and candidate.get("grammar_signature")
+                == projection_signatures.get(
+                    tuple(candidate.get("selected_fields") or ())
                 )
             )
-        ),
-        None,
-    ) or next(
-        (
-            candidate
-            for candidate in reversed(candidates)
-            if not candidate.get("grammar_signature")
-        ),
-        None,
-    )
-    if profile is None:
+        )
+    ]
+
+    def empty_result(reason: str, reasons: list[str] | None = None):
         parent_label = business_parent_label(source_index, raw_record_id, parent_sequence=parent_sequence)
         parent = ParentWaybillDraft(
             raw_record_id=raw_record_id,
@@ -973,22 +954,57 @@ def parse_declarative_payload(
             child_count=0,
             rows=[],
         )
-        return parent, {
+        diagnostic = {
             "raw_record_id": raw_record_id,
             "parent_label": parent_label,
             "fingerprint": fingerprint,
-            "reason": "format_profile_missing",
+            "reason": reason,
         }
+        if reasons:
+            diagnostic["reasons"] = reasons
+        return parent, diagnostic
 
-    parent = parse_with_format_profile(
-        payload,
-        profile,
-        raw_record_id=raw_record_id,
-        task_id=task_id,
-        source_component=source_component,
-        source_index=source_index,
-        parent_sequence=parent_sequence,
-    )
+    if not compatible:
+        return empty_result("format_profile_missing")
+
+    matches: dict[tuple[tuple[Any, ...], ...], tuple[dict[str, Any], ParentWaybillDraft]] = {}
+    incomplete_reasons: list[str] = []
+    for candidate in compatible:
+        candidate_parent = parse_with_format_profile(
+            payload,
+            candidate,
+            raw_record_id=raw_record_id,
+            task_id=task_id,
+            source_component=source_component,
+            source_index=source_index,
+            parent_sequence=parent_sequence,
+        )
+        complete, reasons = check_parent_completeness(candidate_parent)
+        if not complete:
+            incomplete_reasons.extend(reasons)
+            continue
+        business_rows = tuple(
+            (
+                row.product,
+                row.sales_attr1,
+                row.sales_attr2,
+                row.quantity,
+                row.remark,
+            )
+            for row in candidate_parent.rows
+        )
+        matches[business_rows] = (candidate, candidate_parent)
+
+    if not matches:
+        reasons = list(dict.fromkeys(incomplete_reasons)) or ["missing_order_rows"]
+        return empty_result(
+            reasons[0],
+            reasons,
+        )
+    if len(matches) > 1:
+        return empty_result("profile_ambiguous")
+
+    profile, parent = next(iter(matches.values()))
     provenance = (
         profile.get("provenance")
         if isinstance(profile.get("provenance"), dict)

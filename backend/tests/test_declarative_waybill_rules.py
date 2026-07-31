@@ -602,7 +602,7 @@ def test_same_fingerprint_text_grammars_coexist_and_match_exactly() -> None:
     )
 
 
-def test_same_fingerprint_structured_grammars_coexist_and_match_exactly() -> None:
+def test_structured_format_reuses_paths_and_fails_closed_on_conflict() -> None:
     _app, rules = load_parser()
     synthesizer = importlib.import_module("service_app.rule_synthesizer")
 
@@ -646,21 +646,23 @@ def test_same_fingerprint_structured_grammars_coexist_and_match_exactly() -> Non
         gold_samples=[],
         negative_samples=[],
     )["rule"]
-    spaced = synthesizer.synthesize_rule(
-        payload=payload("商品  乙。"),
+    second = synthesizer.synthesize_rule(
+        payload=payload("商品乙。"),
         source_component="cainiao-cnprint",
-        corrected_rows=[row("商品 乙。")],
+        corrected_rows=[row("商品乙。")],
         gold_samples=[],
         negative_samples=[],
     )["rule"]
 
-    assert compact["fingerprint"] == spaced["fingerprint"]
-    assert compact["grammar_signature"] != spaced["grammar_signature"]
-    assert rules.validate_format_profiles([compact, spaced]) == []
+    assert compact == second
+    assert "grammar_signature" not in compact
+    assert "parser_policy.format_profiles[1].fingerprint" in (
+        rules.validate_format_profiles([compact, second])
+    )
 
     parent, diagnostic = rules.parse_declarative_payload(
-        payload("商品  丙。"),
-        [compact, spaced],
+        payload("商品丙。"),
+        [compact],
         raw_record_id=1,
         task_id=1,
         source_component="cainiao-cnprint",
@@ -669,11 +671,11 @@ def test_same_fingerprint_structured_grammars_coexist_and_match_exactly() -> Non
         fingerprint_strategy="business_shape_v2",
     )
     assert diagnostic["reason"] == ""
-    assert [item.product for item in parent.rows] == ["商品 丙。"]
+    assert [item.product for item in parent.rows] == ["商品丙。"]
 
-    unknown, diagnostic = rules.parse_declarative_payload(
+    punctuation, diagnostic = rules.parse_declarative_payload(
         payload("商品;丁"),
-        [compact, spaced],
+        [compact],
         raw_record_id=2,
         task_id=1,
         source_component="cainiao-cnprint",
@@ -681,8 +683,8 @@ def test_same_fingerprint_structured_grammars_coexist_and_match_exactly() -> Non
         parent_sequence=2,
         fingerprint_strategy="business_shape_v2",
     )
-    assert unknown.rows == []
-    assert diagnostic["reason"] == "format_profile_missing"
+    assert diagnostic["reason"] == ""
+    assert [item.product for item in punctuation.rows] == ["商品;丁"]
 
     subset = synthesizer.synthesize_rule(
         payload=payload("商品甲"),
@@ -708,11 +710,8 @@ def test_same_fingerprint_structured_grammars_coexist_and_match_exactly() -> Non
         parent_sequence=3,
         fingerprint_strategy="business_shape_v2",
     )
-    assert diagnostic["reason"] == ""
-    assert [
-        (item.product, item.sales_attr1, item.sales_attr2, item.quantity)
-        for item in parent.rows
-    ] == [("商品甲", "5代白金", "45", 1)]
+    assert parent.rows == []
+    assert diagnostic["reason"] == "profile_ambiguous"
 
 
 def test_rule_pack_validation_rejects_regex_script_and_unbounded_paths() -> None:

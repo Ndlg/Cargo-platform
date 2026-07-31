@@ -191,6 +191,7 @@ function reasonLabel(reason: string): string {
     rule_pack_missing: '尚无识别规则',
     format_profile_missing: '陌生面单格式',
     format_profile_incomplete: '规则未完整生成订单行',
+    profile_ambiguous: '多个规则产生冲突结果',
     missing_product: '未读到商品',
     missing_quantity: '未读到数量',
   }

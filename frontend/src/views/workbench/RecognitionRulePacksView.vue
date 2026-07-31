@@ -47,6 +47,11 @@ const selectedProfile = computed(() => (
 const selectedLearningRecord = computed(() => (
   selectedProfile.value ? learningRecordFor(selectedProfile.value) : undefined
 ))
+const capabilityCounts = computed(() => [
+  { label: '结构化字段读取', count: formatProfiles.value.filter((item) => item.strategy === 'structured_items_v1').length },
+  { label: '文本拆分', count: formatProfiles.value.filter((item) => item.strategy === 'text_pipeline_v1').length },
+  { label: '来源字段绑定', count: formatProfiles.value.filter((item) => item.strategy === 'source_projection_v1').length },
+].filter((item) => item.count > 0))
 
 function readableDate(value?: string | null): string {
   if (!value) return '-'
@@ -73,13 +78,42 @@ function profileValidationLabel(profile: RecognitionFormatProfile): string {
   return '规则需要重新校验'
 }
 
-function profileKey(value: { fingerprint: string; grammar_signature?: string }): string {
-  return JSON.stringify([value.fingerprint, value.grammar_signature ?? ''])
+function profileKey(value: {
+  fingerprint: string
+  grammar_signature?: string
+  strategy?: string
+  selected_fields?: string[]
+}): string {
+  return JSON.stringify([
+    value.fingerprint,
+    value.strategy ?? '',
+    value.selected_fields ?? [],
+    value.grammar_signature ?? '',
+  ])
+}
+
+function profileDisplayName(profile: RecognitionFormatProfile): string {
+  if (profile.name) return profile.name
+  const code = profile.fingerprint.match(/^v2:([^:]+):/)?.[1] ?? ''
+  const names: Record<string, string> = {
+    'CN-ITEM-INFO': '菜鸟商品文本型',
+    'CN-PRINT-XML': '菜鸟打印 XML 型',
+    'CN-CUSTOM-CONTENT': '菜鸟自定义内容型',
+    'CN-PACKAGE-ITEMS': '菜鸟包裹明细型',
+    'CLOUD-PRODUCT-INFO': '云打印商品信息型',
+  }
+  return `${names[code] ?? '已学习面单格式'} · ${profileStrategyLabel(profile)}`
 }
 
 function learningRecordFor(profile: RecognitionFormatProfile): RecognitionLearningRecord | undefined {
-  const key = profileKey(profile)
-  return [...learningRecords.value].reverse().find((record) => profileKey(record) === key)
+  const sessionId = profile.provenance?.learning_session_id
+  return [...learningRecords.value].reverse().find((record) => (
+    (sessionId && record.session_id === sessionId)
+    || (
+      record.fingerprint === profile.fingerprint
+      && (record.grammar_signature ?? '') === (profile.grammar_signature ?? '')
+    )
+  ))
 }
 
 function recordValue(value: unknown): Record<string, unknown> {
@@ -476,7 +510,7 @@ onMounted(loadPacks)
               导出
             </el-button>
             <el-button size="small" plain :loading="editingId === row.id" @click="editPackRules(row)">
-              查看/微调规则
+              查看识别能力
             </el-button>
             <el-button
               size="small"
@@ -493,42 +527,57 @@ onMounted(loadPacks)
     </article>
   </section>
 
-  <el-dialog v-model="ruleEditorVisible" title="AI识别规则包" width="min(1280px, 96vw)" top="4vh">
+  <el-dialog v-model="ruleEditorVisible" title="AI识别规则包能力" width="min(1280px, 96vw)" top="4vh">
     <el-alert
       v-if="!formatProfiles.length"
       :closable="false"
-      title="这个规则包还没有可编辑的 AI 子规则"
+      title="这个规则包还没有学习结果"
       description="请先到“AI 面单解析”页面手动确认一种新格式。"
       type="warning"
       show-icon
     />
-    <div v-else class="rule-editor-layout">
-      <aside class="profile-list">
-        <div class="profile-list__heading">
-          <strong>已学习 {{ formatProfiles.length }} 种格式</strong>
-          <small>选择一条查看和微调</small>
+    <template v-else>
+      <div class="capability-overview">
+        <div>
+          <strong>已学习 {{ formatProfiles.length }} 种可复用格式能力</strong>
+          <small>业务解析会自动选择并重放；冲突时失败关闭，不会静默猜测。</small>
         </div>
-        <button
-          v-for="(profile, index) in formatProfiles"
-          :key="profileKey(profile)"
-          type="button"
-          class="profile-list__item"
-          :class="{ active: selectedProfileKey === profileKey(profile) }"
-          @click="selectedProfileKey = profileKey(profile)"
-        >
-          <strong>{{ profile.name || `规则 ${index + 1}` }}</strong>
-          <span>{{ profileStrategyLabel(profile) }}</span>
-          <small>{{ profileValidationLabel(profile) }}</small>
-        </button>
-      </aside>
-      <RecognitionProfileEditor
-        v-if="selectedProfile"
-        :model-value="selectedProfile"
-        :learning-record="selectedLearningRecord"
-        @update:model-value="updateSelectedProfile"
-        @delete="deleteSelectedProfile"
-      />
-    </div>
+        <el-tag v-for="item in capabilityCounts" :key="item.label" effect="plain">
+          {{ item.label }} {{ item.count }}
+        </el-tag>
+      </div>
+      <el-collapse>
+        <el-collapse-item title="高级：查看或修正技术规则">
+          <div class="rule-editor-layout">
+            <aside class="profile-list">
+              <div class="profile-list__heading">
+                <strong>技术规则</strong>
+                <small>通常无需逐条维护</small>
+              </div>
+              <button
+                v-for="profile in formatProfiles"
+                :key="profileKey(profile)"
+                type="button"
+                class="profile-list__item"
+                :class="{ active: selectedProfileKey === profileKey(profile) }"
+                @click="selectedProfileKey = profileKey(profile)"
+              >
+                <strong>{{ profileDisplayName(profile) }}</strong>
+                <span>{{ profileStrategyLabel(profile) }}</span>
+                <small>{{ profileValidationLabel(profile) }}</small>
+              </button>
+            </aside>
+            <RecognitionProfileEditor
+              v-if="selectedProfile"
+              :model-value="selectedProfile"
+              :learning-record="selectedLearningRecord"
+              @update:model-value="updateSelectedProfile"
+              @delete="deleteSelectedProfile"
+            />
+          </div>
+        </el-collapse-item>
+      </el-collapse>
+    </template>
     <template #footer>
       <div class="rule-editor-footer">
         <el-alert v-if="editorError" :closable="false" :title="editorError" type="error" show-icon />
@@ -540,7 +589,7 @@ onMounted(loadPacks)
             :disabled="!formatProfiles.length"
             @click="savePackRules"
           >
-            保存全部子规则
+            保存技术规则
           </el-button>
         </div>
       </div>
@@ -603,6 +652,27 @@ onMounted(loadPacks)
 }
 
 .el-table small {
+  display: block;
+  margin-top: 4px;
+  color: var(--el-text-color-secondary);
+}
+
+.capability-overview {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px;
+  margin-bottom: 12px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+  background: var(--el-fill-color-light);
+}
+
+.capability-overview > div {
+  flex: 1;
+}
+
+.capability-overview small {
   display: block;
   margin-top: 4px;
   color: var(--el-text-color-secondary);

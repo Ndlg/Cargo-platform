@@ -4,6 +4,7 @@ from services.shared.waybill_fingerprint import (
     business_shape_fingerprint,
     fingerprint_catalog,
     fingerprint_for_payload,
+    grammar_signature_for_texts,
     inspect_fingerprint,
     legacy_structural_fingerprint,
 )
@@ -99,6 +100,9 @@ def test_business_text_fingerprint_ignores_repeated_same_shape_lines() -> None:
 
     assert business_shape_fingerprint(single_line, "cainiao-cnprint") == (
         business_shape_fingerprint(repeated_same_shape_lines, "cainiao-cnprint")
+    )
+    assert grammar_signature_for_texts(["商品甲，42"]) == grammar_signature_for_texts(
+        ["商品乙，39", "商品丙，41"]
     )
 
 

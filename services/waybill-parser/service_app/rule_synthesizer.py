@@ -957,12 +957,6 @@ def _replay_rule(
     if rule.get("fingerprint") != evidence["structural_fingerprint"]:
         return 0, []
     if (
-        rule.get("strategy") == "structured_items_v1"
-        and rule.get("grammar_signature")
-        and rule.get("grammar_signature") != evidence["grammar_signature"]
-    ):
-        return 0, []
-    if (
         rule.get("strategy") == "text_pipeline_v1"
         and rule.get("grammar_signature")
         and rule["grammar_signature"] != text_profile_grammar_signature(payload, rule)
@@ -1041,7 +1035,6 @@ def synthesize_rule(
             "replay_report": [],
         }
     if rule["strategy"] == "structured_items_v1":
-        rule["grammar_signature"] = evidence["grammar_signature"]
         if selected_fields is not None:
             rule["selected_fields"] = list(selected_fields)
     elif rule["strategy"] == "text_pipeline_v1":
@@ -1104,18 +1097,14 @@ def synthesize_rule(
         )
         grammar_neighbor = (
             rule.get("strategy")
-            in {"structured_items_v1", "text_pipeline_v1", "source_projection_v1"}
+            in {"text_pipeline_v1", "source_projection_v1"}
             and bool(rule.get("grammar_signature"))
             and rule["fingerprint"] == sample_evidence["structural_fingerprint"]
             and rule["grammar_signature"]
             != (
-                sample_evidence["grammar_signature"]
-                if rule.get("strategy") == "structured_items_v1"
-                else (
-                    text_profile_grammar_signature(sample_payload, rule)
-                    if rule.get("strategy") == "text_pipeline_v1"
-                    else projection_grammar_signature(sample_evidence)
-                )
+                text_profile_grammar_signature(sample_payload, rule)
+                if rule.get("strategy") == "text_pipeline_v1"
+                else projection_grammar_signature(sample_evidence)
             )
         )
         passed = check(

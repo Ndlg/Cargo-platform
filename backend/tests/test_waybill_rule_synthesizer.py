@@ -591,7 +591,7 @@ def test_structured_synthesis_reuses_equivalent_specs_and_collapses_whitespace()
     ) == [row("另一个 商品", "深蓝", "43", 2)]
 
 
-def test_structured_rule_uses_input_grammar_and_ignores_neighbor_gold() -> None:
+def test_structured_rule_reuses_paths_for_different_values_and_gold() -> None:
     current = structured_items(
         {
             "itemName": "5.0秒70",
@@ -616,7 +616,7 @@ def test_structured_rule_uses_input_grammar_and_ignores_neighbor_gold() -> None:
             {
                 "raw_payload": neighbor,
                 "source_component": "cainiao-cnprint",
-                "rows": [row("秒25 阿尔。fa 12025", "白色", "44", 1)],
+                "rows": [row("秒25  阿尔。fa 12025", "白色", "44", 1)],
             }
         ],
         negative_samples=[],
@@ -624,9 +624,11 @@ def test_structured_rule_uses_input_grammar_and_ignores_neighbor_gold() -> None:
 
     assert result["status"] == "compiled"
     assert result["rule"]["strategy"] == "structured_items_v1"
-    assert result["rule"]["grammar_signature"].startswith("grammar-v1:sha256:")
-    assert replay_rule(result["rule"], neighbor) == []
-    assert result["replay_report"][-1]["kind"] == "gold_neighbor"
+    assert "grammar_signature" not in result["rule"]
+    assert replay_rule(result["rule"], neighbor) == [
+        row("秒25  阿尔。fa 12025", "白色", "44", 1)
+    ]
+    assert result["replay_report"][-1]["kind"] == "gold"
 
 
 def test_synthesizer_prefers_direct_structured_paths_and_preserves_duplicates() -> None:
@@ -650,6 +652,30 @@ def test_synthesizer_prefers_direct_structured_paths_and_preserves_duplicates() 
     assert result["status"] == "compiled"
     assert result["rule"]["strategy"] == "structured_items_v1"
     assert replay_rule(result["rule"], payload) == expected
+
+
+def test_structured_format_reuses_one_rule_for_a_different_item_count() -> None:
+    learned = synthesize_rule(
+        payload=structured_items(
+            {"itemName": "商品甲", "skuFullName": "灰黑", "skuSize": "38", "itemNum": 1}
+        ),
+        source_component="cainiao-cnprint",
+        corrected_rows=[row("商品甲", "灰黑", "38", 1)],
+        gold_samples=[],
+        negative_samples=[],
+    )
+
+    assert learned["status"] == "compiled"
+    assert replay_rule(
+        learned["rule"],
+        structured_items(
+            {"itemName": "商品乙", "skuFullName": "雾蓝", "skuSize": "39", "itemNum": 2},
+            {"itemName": "商品丙", "skuFullName": "白色", "skuSize": "40", "itemNum": 3},
+        ),
+    ) == [
+        row("商品乙", "雾蓝", "39", 2),
+        row("商品丙", "白色", "40", 3),
+    ]
 
 
 def test_synthesizer_refuses_rule_that_breaks_prior_gold() -> None:

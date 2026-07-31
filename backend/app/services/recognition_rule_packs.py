@@ -185,6 +185,20 @@ def save_ai_rule_profile(
     if not fingerprint:
         raise ValueError("AI candidate rule requires a format fingerprint.")
     grammar_signature = text_value(profile.get("grammar_signature"))
+    strategy = text_value(profile.get("strategy"))
+    selected_fields = tuple(profile.get("selected_fields") or ())
+
+    def same_profile_slot(item: dict[str, Any]) -> bool:
+        if (
+            text_value(item.get("fingerprint")) != fingerprint
+            or text_value(item.get("strategy")) != strategy
+            or tuple(item.get("selected_fields") or ()) != selected_fields
+        ):
+            return False
+        return (
+            strategy == "structured_items_v1"
+            or text_value(item.get("grammar_signature")) == grammar_signature
+        )
 
     pack = db.scalar(
         select(RecognitionRulePack).where(
@@ -202,10 +216,7 @@ def save_ai_rule_profile(
         deepcopy(item)
         for item in list_value(parser_policy.get("format_profiles"))
         if isinstance(item, dict)
-        and (
-            text_value(item.get("fingerprint")) != fingerprint
-            or text_value(item.get("grammar_signature")) != grammar_signature
-        )
+        and not same_profile_slot(item)
     ]
     profiles.append(
         {

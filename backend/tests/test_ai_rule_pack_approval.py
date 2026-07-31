@@ -284,7 +284,7 @@ def test_ai_approval_replaces_existing_fingerprint_but_keeps_learning_history() 
     ] == ["session-1", "session-2"]
 
 
-def test_ai_approval_keeps_other_grammar_profile_for_same_fingerprint() -> None:
+def test_ai_approval_collapses_structured_grammar_variants_into_one_format() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
 
@@ -315,10 +315,10 @@ def test_ai_approval_keeps_other_grammar_profile_for_same_fingerprint() -> None:
         db.commit()
         payload = pack.payload
 
-    assert {
+    assert [
         profile["grammar_signature"]
         for profile in payload["parser_policy"]["format_profiles"]
-    } == {"grammar-a", "grammar-b"}
+    ] == ["grammar-b"]
     assert payload["parser_policy"]["fingerprint_strategy"] == "business_shape_v2"
 
 

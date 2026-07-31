@@ -78,6 +78,12 @@ const parserIssueDefinitions: Record<string, ParserIssueDefinition> = {
     actionLabel: '学习这种面单格式',
     action: 'ai-recognition',
   },
+  profile_ambiguous: {
+    label: '多个已学习规则产生不同结果，需要重新学习这种格式',
+    type: 'warning',
+    actionLabel: '重新学习这种面单格式',
+    action: 'ai-recognition',
+  },
   format_profile_incomplete: {
     label: '现有识别规则未能生成完整商品行',
     type: 'warning',

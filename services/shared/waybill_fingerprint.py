@@ -266,8 +266,9 @@ def _text_grammar(text: str) -> str:
 
 
 def grammar_signature_for_texts(texts: Iterable[str]) -> str:
+    grammars = list(dict.fromkeys(_text_grammar(text) for text in texts))
     encoded = json.dumps(
-        [_text_grammar(text) for text in texts],
+        grammars,
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode("utf-8")

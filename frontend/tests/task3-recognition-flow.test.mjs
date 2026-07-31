@@ -23,6 +23,9 @@ const unsupportedFingerprint = parserIssueFor('fingerprint_adapter_required')
 assert.equal(unsupportedFingerprint?.action, 'refresh')
 assert.equal(parserIssueRoute(unsupportedFingerprint?.action ?? 'refresh'), null)
 
+const ambiguousProfile = parserIssueFor('profile_ambiguous')
+assert.equal(ambiguousProfile?.action, 'ai-recognition')
+
 assert.equal(parserIssueFor('parsed'), null)
 
 const unknownFailure = parserIssueFor('new_parser_failure', '', true)
