@@ -924,6 +924,25 @@ def test_text_rule_rejects_a_field_role_swap_with_the_same_delimiters() -> None:
     assert replay_rule(result["rule"], item_info("42，39 范74*2")) == []
 
 
+def test_text_rule_rejects_two_fields_with_the_same_restrictive_role() -> None:
+    result = synthesize_rule(
+        payload=item_info("42，39 范74*1"),
+        source_component="cainiao-cnprint",
+        corrected_rows=[row("范74", "42", "39", 1)],
+        gold_samples=[
+            {
+                "raw_payload": item_info("39，42 范75*2"),
+                "source_component": "cainiao-cnprint",
+                "rows": [row("范75", "39", "42", 2)],
+            }
+        ],
+        negative_samples=[],
+    )
+
+    assert result["status"] == "compiler_capability_missing"
+    assert result["rule"] is None
+
+
 def test_text_rule_skips_a_prior_gold_layout_that_it_cannot_complete() -> None:
     result = synthesize_rule(
         payload=item_info("灰黑，38 商品名称*1"),

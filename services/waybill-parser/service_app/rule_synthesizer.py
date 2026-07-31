@@ -476,7 +476,7 @@ def _compile_text_rule(
     return None
 
 
-def _field_roles(corrected_rows: list[dict[str, Any]]) -> dict[str, str]:
+def _field_roles(corrected_rows: list[dict[str, Any]]) -> dict[str, str] | None:
     roles: dict[str, str] = {}
     for field in ("product", "sales_attr1", "sales_attr2", "remark"):
         values = [row[field] for row in corrected_rows if str(row[field]).strip()]
@@ -486,7 +486,7 @@ def _field_roles(corrected_rows: list[dict[str, Any]]) -> dict[str, str]:
             ):
                 roles[field] = token_class
                 break
-    return roles
+    return roles if len(roles) == len(set(roles.values())) else None
 
 
 def _projection_candidates(
@@ -1057,7 +1057,14 @@ def synthesize_rule(
             rule["selected_fields"] = list(selected_fields)
     elif rule["strategy"] == "text_pipeline_v1":
         rule["grammar_signature"] = text_profile_grammar_signature(payload, rule)
-        if field_roles := _field_roles(expected):
+        field_roles = _field_roles(expected)
+        if field_roles is None:
+            return {
+                "status": "compiler_capability_missing",
+                "rule": None,
+                "replay_report": [],
+            }
+        if field_roles:
             rule["field_roles"] = field_roles
     rule = {**rule, "fingerprint": evidence["structural_fingerprint"]}
     if (
