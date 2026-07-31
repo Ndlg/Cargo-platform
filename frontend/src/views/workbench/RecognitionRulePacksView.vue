@@ -63,6 +63,16 @@ function profileStrategyLabel(profile: RecognitionFormatProfile): string {
   return '文本拆分'
 }
 
+function profileValidationLabel(profile: RecognitionFormatProfile): string {
+  const result = learningRecordFor(profile)?.compiler_result
+  if (!result) return '尚无学习校验'
+  const replay = result.replay_report ?? []
+  if (result.status === 'compiled' && replay.length && replay.every((item) => item.passed === true)) {
+    return '规则与样本回放已通过'
+  }
+  return '规则需要重新校验'
+}
+
 function profileKey(value: { fingerprint: string; grammar_signature?: string }): string {
   return JSON.stringify([value.fingerprint, value.grammar_signature ?? ''])
 }
@@ -508,7 +518,7 @@ onMounted(loadPacks)
         >
           <strong>{{ profile.name || `规则 ${index + 1}` }}</strong>
           <span>{{ profileStrategyLabel(profile) }}</span>
-          <small>{{ learningRecordFor(profile)?.source_component || '导入规则' }}</small>
+          <small>{{ profileValidationLabel(profile) }}</small>
         </button>
       </aside>
       <RecognitionProfileEditor

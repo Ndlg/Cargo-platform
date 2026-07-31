@@ -13,6 +13,11 @@ import {
   type OrderRowDraftsResponse,
 } from '../../services/api'
 import { useSessionStore } from '../../stores/session'
+import {
+  parserIssueFor,
+  parserIssueRoute,
+  type ParserIssueDefinition,
+} from './parserIssues'
 
 type RowStatusFilter = 'all' | 'draft' | 'special' | 'needs_review'
 
@@ -36,33 +41,15 @@ const sortedTasks = computed(() => [...captureTasks.value].sort((a, b) => b.id -
 const selectedTask = computed(() => sortedTasks.value.find((task) => task.id === selectedTaskId.value) ?? null)
 const allRows = computed(() => drafts.value?.rows ?? [])
 const reviewRows = computed(() => allRows.value.filter((row) => row.status === 'needs_review'))
-const rulePackMissing = computed(() => drafts.value?.status === 'rule_pack_missing')
-const aiStatus = computed(() =>
-  ['ai_rule_pending', 'ai_unavailable', 'ai_parse_failed'].includes(drafts.value?.status ?? '')
-    ? drafts.value?.status ?? ''
-    : '',
-)
-const fingerprintStatus = computed(() =>
-  ['fingerprint_adapter_required', 'fingerprint_field_selection_required'].includes(drafts.value?.status ?? '')
-    ? drafts.value?.status ?? ''
-    : '',
-)
-const fingerprintStatusText = computed(() => (
-  fingerprintStatus.value === 'fingerprint_adapter_required'
-    ? '当前面单格式尚未接入字段适配器，系统没有把未知内容传给 AI。'
-    : '当前面单格式尚未选择提供给 AI 的字段，请先在面单指纹配置中选择字段。'
-))
+const parserStatus = computed(() => drafts.value?.status ?? '')
 const aiSessionUrl = computed(() => {
   const sessionId = drafts.value?.ai_sessions?.find((item) => item.session_id)?.session_id ?? ''
   return /^[A-Za-z0-9_-]{1,128}$/.test(sessionId)
     ? `/ai-recognition-console.html?session=${encodeURIComponent(sessionId)}`
     : ''
 })
-const aiStatusText = computed(() => {
-  if (aiStatus.value === 'ai_rule_pending') return '新格式待管理员确认'
-  if (aiStatus.value === 'ai_unavailable') return 'AI 识别服务不可用，已固化规则仍可继续使用'
-  if (aiStatus.value === 'ai_parse_failed') return 'AI 未能生成完整候选规则'
-  return ''
+const parserIssue = computed<ParserIssueDefinition | null>(() => {
+  return parserIssueFor(parserStatus.value, drafts.value?.message)
 })
 const activeRulePackName = computed(() => drafts.value?.recognition_rule_pack?.name ?? '')
 const parentCount = computed(() => drafts.value?.summary.parent_waybill_count ?? waybillCountForTask(selectedTask.value))
@@ -261,6 +248,21 @@ async function load() {
   }
 }
 
+function handleParserIssueAction() {
+  const issue = parserIssue.value
+  if (!issue) return
+  if (issue.action === 'refresh') {
+    void load()
+    return
+  }
+  const path = parserIssueRoute(issue.action)
+  if (!path) return
+  void router.push({
+    path,
+    query: selectedTaskId.value ? { task_id: String(selectedTaskId.value) } : {},
+  })
+}
+
 async function downloadSelectedTaskDocument(kind: 'raw' | 'standard') {
   if (!selectedTaskId.value) {
     error.value = '请先选择采集轮次。'
@@ -347,35 +349,26 @@ onMounted(load)
 
   <el-alert v-if="error" :closable="false" :title="error" type="error" />
   <el-alert
-    v-else-if="fingerprintStatus"
+    v-else-if="parserIssue"
     :closable="false"
-    :title="fingerprintStatusText"
-    type="warning"
-    show-icon
-  />
-  <el-alert
-    v-else-if="aiStatus"
-    :closable="false"
-    :title="aiStatusText"
-    :type="aiStatus === 'ai_rule_pending' ? 'warning' : 'error'"
+    :title="parserIssue.label"
+    :type="parserIssue.type"
     show-icon
   >
     <template #default>
       当前结果不会进入商品匹配或正常导出。
-      <el-link v-if="aiSessionUrl" :href="aiSessionUrl" target="_blank" rel="noopener noreferrer" type="primary">
+      <el-link
+        v-if="aiSessionUrl && parserIssue.action === 'ai-recognition'"
+        :href="aiSessionUrl"
+        target="_blank"
+        rel="noopener noreferrer"
+        type="primary"
+      >
         查看 AI 识别会话
       </el-link>
-    </template>
-  </el-alert>
-  <el-alert
-    v-else-if="rulePackMissing"
-    :closable="false"
-    title="当前工作空间没有启用识别规则包"
-    type="warning"
-    show-icon
-  >
-    <template #default>
-      系统不会使用内置默认规则识别面单。请先导入并启用当前商品场景的规则包，再刷新面单解析。
+      <el-link v-else type="primary" @click="handleParserIssueAction">
+        {{ parserIssue.actionLabel }}
+      </el-link>
     </template>
   </el-alert>
   <el-alert

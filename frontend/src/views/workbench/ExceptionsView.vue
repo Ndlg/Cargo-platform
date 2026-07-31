@@ -13,6 +13,11 @@ import {
   type OrderRowDraftsResponse,
 } from '../../services/api'
 import { useSessionStore } from '../../stores/session'
+import {
+  parserIssueFor,
+  parserIssueRoute,
+  type ParserIssueDefinition,
+} from './parserIssues'
 
 type ExceptionStatus =
   | 'product_unmatched'
@@ -108,36 +113,13 @@ const loading = ref(false)
 const previewLoading = ref(false)
 const error = ref('')
 const statusFilter = ref<'all' | ExceptionStatus>('all')
-const aiStatus = computed(() =>
-  [
-    'ai_rule_pending',
-    'ai_unavailable',
-    'ai_parse_failed',
-    'fingerprint_adapter_required',
-    'fingerprint_field_selection_required',
-  ].includes(orderDrafts.value?.status ?? '')
-    ? orderDrafts.value?.status ?? ''
-    : '',
-)
+const parserStatus = computed(() => orderDrafts.value?.status ?? '')
 const aiSessionUrl = computed(() => {
   const sessionId = orderDrafts.value?.ai_sessions?.find((item) => item.session_id)?.session_id ?? ''
   return /^[A-Za-z0-9_-]{1,128}$/.test(sessionId)
     ? `/ai-recognition-console.html?session=${encodeURIComponent(sessionId)}`
     : ''
 })
-const aiStatusText = computed(() => {
-  if (aiStatus.value === 'ai_rule_pending') return '新格式待管理员确认'
-  if (aiStatus.value === 'ai_unavailable') return 'AI 识别服务不可用，已固化规则仍可继续使用'
-  if (aiStatus.value === 'ai_parse_failed') return 'AI 未能生成完整候选规则'
-  if (aiStatus.value === 'fingerprint_adapter_required') return '当前面单格式尚未接入字段适配器'
-  if (aiStatus.value === 'fingerprint_field_selection_required') return '当前面单格式尚未选择提供给 AI 的字段'
-  return ''
-})
-const aiStatusType = computed(() => (
-  ['ai_rule_pending', 'fingerprint_adapter_required', 'fingerprint_field_selection_required'].includes(aiStatus.value)
-    ? 'warning'
-    : 'error'
-))
 
 const sortedTasks = computed(() => [...captureTasks.value].sort((a, b) => b.id - a.id))
 const selectedTask = computed(
@@ -152,11 +134,18 @@ const recognitionWaybillCount = computed(
   ),
 )
 const parseExceptionCount = computed(() => {
-  if (!aiStatus.value || !orderDrafts.value) return 0
+  if (!orderDrafts.value) return 0
   const resolvedParents = orderDrafts.value.parents.filter((parent) => parent.rows.length).length
   const unresolvedParents = Math.max(0, orderDrafts.value.summary.parent_waybill_count - resolvedParents)
   const representedParents = recognitionRows.value.filter((row) => row.status === 'pending').length
   return Math.max(0, unresolvedParents - representedParents)
+})
+const parseIssue = computed<ParserIssueDefinition | null>(() => {
+  return parserIssueFor(
+    parserStatus.value,
+    orderDrafts.value?.message,
+    parseExceptionCount.value > 0,
+  )
 })
 const exceptionRows = computed(() =>
   recognitionRows.value.filter((row) => row.status !== 'matched' && row.status !== 'special'),
@@ -352,6 +341,21 @@ function goToRepair(row: RecognitionPreviewRow) {
   if (target) void router.push(target)
 }
 
+function handleParseIssueAction() {
+  const issue = parseIssue.value
+  if (!issue) return
+  if (issue.action === 'refresh') {
+    void loadRecognitionPreview()
+    return
+  }
+  const path = parserIssueRoute(issue.action)
+  if (!path) return
+  void router.push({
+    path,
+    query: selectedTaskId.value ? { task_id: String(selectedTaskId.value) } : {},
+  })
+}
+
 async function loadRecognitionPreview() {
   if (!selectedTaskId.value) {
     recognitionPreview.value = null
@@ -446,23 +450,25 @@ onMounted(load)
 
   <el-alert v-if="error" :closable="false" :title="error" type="error" />
   <el-alert
-    v-else-if="aiStatus"
+    v-else-if="parseIssue"
     :closable="false"
-    :title="aiStatusText"
-    :type="aiStatusType"
+    :title="parseIssue.label"
+    :type="parseIssue.type"
     show-icon
   >
     <template #default>
       当前面单保留为明确异常，不会进入正常导出。
-      <el-link v-if="aiSessionUrl" :href="aiSessionUrl" target="_blank" rel="noopener noreferrer" type="primary">
+      <el-link
+        v-if="aiSessionUrl && parseIssue.action === 'ai-recognition'"
+        :href="aiSessionUrl"
+        target="_blank"
+        rel="noopener noreferrer"
+        type="primary"
+      >
         查看 AI 识别会话
       </el-link>
-      <el-link
-        v-else-if="aiStatus === 'fingerprint_field_selection_required'"
-        type="primary"
-        @click="router.push('/admin/fingerprint-settings')"
-      >
-        打开面单指纹配置
+      <el-link v-else type="primary" @click="handleParseIssueAction">
+        {{ parseIssue.actionLabel }}
       </el-link>
     </template>
   </el-alert>
@@ -535,21 +541,23 @@ onMounted(load)
     <el-alert
       v-if="showParseException"
       :closable="false"
-      :title="`${parseExceptionCount} 张面单：${aiStatusText}`"
-      :type="aiStatusType"
+      :title="`${parseExceptionCount} 张面单：${parseIssue?.label || '解析未生成商品行'}`"
+      :type="parseIssue?.type || 'warning'"
       show-icon
     >
       <template #default>
         解析未生成订单行，已保留为异常，不会进入正常导出。
-        <el-link v-if="aiSessionUrl" :href="aiSessionUrl" target="_blank" rel="noopener noreferrer" type="primary">
+        <el-link
+          v-if="aiSessionUrl && parseIssue?.action === 'ai-recognition'"
+          :href="aiSessionUrl"
+          target="_blank"
+          rel="noopener noreferrer"
+          type="primary"
+        >
           查看 AI 识别会话
         </el-link>
-        <el-link
-          v-else-if="aiStatus === 'fingerprint_field_selection_required'"
-          type="primary"
-          @click="router.push('/admin/fingerprint-settings')"
-        >
-          打开面单指纹配置
+        <el-link v-else-if="parseIssue" type="primary" @click="handleParseIssueAction">
+          {{ parseIssue.actionLabel }}
         </el-link>
       </template>
     </el-alert>

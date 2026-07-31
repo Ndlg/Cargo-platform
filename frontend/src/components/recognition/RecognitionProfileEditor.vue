@@ -165,18 +165,19 @@ function sampleText(): string {
           <el-table-column prop="remark" label="备注" min-width="140" />
         </el-table>
       </section>
-      <section v-if="learningRecord?.sample_payload">
-        <h4>确认时的脱敏字段样本</h4>
-        <pre>{{ sampleText() }}</pre>
-      </section>
     </div>
 
     <el-collapse v-model="openSections" class="technical-collapse">
       <el-collapse-item name="technical" title="高级：查看技术路径和处理步骤">
         <p class="technical-meta">
           格式指纹：{{ modelValue.fingerprint }}<br />
-          语法签名：{{ modelValue.grammar_signature || '未绑定' }}
+          语法签名：{{ modelValue.grammar_signature || '未绑定' }}<br />
+          技术来源：{{ learningRecord?.source_component || '导入规则' }}
         </p>
+        <section v-if="learningRecord?.sample_payload" class="technical-sample">
+          <h4>确认时的脱敏字段样本</h4>
+          <pre>{{ sampleText() }}</pre>
+        </section>
         <el-form label-position="top">
       <div class="two-column">
         <el-form-item label="规则名称">
@@ -402,6 +403,10 @@ function sampleText(): string {
   color: var(--el-text-color-secondary);
   font-size: 12px;
   word-break: break-all;
+}
+
+.technical-sample {
+  margin-bottom: 18px;
 }
 
 .learning-grid h4 {
