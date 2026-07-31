@@ -718,6 +718,29 @@ def text_parent(
     )
 
 
+def text_field_roles_match(
+    parent: ParentWaybillDraft,
+    field_roles: dict[str, str],
+) -> bool:
+    role_classes = set(field_roles.values())
+    unassigned_fields = (
+        ROW_FIELDS - {"image_match_text", "quantity"} - field_roles.keys()
+    )
+    for row in parent.rows:
+        if any(
+            not value_matches_token_class(getattr(row, field), token_class)
+            for field, token_class in field_roles.items()
+        ):
+            return False
+        if any(
+            value_matches_token_class(getattr(row, field), token_class)
+            for field in unassigned_fields
+            for token_class in role_classes
+        ):
+            return False
+    return True
+
+
 def projection_source_path(source_path: str) -> str:
     xml_text = re.search(r"(\.text\[\d+\])$", source_path)
     suffix = xml_text.group(1) if xml_text else ""
@@ -906,14 +929,7 @@ def parse_with_format_profile(
         return structured_parent(payload, profile, **kwargs)
     if profile["strategy"] == "text_pipeline_v1":
         parent = text_parent(payload, profile, **kwargs)
-        if any(
-            not value_matches_token_class(
-                getattr(row, field),
-                token_class,
-            )
-            for row in parent.rows
-            for field, token_class in profile.get("field_roles", {}).items()
-        ):
+        if not text_field_roles_match(parent, profile.get("field_roles", {})):
             return replace(parent, child_count=0, rows=[])
         return parent
     return source_projection_parent(payload, profile, **kwargs)

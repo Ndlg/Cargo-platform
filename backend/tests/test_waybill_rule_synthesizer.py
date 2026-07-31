@@ -921,6 +921,7 @@ def test_text_rule_rejects_a_field_role_swap_with_the_same_delimiters() -> None:
         result["rule"],
         item_info("42（标准），黑色 范74*2"),
     ) == []
+    assert replay_rule(result["rule"], item_info("42，39 范74*2")) == []
 
 
 def test_text_rule_skips_a_prior_gold_layout_that_it_cannot_complete() -> None:
