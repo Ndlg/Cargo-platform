@@ -900,6 +900,29 @@ def test_text_rule_replays_integer_decimal_and_product_changes_as_gold() -> None
     }
 
 
+def test_text_rule_rejects_a_field_role_swap_with_the_same_delimiters() -> None:
+    result = synthesize_rule(
+        payload=item_info("灰黑，38 范74*1"),
+        source_component="cainiao-cnprint",
+        corrected_rows=[row("范74", "灰黑", "38", 1)],
+        gold_samples=[],
+        negative_samples=[],
+    )
+
+    assert result["status"] == "compiled"
+    assert result["rule"]["field_roles"] == {
+        "sales_attr2": "shoe_size_like_numeric_segment"
+    }
+    assert replay_rule(
+        result["rule"],
+        item_info("蓝色，40.5 范75-新款*2"),
+    ) == [row("范75-新款", "蓝色", "40.5", 2)]
+    assert replay_rule(
+        result["rule"],
+        item_info("42（标准），黑色 范74*2"),
+    ) == []
+
+
 def test_text_rule_skips_a_prior_gold_layout_that_it_cannot_complete() -> None:
     result = synthesize_rule(
         payload=item_info("灰黑，38 商品名称*1"),

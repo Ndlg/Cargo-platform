@@ -28,6 +28,7 @@ _NUMBER_CAPTURE_RE = re.compile(
     r"(?<![0-9０-９])([0-9０-９]{2}(?:[.．][0-9０-９])?)(?![0-9０-９])"
 )
 _WRAPPER_ARRAY_KEYS = {"documents", "contents"}
+FIELD_ROLE_TOKEN_CLASSES = {"shoe_size_like_numeric_segment"}
 
 
 @dataclass(frozen=True)
@@ -114,6 +115,13 @@ def _shoe_size_ranges(text: str) -> list[tuple[int, int]]:
         for match in _NUMBER_CAPTURE_RE.finditer(text)
         if 25 <= float(unicodedata.normalize("NFKC", match.group(1))) <= 59
     ]
+
+
+def value_matches_token_class(value: Any, token_class: str) -> bool:
+    text = str(value).strip()
+    if token_class == "shoe_size_like_numeric_segment":
+        return (0, len(text)) in _shoe_size_ranges(text)
+    return False
 
 
 def _quantity_syntax_ranges(text: str) -> list[tuple[int, int]]:

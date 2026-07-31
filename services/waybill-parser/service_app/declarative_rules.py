@@ -15,7 +15,11 @@ from service_app.douyin_product_info import (
     quantity_from_text,
     strip_trailing_quantity_text,
 )
-from service_app.evidence import build_evidence
+from service_app.evidence import (
+    FIELD_ROLE_TOKEN_CLASSES,
+    build_evidence,
+    value_matches_token_class,
+)
 from service_app.order_row_engine import (
     OrderRowDraft,
     ParentWaybillDraft,
@@ -60,6 +64,7 @@ TEXT_PROFILE_KEYS = {
     "text_path",
     "text_selector",
     "grammar_signature",
+    "field_roles",
     "item_split",
     "steps",
     "defaults",
@@ -296,6 +301,18 @@ def validate_text_profile(profile: dict[str, Any], prefix: str) -> list[str]:
         or not GRAMMAR_SIGNATURE_PATTERN.fullmatch(grammar_signature)
     ):
         errors.append(f"{prefix}.grammar_signature")
+    field_roles = profile.get("field_roles")
+    if field_roles is not None and (
+        not isinstance(field_roles, dict)
+        or not field_roles
+        or any(
+            field not in ROW_FIELDS - {"image_match_text", "quantity"}
+            or not isinstance(token_class, str)
+            or token_class not in FIELD_ROLE_TOKEN_CLASSES
+            for field, token_class in field_roles.items()
+        )
+    ):
+        errors.append(f"{prefix}.field_roles")
     item_split = profile.get("item_split")
     if item_split is not None and (
         not isinstance(item_split, str) or not item_split or len(item_split) > 64
@@ -888,7 +905,17 @@ def parse_with_format_profile(
     if profile["strategy"] == "structured_items_v1":
         return structured_parent(payload, profile, **kwargs)
     if profile["strategy"] == "text_pipeline_v1":
-        return text_parent(payload, profile, **kwargs)
+        parent = text_parent(payload, profile, **kwargs)
+        if any(
+            not value_matches_token_class(
+                getattr(row, field),
+                token_class,
+            )
+            for row in parent.rows
+            for field, token_class in profile.get("field_roles", {}).items()
+        ):
+            return replace(parent, child_count=0, rows=[])
+        return parent
     return source_projection_parent(payload, profile, **kwargs)
 
 
@@ -926,9 +953,16 @@ def parse_declarative_payload(
         candidate
         for candidate in candidates
         if (
-            candidate.get("strategy")
-            in {"structured_items_v1", "text_pipeline_v1"}
+            candidate.get("strategy") == "structured_items_v1"
             or not candidate.get("grammar_signature")
+            or (
+                candidate.get("strategy") == "text_pipeline_v1"
+                and (
+                    candidate.get("field_roles")
+                    or candidate.get("grammar_signature")
+                    == text_profile_grammar_signature(payload, candidate)
+                )
+            )
             or (
                 candidate.get("strategy") == "source_projection_v1"
                 and candidate.get("grammar_signature")

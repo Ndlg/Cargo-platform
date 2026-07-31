@@ -589,6 +589,19 @@ def test_text_profiles_execute_across_grammar_and_fail_closed_on_conflict() -> N
         for item in parent.rows
     ] == [("商品-丙", "绿色", "40.5", 3)]
 
+    swapped, diagnostic = rules.parse_declarative_payload(
+        item_info("42（标准），黑色 商品丙*3"),
+        [comma],
+        raw_record_id=5,
+        task_id=1,
+        source_component="cainiao-cnprint",
+        source_index="5",
+        parent_sequence=5,
+        fingerprint_strategy="business_shape_v2",
+    )
+    assert swapped.rows == []
+    assert diagnostic["reason"] == "missing_order_rows"
+
     second_layout, diagnostic = rules.parse_declarative_payload(
         item_info("绿色;40;商品丙*3"),
         [comma, semicolon],

@@ -12,7 +12,11 @@ from service_app.declarative_rules import (
     text_profile_grammar_signature,
     validate_format_profiles,
 )
-from service_app.evidence import build_evidence
+from service_app.evidence import (
+    FIELD_ROLE_TOKEN_CLASSES,
+    build_evidence,
+    value_matches_token_class,
+)
 from service_app.order_row_engine import values_at_structured_path
 
 
@@ -470,6 +474,19 @@ def _compile_text_rule(
             if rules[0] and all(rule == rules[0] for rule in rules[1:]):
                 return {**rules[0], "item_split": separator}
     return None
+
+
+def _field_roles(corrected_rows: list[dict[str, Any]]) -> dict[str, str]:
+    roles: dict[str, str] = {}
+    for field in ("product", "sales_attr1", "sales_attr2", "remark"):
+        values = [row[field] for row in corrected_rows if str(row[field]).strip()]
+        for token_class in FIELD_ROLE_TOKEN_CLASSES:
+            if values and all(
+                value_matches_token_class(value, token_class) for value in values
+            ):
+                roles[field] = token_class
+                break
+    return roles
 
 
 def _projection_candidates(
@@ -961,6 +978,13 @@ def _replay_rule(
         and rule.get("grammar_signature") != projection_grammar_signature(evidence)
     ):
         return 0, []
+    if (
+        rule.get("strategy") == "text_pipeline_v1"
+        and rule.get("grammar_signature")
+        and not rule.get("field_roles")
+        and rule.get("grammar_signature") != text_profile_grammar_signature(payload, rule)
+    ):
+        return 0, []
     parent = parse_with_format_profile(
         payload,
         rule,
@@ -1033,6 +1057,8 @@ def synthesize_rule(
             rule["selected_fields"] = list(selected_fields)
     elif rule["strategy"] == "text_pipeline_v1":
         rule["grammar_signature"] = text_profile_grammar_signature(payload, rule)
+        if field_roles := _field_roles(expected):
+            rule["field_roles"] = field_roles
     rule = {**rule, "fingerprint": evidence["structural_fingerprint"]}
     if (
         _rule_operations(rule) - ALLOWED_OPERATIONS
