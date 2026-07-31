@@ -4,8 +4,11 @@ from contextlib import contextmanager
 from hashlib import sha256
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
 from pathlib import Path
+import shutil
 import sqlite3
+import subprocess
 import sys
 from threading import Thread
 from typing import Iterator
@@ -15,6 +18,8 @@ import pytest
 import scripts.ai_validation_dataset as validation_dataset
 from scripts.ai_validation_dataset import (
     TRUE_ZERO_FINGERPRINT_FIELDS,
+    TRUE_ZERO_TASK_IDS,
+    asset_manifest,
     build_cold_start_database,
     export_answer_set,
     export_gold_rows,
@@ -22,7 +27,12 @@ from scripts.ai_validation_dataset import (
 )
 
 
-def create_source_database(path: Path, *, with_unknown_table: bool = False) -> None:
+def create_source_database(
+    path: Path,
+    *,
+    with_unknown_table: bool = False,
+    with_true_zero_records: bool = False,
+) -> None:
     with sqlite3.connect(path) as db:
         db.executescript(
             """
@@ -129,7 +139,7 @@ def create_source_database(path: Path, *, with_unknown_table: bool = False) -> N
         )
         db.executemany(
             "INSERT INTO capture_tasks(id, workspace_id, status, is_deleted) VALUES (?, 1, 'completed', 0)",
-            [(11,), (12,)],
+            [(11,), (12,), (64,), (65,), (66,)],
         )
         db.executemany(
             """
@@ -145,6 +155,23 @@ def create_source_database(path: Path, *, with_unknown_table: bool = False) -> N
                 (102, 12, "2", '{"task":{"documents":[{"contents":[{"data":{"商品":"秒45"}}]}]}}'),
             ],
         )
+        if with_true_zero_records:
+            db.executemany(
+                """
+                INSERT INTO raw_capture_records(
+                    id, workspace_id, task_id, source_component, source_index,
+                    raw_payload, source_columns, parsed_payload, standard_detail_id,
+                    waybill_mode, archived_at, archived_by, status, is_deleted
+                ) VALUES (?, 1, ?, 'cainiao-cnprint', ?, ?, '{}',
+                          '{"product":"old"}', 99, 'old-mode', 'old-archive', 7,
+                          'parsed', 0)
+                """,
+                [
+                    (6400, 64, "1", '{"task":{"documents":[{"id":64}]}}'),
+                    (6500, 65, "1", '{"task":{"documents":[{"id":65}]}}'),
+                    (6600, 66, "1", '{"task":{"documents":[{"id":66}]}}'),
+                ],
+            )
         db.execute("INSERT INTO stalls VALUES (1, '至尚')")
         db.execute("INSERT INTO products VALUES (1, '范74')")
         db.execute("INSERT INTO product_skus VALUES (1, 1, '45')")
@@ -190,14 +217,63 @@ def raw_payload_digest(path: Path) -> str:
     return sha256(json.dumps(rows, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
+def synthetic_release_contract(path: Path) -> tuple[dict[str, int], str]:
+    with sqlite3.connect(path) as db:
+        counts = {
+            table: db.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+            for table in (
+                "products",
+                "product_skus",
+                "image_assets",
+                "stalls",
+                "product_matching_rules",
+            )
+        }
+        rows = db.execute(
+            """
+            SELECT id, raw_payload, source_columns
+            FROM raw_capture_records
+            WHERE task_id IN (64, 65, 66)
+            ORDER BY id
+            """
+        ).fetchall()
+    counts.update(
+        {
+            "capture_tasks": 3,
+            "raw_capture_records": len(rows),
+            "recognition_rule_packs": 0,
+            "recognition_rule_pack_revisions": 0,
+            "tenant_fingerprint_configs": 5,
+        }
+    )
+    return (
+        counts,
+        sha256(json.dumps(rows, ensure_ascii=False).encode("utf-8")).hexdigest(),
+    )
+
+
+def build_test_cold_start_database(
+    source: Path,
+    destination: Path,
+) -> dict[str, object]:
+    counts, payload_sha = synthetic_release_contract(source)
+    return build_cold_start_database(
+        source,
+        destination,
+        task_ids=list(TRUE_ZERO_TASK_IDS),
+        _expected_counts=counts,
+        _expected_raw_payload_sha256=payload_sha,
+    )
+
+
 def test_build_cold_start_database_preserves_inputs_and_scrubs_results(tmp_path: Path) -> None:
     source = tmp_path / "source.db"
     destination = tmp_path / "cold.db"
-    create_source_database(source)
+    create_source_database(source, with_true_zero_records=True)
     source_hash = sha256_file(source)
-    payload_hash = raw_payload_digest(source)
+    _counts, payload_hash = synthetic_release_contract(source)
 
-    manifest = build_cold_start_database(source, destination)
+    manifest = build_test_cold_start_database(source, destination)
 
     assert sha256_file(source) == source_hash
     assert raw_payload_digest(destination) == payload_hash
@@ -217,7 +293,7 @@ def test_build_cold_start_database_preserves_inputs_and_scrubs_results(tmp_path:
         assert db.execute("SELECT COUNT(*) FROM product_skus").fetchone()[0] == 1
         assert db.execute("SELECT COUNT(*) FROM image_assets").fetchone()[0] == 1
         assert db.execute("SELECT COUNT(*) FROM product_matching_rules").fetchone()[0] == 1
-        assert db.execute("SELECT COUNT(*) FROM raw_capture_records").fetchone()[0] == 2
+        assert db.execute("SELECT COUNT(*) FROM raw_capture_records").fetchone()[0] == 3
         assert db.execute("SELECT COUNT(*) FROM recognition_rule_packs").fetchone()[0] == 0
         assert db.execute("SELECT COUNT(*) FROM standard_details").fetchone()[0] == 0
         assert db.execute("SELECT COUNT(*) FROM export_records").fetchone()[0] == 0
@@ -239,6 +315,7 @@ def test_build_cold_start_database_preserves_inputs_and_scrubs_results(tmp_path:
             """
         ).fetchall()
         assert derived == [
+            ("pending", None, None, None, None, None),
             ("pending", None, None, None, None, None),
             ("pending", None, None, None, None, None),
         ]
@@ -264,7 +341,7 @@ def test_build_cold_start_database_keeps_only_selected_completed_tasks(
     with sqlite3.connect(source) as db:
         db.executemany(
             "INSERT INTO capture_tasks(id, workspace_id, status, is_deleted) VALUES (?, 1, ?, 0)",
-            [(63, "running"), (64, "completed"), (65, "completed"), (66, "completed"), (67, "completed")],
+            [(63, "running"), (67, "completed")],
         )
         db.executemany(
             "INSERT INTO capture_batches(id, task_id) VALUES (?, ?)",
@@ -290,7 +367,7 @@ def test_build_cold_start_database_keeps_only_selected_completed_tasks(
         )
         db.commit()
 
-    manifest = build_cold_start_database(source, destination, task_ids=[66, 64, 65, 64])
+    manifest = build_test_cold_start_database(source, destination)
 
     assert manifest["selected_task_ids"] == [64, 65, 66]
     with sqlite3.connect(destination) as db:
@@ -326,13 +403,11 @@ def test_build_cold_start_database_rejects_noncompleted_selected_task(tmp_path: 
     destination = tmp_path / "cold.db"
     create_source_database(source)
     with sqlite3.connect(source) as db:
-        db.execute(
-            "INSERT INTO capture_tasks(id, workspace_id, status, is_deleted) VALUES (63, 1, 'running', 0)"
-        )
+        db.execute("UPDATE capture_tasks SET status = 'running' WHERE id = 66")
         db.commit()
 
     with pytest.raises(ValueError, match="not completed"):
-        build_cold_start_database(source, destination, task_ids=[63])
+        build_test_cold_start_database(source, destination)
 
     assert not destination.exists()
 
@@ -343,7 +418,7 @@ def test_build_cold_start_database_rejects_unknown_nonempty_table(tmp_path: Path
     create_source_database(source, with_unknown_table=True)
 
     with pytest.raises(ValueError, match="future_derived_results"):
-        build_cold_start_database(source, destination)
+        build_test_cold_start_database(source, destination)
 
     assert not destination.exists()
 
@@ -355,9 +430,126 @@ def test_build_cold_start_database_never_overwrites_destination(tmp_path: Path) 
     destination.write_bytes(b"keep")
 
     with pytest.raises(FileExistsError):
-        build_cold_start_database(source, destination)
+        build_test_cold_start_database(source, destination)
 
     assert destination.read_bytes() == b"keep"
+
+
+@pytest.mark.parametrize("task_ids", [[64, 65], [64, 65, 66, 66]])
+def test_true_zero_build_rejects_wrong_task_set(
+    tmp_path: Path,
+    task_ids: list[int],
+) -> None:
+    source = tmp_path / "source.db"
+    create_source_database(source)
+
+    with pytest.raises(ValueError, match="64, 65, and 66"):
+        build_cold_start_database(
+            source,
+            tmp_path / "cold.db",
+            task_ids=task_ids,
+        )
+
+
+@pytest.mark.parametrize(
+    ("table", "column"),
+    [
+        ("collectors", "status_payload"),
+        ("raw_capture_records", "archived_by"),
+    ],
+)
+def test_true_zero_build_rejects_missing_scrub_columns(
+    tmp_path: Path,
+    table: str,
+    column: str,
+) -> None:
+    source = tmp_path / "source.db"
+    create_source_database(source)
+    with sqlite3.connect(source) as db:
+        db.execute(f'ALTER TABLE "{table}" DROP COLUMN "{column}"')
+        db.commit()
+
+    with pytest.raises(ValueError, match=column):
+        build_test_cold_start_database(source, tmp_path / "cold.db")
+
+
+@pytest.mark.parametrize("mismatch", ["count", "hash"])
+def test_true_zero_build_rejects_release_count_or_hash_mismatch(
+    tmp_path: Path,
+    mismatch: str,
+) -> None:
+    source = tmp_path / "source.db"
+    destination = tmp_path / "cold.db"
+    create_source_database(source, with_true_zero_records=True)
+    counts, payload_sha = synthetic_release_contract(source)
+    if mismatch == "count":
+        counts["raw_capture_records"] += 1
+    else:
+        payload_sha = "0" * 64
+
+    with pytest.raises(ValueError, match="count mismatch|payload hash mismatch"):
+        build_cold_start_database(
+            source,
+            destination,
+            task_ids=list(TRUE_ZERO_TASK_IDS),
+            _expected_counts=counts,
+            _expected_raw_payload_sha256=payload_sha,
+        )
+
+    assert not destination.exists()
+
+
+def test_asset_manifest_and_volume_verifier_are_deterministic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source.db"
+    cold = tmp_path / "cold.db"
+    assets = tmp_path / "workspaces"
+    create_source_database(source, with_true_zero_records=True)
+    counts, payload_sha = synthetic_release_contract(source)
+    build_test_cold_start_database(source, cold)
+    (assets / "nested").mkdir(parents=True)
+    (assets / "b.txt").write_bytes(b"second")
+    (assets / "nested" / "a.txt").write_bytes(b"first")
+
+    expected_digest = sha256()
+    for relative_path, content in [
+        ("b.txt", b"second"),
+        ("nested/a.txt", b"first"),
+    ]:
+        expected_digest.update(relative_path.encode())
+        expected_digest.update(b"\0")
+        expected_digest.update(sha256(content).digest())
+    expected_assets = {
+        "asset_count": 2,
+        "asset_manifest_sha256": expected_digest.hexdigest(),
+    }
+    assert asset_manifest(assets) == expected_assets
+
+    monkeypatch.setattr(validation_dataset, "TRUE_ZERO_RELEASE_COUNTS", counts)
+    monkeypatch.setattr(
+        validation_dataset,
+        "TRUE_ZERO_RAW_PAYLOAD_SHA256",
+        payload_sha,
+    )
+    monkeypatch.setattr(validation_dataset, "TRUE_ZERO_ASSET_COUNT", 2)
+    monkeypatch.setattr(
+        validation_dataset,
+        "TRUE_ZERO_ASSET_MANIFEST_SHA256",
+        expected_assets["asset_manifest_sha256"],
+    )
+    assert validation_dataset.verify_true_zero_volume(cold, assets)[
+        "asset_manifest_sha256"
+    ] == expected_assets["asset_manifest_sha256"]
+
+    monkeypatch.setattr(
+        validation_dataset,
+        "TRUE_ZERO_ASSET_MANIFEST_SHA256",
+        "0" * 64,
+    )
+    with pytest.raises(ValueError, match="asset manifest mismatch"):
+        validation_dataset.verify_true_zero_volume(cold, assets)
 
 
 def test_true_zero_cli_rejects_parser_and_oracle_options(
@@ -384,6 +576,84 @@ def test_true_zero_cli_rejects_parser_and_oracle_options(
 
     assert error.value.code == 2
     assert not (tmp_path / "cold.db").exists()
+
+
+@pytest.mark.parametrize(
+    ("override", "message"),
+    [
+        (
+            {"VALIDATION_PLATFORM_VOLUME": "cargo-platform-validation-wrong"},
+            "candidate platform",
+        ),
+        (
+            {
+                "VALIDATION_REDIS_VOLUME":
+                    "cargo-platform-validation-zero-platform-candidate"
+            },
+            "six distinct volumes",
+        ),
+        (
+            {
+                "ROLLBACK_REDIS_VOLUME":
+                    "cargo-platform-validation-adaptive-data-rollback"
+            },
+            "six distinct volumes",
+        ),
+    ],
+)
+def test_prepare_true_zero_script_rejects_wrong_or_duplicate_volume_roles(
+    override: dict[str, str],
+    message: str,
+) -> None:
+    pwsh = shutil.which("pwsh.exe") or shutil.which("pwsh")
+    assert pwsh is not None
+    repo_root = Path(__file__).resolve().parents[2]
+    environment = {
+        **os.environ,
+        "AI_RECOGNITION_INTERNAL_TOKEN": "test-only",
+        "VALIDATION_APP_VERSION": "candidate",
+        "VALIDATION_BACKEND_IMAGE": "test/backend:candidate",
+        "VALIDATION_PARSER_IMAGE": "test/parser:candidate",
+        "VALIDATION_AI_IMAGE": "test/ai:candidate",
+        "VALIDATION_UI_IMAGE": "test/ui:candidate",
+        "VALIDATION_PLATFORM_VOLUME":
+            "cargo-platform-validation-zero-platform-candidate",
+        "VALIDATION_REDIS_VOLUME":
+            "cargo-platform-validation-zero-redis-candidate",
+        "VALIDATION_AI_SESSION_VOLUME":
+            "cargo-platform-validation-zero-ai-candidate",
+        "ROLLBACK_APP_VERSION": "rollback",
+        "ROLLBACK_BACKEND_IMAGE": "test/backend:rollback",
+        "ROLLBACK_PARSER_IMAGE": "test/parser:rollback",
+        "ROLLBACK_AI_IMAGE": "test/ai:rollback",
+        "ROLLBACK_UI_IMAGE": "test/ui:rollback",
+        "ROLLBACK_PLATFORM_VOLUME":
+            "cargo-platform-validation-adaptive-data-rollback",
+        "ROLLBACK_REDIS_VOLUME":
+            "cargo-platform-validation-adaptive-redis-rollback",
+        "ROLLBACK_AI_SESSION_VOLUME":
+            "cargo-platform-validation-adaptive-ai-sessions-rollback",
+        **override,
+    }
+
+    result = subprocess.run(
+        [
+            pwsh,
+            "-NoProfile",
+            "-File",
+            str(repo_root / "scripts" / "prepare_true_zero_validation.ps1"),
+        ],
+        cwd=repo_root,
+        env=environment,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert message in f"{result.stdout}\n{result.stderr}"
 
 
 @contextmanager

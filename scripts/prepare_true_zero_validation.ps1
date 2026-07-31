@@ -8,8 +8,7 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $repoRoot
 
-$required = @(
-    "AI_RECOGNITION_INTERNAL_TOKEN",
+$candidateNames = @(
     "VALIDATION_APP_VERSION",
     "VALIDATION_BACKEND_IMAGE",
     "VALIDATION_PARSER_IMAGE",
@@ -19,23 +18,79 @@ $required = @(
     "VALIDATION_REDIS_VOLUME",
     "VALIDATION_AI_SESSION_VOLUME"
 )
-foreach ($name in $required) {
+$rollbackNames = @(
+    "ROLLBACK_APP_VERSION",
+    "ROLLBACK_BACKEND_IMAGE",
+    "ROLLBACK_PARSER_IMAGE",
+    "ROLLBACK_AI_IMAGE",
+    "ROLLBACK_UI_IMAGE",
+    "ROLLBACK_PLATFORM_VOLUME",
+    "ROLLBACK_REDIS_VOLUME",
+    "ROLLBACK_AI_SESSION_VOLUME"
+)
+foreach ($name in @("AI_RECOGNITION_INTERNAL_TOKEN") + $candidateNames + $rollbackNames) {
     if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
         throw "Missing environment variable: $name"
     }
 }
 
-$volumeNames = @(
+$candidateVolumes = @(
     $env:VALIDATION_PLATFORM_VOLUME,
     $env:VALIDATION_REDIS_VOLUME,
     $env:VALIDATION_AI_SESSION_VOLUME
 )
-if ($volumeNames -contains "cargo-platform-data") {
+$rollbackVolumes = @(
+    $env:ROLLBACK_PLATFORM_VOLUME,
+    $env:ROLLBACK_REDIS_VOLUME,
+    $env:ROLLBACK_AI_SESSION_VOLUME
+)
+$allVolumes = @($candidateVolumes + $rollbackVolumes)
+if (($allVolumes | Sort-Object -Unique).Count -ne $allVolumes.Count) {
+    throw "Candidate and rollback volumes must be six distinct volumes."
+}
+$roleChecks = @(
+    @($env:VALIDATION_PLATFORM_VOLUME, "^cargo-platform-validation-zero-platform-.+$", "candidate platform"),
+    @($env:VALIDATION_REDIS_VOLUME, "^cargo-platform-validation-zero-redis-.+$", "candidate redis"),
+    @($env:VALIDATION_AI_SESSION_VOLUME, "^cargo-platform-validation-zero-ai-.+$", "candidate AI"),
+    @($env:ROLLBACK_PLATFORM_VOLUME, "^cargo-platform-validation-(?:(?:adaptive-)?data|ai-data)-.+$", "rollback platform"),
+    @($env:ROLLBACK_REDIS_VOLUME, "^cargo-platform-validation-(?:adaptive-)?redis-.+$", "rollback redis"),
+    @($env:ROLLBACK_AI_SESSION_VOLUME, "^cargo-platform-validation-(?:adaptive-)?ai-sessions-.+$", "rollback AI")
+)
+foreach ($check in $roleChecks) {
+    if ($check[0] -notmatch $check[1]) {
+        throw "Unsafe $($check[2]) volume name: $($check[0])"
+    }
+}
+if ($allVolumes -contains "cargo-platform-data") {
     throw "The 5173 data volume cargo-platform-data is forbidden."
 }
-foreach ($volumeName in $volumeNames) {
-    if (-not $volumeName.StartsWith("cargo-platform-validation-", [StringComparison]::Ordinal)) {
-        throw "Validation volume has an unsafe name: $volumeName"
+
+& docker volume inspect @allVolumes | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    throw "One or more candidate/rollback volumes do not exist."
+}
+
+if ($Stage -eq "rollback") {
+    $env:VALIDATION_APP_VERSION = $env:ROLLBACK_APP_VERSION
+    $env:VALIDATION_BACKEND_IMAGE = $env:ROLLBACK_BACKEND_IMAGE
+    $env:VALIDATION_PARSER_IMAGE = $env:ROLLBACK_PARSER_IMAGE
+    $env:VALIDATION_AI_IMAGE = $env:ROLLBACK_AI_IMAGE
+    $env:VALIDATION_UI_IMAGE = $env:ROLLBACK_UI_IMAGE
+    $env:VALIDATION_PLATFORM_VOLUME = $env:ROLLBACK_PLATFORM_VOLUME
+    $env:VALIDATION_REDIS_VOLUME = $env:ROLLBACK_REDIS_VOLUME
+    $env:VALIDATION_AI_SESSION_VOLUME = $env:ROLLBACK_AI_SESSION_VOLUME
+} else {
+    $verificationScript = Join-Path $repoRoot "scripts\ai_validation_dataset.py"
+    & docker run --rm --network none --read-only `
+        --mount "type=volume,source=$env:VALIDATION_PLATFORM_VOLUME,target=/data,readonly" `
+        --mount "type=bind,source=$verificationScript,target=/verify.py,readonly" `
+        --entrypoint python `
+        $env:VALIDATION_BACKEND_IMAGE `
+        /verify.py `
+        --verify-database /data/cargo-platform.db `
+        --asset-root /data/workspaces
+    if ($LASTEXITCODE -ne 0) {
+        throw "True-zero database or asset verification failed."
     }
 }
 

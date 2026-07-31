@@ -74,6 +74,26 @@ TRUE_ZERO_FINGERPRINT_FIELDS = {
         "product_count",
     ],
 }
+TRUE_ZERO_TASK_IDS = (64, 65, 66)
+TRUE_ZERO_RELEASE_COUNTS = {
+    "capture_tasks": 3,
+    "raw_capture_records": 102,
+    "products": 23,
+    "product_skus": 2004,
+    "image_assets": 2360,
+    "stalls": 6,
+    "product_matching_rules": 37,
+    "recognition_rule_packs": 0,
+    "recognition_rule_pack_revisions": 0,
+    "tenant_fingerprint_configs": 5,
+}
+TRUE_ZERO_RAW_PAYLOAD_SHA256 = (
+    "5feaa6ef0bbf8563d232ba8b4f661be30604c6cd10e0c7d7db612725a71d7033"
+)
+TRUE_ZERO_ASSET_COUNT = 2271
+TRUE_ZERO_ASSET_MANIFEST_SHA256 = (
+    "87e94f3becf98797c274b89e787e1c9c05703b9a99f115aebe8e8d838025f12b"
+)
 
 
 def sha256_file(path: Path) -> str:
@@ -128,9 +148,11 @@ def _unknown_nonempty_tables(db: sqlite3.Connection) -> list[str]:
 
 
 def _prune_capture_tasks(db: sqlite3.Connection, task_ids: list[int]) -> list[int]:
-    requested = sorted(set(task_ids))
-    if not requested:
-        raise ValueError("task_ids must not be empty")
+    requested = sorted(task_ids)
+    if requested != list(TRUE_ZERO_TASK_IDS):
+        raise ValueError(
+            "true-zero task_ids must be explicitly set to 64, 65, and 66"
+        )
     present = table_names(db)
     if "capture_tasks" not in present:
         raise ValueError("capture_tasks table is missing")
@@ -191,6 +213,178 @@ def _scrub_columns(
         return
     clause = ", ".join(f'"{name}" = ?' for name, _value in selected)
     db.execute(f'UPDATE "{table}" SET {clause}', [value for _name, value in selected])
+
+
+def _require_columns(
+    db: sqlite3.Connection,
+    table: str,
+    required: set[str],
+) -> None:
+    if table not in table_names(db):
+        raise ValueError(f"true-zero database requires {table}")
+    missing = required - table_columns(db, table)
+    if missing:
+        raise ValueError(
+            f"{table} is missing required columns: {', '.join(sorted(missing))}"
+        )
+
+
+def _verify_true_zero_release(
+    db: sqlite3.Connection,
+    *,
+    expected_counts: dict[str, int],
+    expected_raw_payload_sha256: str,
+) -> dict[str, object]:
+    present = table_names(db)
+    missing_tables = set(expected_counts) - present
+    if missing_tables:
+        raise ValueError(
+            "true-zero release is missing tables: "
+            + ", ".join(sorted(missing_tables))
+        )
+    actual_counts = {
+        table: table_count(db, table)
+        for table in expected_counts
+    }
+    count_mismatches = {
+        table: {"expected": expected_counts[table], "actual": actual_counts[table]}
+        for table in expected_counts
+        if actual_counts[table] != expected_counts[table]
+    }
+    if count_mismatches:
+        raise ValueError(
+            "true-zero release count mismatch: "
+            + json.dumps(count_mismatches, ensure_ascii=False, sort_keys=True)
+        )
+
+    task_ids = [
+        int(row[0])
+        for row in db.execute('SELECT "id" FROM "capture_tasks" ORDER BY "id"')
+    ]
+    if task_ids != list(TRUE_ZERO_TASK_IDS):
+        raise ValueError(f"true-zero release task ids mismatch: {task_ids}")
+    derived_count = int(
+        db.execute(
+            """
+            SELECT COUNT(*)
+            FROM raw_capture_records
+            WHERE status <> 'pending'
+               OR parsed_payload IS NOT NULL
+               OR standard_detail_id IS NOT NULL
+               OR waybill_mode IS NOT NULL
+               OR archived_at IS NOT NULL
+               OR archived_by IS NOT NULL
+            """
+        ).fetchone()[0]
+    )
+    if derived_count:
+        raise ValueError(
+            f"true-zero release still has {derived_count} derived raw records"
+        )
+    payload_sha = raw_payload_sha256(db)
+    if payload_sha != expected_raw_payload_sha256:
+        raise ValueError(
+            "true-zero raw payload hash mismatch: "
+            f"expected {expected_raw_payload_sha256}, got {payload_sha}"
+        )
+    fingerprint_configs = {
+        str(code): json.loads(selected_fields)
+        for code, selected_fields in db.execute(
+            """
+            SELECT fingerprint_code, selected_fields
+            FROM tenant_fingerprint_configs
+            WHERE is_enabled = 1 AND is_deleted = 0
+            ORDER BY fingerprint_code
+            """
+        )
+    }
+    if fingerprint_configs != dict(sorted(TRUE_ZERO_FINGERPRINT_FIELDS.items())):
+        raise ValueError("true-zero fingerprint configurations do not match the release contract")
+    return {
+        "counts": actual_counts,
+        "task_ids": task_ids,
+        "raw_derived_count": derived_count,
+        "raw_payload_sha256": payload_sha,
+        "fingerprint_count": len(fingerprint_configs),
+    }
+
+
+def asset_manifest(asset_root: Path) -> dict[str, object]:
+    root = asset_root.resolve()
+    if not root.is_dir():
+        raise FileNotFoundError(root)
+    files = sorted(
+        (path for path in root.rglob("*") if path.is_file()),
+        key=lambda path: path.relative_to(root).as_posix(),
+    )
+    digest = sha256()
+    for path in files:
+        relative_path = path.relative_to(root).as_posix()
+        content_digest = bytes.fromhex(sha256_file(path))
+        digest.update(relative_path.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(content_digest)
+    return {
+        "asset_count": len(files),
+        "asset_manifest_sha256": digest.hexdigest(),
+    }
+
+
+def verify_true_zero_volume(
+    database: Path,
+    asset_root: Path,
+) -> dict[str, object]:
+    with closing(readonly_connection(database)) as db:
+        _require_columns(
+            db,
+            "raw_capture_records",
+            {
+                "status",
+                "parsed_payload",
+                "standard_detail_id",
+                "waybill_mode",
+                "archived_at",
+                "archived_by",
+            },
+        )
+        _require_columns(
+            db,
+            "tenant_fingerprint_configs",
+            {
+                "fingerprint_code",
+                "is_enabled",
+                "is_deleted",
+                "selected_fields",
+            },
+        )
+        database_verification = _verify_true_zero_release(
+            db,
+            expected_counts=TRUE_ZERO_RELEASE_COUNTS,
+            expected_raw_payload_sha256=TRUE_ZERO_RAW_PAYLOAD_SHA256,
+        )
+        integrity = str(db.execute("PRAGMA integrity_check").fetchone()[0])
+        foreign_key_errors = db.execute("PRAGMA foreign_key_check").fetchall()
+    if integrity != "ok" or foreign_key_errors:
+        raise ValueError(
+            f"true-zero SQLite validation failed: integrity={integrity}, "
+            f"foreign_keys={foreign_key_errors}"
+        )
+    assets = asset_manifest(asset_root)
+    if (
+        assets["asset_count"] != TRUE_ZERO_ASSET_COUNT
+        or assets["asset_manifest_sha256"] != TRUE_ZERO_ASSET_MANIFEST_SHA256
+    ):
+        raise ValueError(
+            "true-zero asset manifest mismatch: "
+            + json.dumps(assets, ensure_ascii=False, sort_keys=True)
+        )
+    return {
+        "contract_version": "true_zero_volume_verification_v1",
+        "database": database_verification,
+        "integrity_check": integrity,
+        "foreign_key_check": "ok",
+        **assets,
+    }
 
 
 def _seed_true_zero_fingerprint_configs(
@@ -255,7 +449,16 @@ def build_cold_start_database(
     *,
     task_ids: list[int] | None = None,
     workspace_id: int = 1,
+    _expected_counts: dict[str, int] = TRUE_ZERO_RELEASE_COUNTS,
+    _expected_raw_payload_sha256: str = TRUE_ZERO_RAW_PAYLOAD_SHA256,
 ) -> dict[str, object]:
+    if task_ids is None:
+        raise ValueError("true-zero task_ids must be explicitly set to 64, 65, and 66")
+    requested_task_ids = sorted(task_ids)
+    if requested_task_ids != list(TRUE_ZERO_TASK_IDS):
+        raise ValueError(
+            "true-zero task_ids must be explicitly set to 64, 65, and 66"
+        )
     source = source_db.resolve()
     destination = destination_db.resolve()
     if source == destination:
@@ -279,6 +482,29 @@ def build_cold_start_database(
                 raise ValueError(f"unknown nonempty tables: {', '.join(unknown)}")
 
             present = table_names(target)
+            _require_columns(
+                target,
+                "collectors",
+                {
+                    "token_hash",
+                    "is_enabled",
+                    "online_status",
+                    "last_heartbeat_at",
+                    "status_payload",
+                },
+            )
+            _require_columns(
+                target,
+                "raw_capture_records",
+                {
+                    "status",
+                    "parsed_payload",
+                    "standard_detail_id",
+                    "waybill_mode",
+                    "archived_at",
+                    "archived_by",
+                },
+            )
             target.execute("BEGIN IMMEDIATE")
             target.execute("PRAGMA defer_foreign_keys = ON")
             try:
@@ -350,6 +576,11 @@ def build_cold_start_database(
                     (tenant_id,),
                 )
             }
+            release_verification = _verify_true_zero_release(
+                target,
+                expected_counts=_expected_counts,
+                expected_raw_payload_sha256=_expected_raw_payload_sha256,
+            )
 
         temporary.replace(destination)
     except BaseException:
@@ -373,6 +604,7 @@ def build_cold_start_database(
         "workspace_id": workspace_id,
         "tenant_id": tenant_id,
         "fingerprint_configs": fingerprint_configs,
+        "release_verification": release_verification,
         "preserved_counts": preserved_counts,
         "cleared_counts": cleared_counts,
     }
@@ -696,7 +928,7 @@ def export_gold_rows(
 
 def main() -> int:
     parser = ArgumentParser(description="Create an isolated cold-start AI validation dataset.")
-    parser.add_argument("--source-db", type=Path, required=True)
+    parser.add_argument("--source-db", type=Path)
     parser.add_argument("--cold-db", type=Path)
     parser.add_argument("--answer-set", type=Path)
     parser.add_argument("--task-id", action="append", type=int)
@@ -708,7 +940,36 @@ def main() -> int:
         action="store_true",
         help="build only a zero-rule cold database; cannot be mixed with oracle inputs",
     )
+    parser.add_argument("--verify-database", type=Path)
+    parser.add_argument("--asset-root", type=Path)
     args = parser.parse_args()
+    if args.verify_database is not None:
+        if args.asset_root is None:
+            parser.error("--verify-database requires --asset-root")
+        if any(
+            value is not None
+            for value in (
+                args.source_db,
+                args.cold_db,
+                args.answer_set,
+                args.gold_output,
+                args.parser_url,
+            )
+        ) or args.task_id or args.exclude_rule_tables or args.true_zero:
+            parser.error("--verify-database cannot be combined with build or oracle options")
+        print(
+            json.dumps(
+                verify_true_zero_volume(args.verify_database, args.asset_root),
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 0
+    if args.source_db is None:
+        parser.error("--source-db is required")
+    if args.asset_root is not None:
+        parser.error("--asset-root is only valid with --verify-database")
     if args.cold_db is None and args.answer_set is None and args.gold_output is None:
         parser.error("provide --cold-db, --answer-set, --gold-output, or a combination")
     if (args.answer_set is not None or args.gold_output is not None) and not args.parser_url:
