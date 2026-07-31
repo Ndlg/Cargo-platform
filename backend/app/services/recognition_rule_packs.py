@@ -195,9 +195,16 @@ def save_ai_rule_profile(
             or tuple(item.get("selected_fields") or ()) != selected_fields
         ):
             return False
+        if strategy == "structured_items_v1":
+            return True
         return (
-            strategy == "structured_items_v1"
-            or text_value(item.get("grammar_signature")) == grammar_signature
+            text_value(item.get("grammar_signature")) == grammar_signature
+            and {
+                key: value for key, value in item.items() if key != "provenance"
+            }
+            == {
+                key: value for key, value in profile.items() if key != "provenance"
+            }
         )
 
     pack = db.scalar(

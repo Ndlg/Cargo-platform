@@ -440,7 +440,7 @@ def validate_format_profiles(value: object) -> list[str]:
     if not isinstance(value, list) or not 1 <= len(value) <= 100:
         return ["parser_policy.format_profiles"]
     errors: list[str] = []
-    identities: set[tuple[str, str, tuple[str, ...], str | None]] = set()
+    identities: set[str] = set()
     for index, profile in enumerate(value):
         prefix = f"parser_policy.format_profiles[{index}]"
         if not isinstance(profile, dict):
@@ -448,13 +448,15 @@ def validate_format_profiles(value: object) -> list[str]:
             continue
         fingerprint = text_value(profile.get("fingerprint"))
         strategy = text_value(profile.get("strategy"))
-        grammar_signature = text_value(profile.get("grammar_signature")) or None
-        selected_fields = tuple(profile.get("selected_fields") or ())
-        identity = (
-            fingerprint,
-            strategy,
-            selected_fields,
-            grammar_signature,
+        identity = json.dumps(
+            {
+                key: value
+                for key, value in profile.items()
+                if key != "provenance"
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
         )
         if not FINGERPRINT_PATTERN.fullmatch(fingerprint) or identity in identities:
             errors.append(f"{prefix}.fingerprint")

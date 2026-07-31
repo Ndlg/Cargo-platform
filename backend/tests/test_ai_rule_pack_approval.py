@@ -322,6 +322,63 @@ def test_ai_approval_collapses_structured_grammar_variants_into_one_format() -> 
     assert payload["parser_policy"]["fingerprint_strategy"] == "business_shape_v2"
 
 
+def test_ai_approval_keeps_text_profiles_with_distinct_parsing_shapes() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    base = {
+        "fingerprint": FINGERPRINT,
+        "strategy": "text_pipeline_v1",
+        "text_path": "contents[].printXML",
+        "grammar_signature": "grammar-v1:sha256:" + "1" * 64,
+        "field_roles": {"sales_attr2": "shoe_size_like_numeric_segment"},
+    }
+
+    with Session(engine) as db:
+        save_ai_rule_profile(
+            db,
+            tenant_id=1,
+            workspace_id=1,
+            session_id="session-with-attribute",
+            profile={
+                **base,
+                "steps": [
+                    {
+                        "op": "split",
+                        "source": "text",
+                        "delimiter": " ",
+                        "targets": ["product", "sales_attr1", "sales_attr2"],
+                    }
+                ],
+                "defaults": {"quantity": 1, "remark": ""},
+            },
+            validate=lambda payload: {"status": "valid", "errors": []},
+        )
+        db.commit()
+        pack = save_ai_rule_profile(
+            db,
+            tenant_id=1,
+            workspace_id=1,
+            session_id="session-without-attribute",
+            profile={
+                **base,
+                "steps": [
+                    {
+                        "op": "split",
+                        "source": "text",
+                        "delimiter": " ",
+                        "targets": ["product", "sales_attr2"],
+                    }
+                ],
+                "defaults": {"sales_attr1": "", "quantity": 1, "remark": ""},
+            },
+            validate=lambda payload: {"status": "valid", "errors": []},
+        )
+        db.commit()
+        payload = deepcopy(pack.payload)
+
+    assert len(payload["parser_policy"]["format_profiles"]) == 2
+
+
 def test_ai_approval_rejects_invalid_candidate_without_creating_pack() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)

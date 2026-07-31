@@ -704,6 +704,86 @@ def test_text_profiles_execute_across_grammar_and_fail_closed_on_conflict() -> N
     )
 
 
+def test_same_grammar_text_profiles_keep_distinct_parsing_shapes() -> None:
+    _app, rules = load_parser()
+    synthesizer = importlib.import_module("service_app.rule_synthesizer")
+
+    def payload(text: str) -> dict[str, Any]:
+        return {
+            "task": {
+                "documents": [
+                    {"contents": [{"data": {"customContent": text}}]}
+                ]
+            }
+        }
+
+    with_attribute = synthesizer.synthesize_rule(
+        payload=payload("微信至尚--NB 白灰 42,,*1"),
+        source_component="cainiao-cnprint",
+        corrected_rows=[
+            {
+                "product": "NB",
+                "sales_attr1": "白灰",
+                "sales_attr2": "42",
+                "quantity": 1,
+                "remark": "",
+            }
+        ],
+        gold_samples=[],
+        negative_samples=[],
+    )["rule"]
+    without_attribute = synthesizer.synthesize_rule(
+        payload=payload("微信至尚--拖鞋 42,,*1"),
+        source_component="cainiao-cnprint",
+        corrected_rows=[
+            {
+                "product": "拖鞋",
+                "sales_attr1": "",
+                "sales_attr2": "42",
+                "quantity": 1,
+                "remark": "",
+            }
+        ],
+        gold_samples=[],
+        negative_samples=[],
+    )["rule"]
+
+    assert with_attribute["grammar_signature"] == without_attribute["grammar_signature"]
+    assert with_attribute["steps"] != without_attribute["steps"]
+    assert rules.validate_format_profiles([with_attribute, without_attribute]) == []
+
+    for index, (raw_payload, expected) in enumerate(
+        (
+            (
+                payload("微信至尚--NIKE 白黑黄 40.5,,*2"),
+                ("NIKE", "白黑黄", "40.5", 2),
+            ),
+            (payload("微信至尚--拖鞋 41,,*1"), ("拖鞋", "", "41", 1)),
+        ),
+        start=1,
+    ):
+        parent, diagnostic = rules.parse_declarative_payload(
+            raw_payload,
+            [with_attribute, without_attribute],
+            raw_record_id=index,
+            task_id=1,
+            source_component="cainiao-cnprint",
+            source_index=str(index),
+            parent_sequence=index,
+            fingerprint_strategy="business_shape_v2",
+        )
+        assert diagnostic["reason"] == ""
+        assert [
+            (
+                row.product,
+                row.sales_attr1,
+                row.sales_attr2,
+                row.quantity,
+            )
+            for row in parent.rows
+        ] == [expected]
+
+
 def test_structured_format_reuses_paths_and_fails_closed_on_conflict() -> None:
     _app, rules = load_parser()
     synthesizer = importlib.import_module("service_app.rule_synthesizer")
