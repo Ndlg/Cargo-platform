@@ -37,6 +37,14 @@ RULE_PACKS_VIEW = (
     / "workbench"
     / "RecognitionRulePacksView.vue"
 )
+AI_RECOGNITION_VIEW = (
+    PROJECT_ROOT
+    / "frontend"
+    / "src"
+    / "views"
+    / "workbench"
+    / "AiRecognitionView.vue"
+)
 
 PARSER_EXCEPTION_STATUSES = (
     "model_running",
@@ -73,6 +81,36 @@ def test_parser_exception_coverage_is_independent_from_status_allowlists() -> No
         "/admin/recognition-rule-packs",
     ):
         assert route in parser_issues_source
+
+
+def test_parser_issue_actions_follow_the_zero_rule_and_unsupported_format_flows() -> None:
+    source = PARSER_ISSUES.read_text(encoding="utf-8")
+    adapter_block = source.split("fingerprint_adapter_required:", 1)[1].split(
+        "fingerprint_field_selection_required:",
+        1,
+    )[0]
+    missing_pack_block = source.split("rule_pack_missing:", 1)[1].split(
+        "rule_pack_invalid:",
+        1,
+    )[0]
+
+    assert "系统尚未支持该格式，请联系维护" in adapter_block
+    assert "action: 'refresh'" in adapter_block
+    assert "action: 'fingerprint-settings'" not in adapter_block
+    assert "action: 'ai-recognition'" in missing_pack_block
+    assert "action: 'recognition-rule-packs'" not in missing_pack_block
+
+
+def test_ai_recognition_prefers_a_valid_task_query_without_exposing_ids_in_labels() -> None:
+    source = AI_RECOGNITION_VIEW.read_text(encoding="utf-8")
+
+    assert "const route = useRoute()" in source
+    assert "queryPositiveInt(route.query.task_id)" in source
+    assert "taskIds.has(routeTaskId)" in source
+    assert "selectedTaskId.value = routeTaskId" in source
+    assert "最近一轮" in source
+    assert "上一轮" in source
+    assert "task.id}`" not in source
 
 
 def test_rule_profile_business_summary_precedes_collapsed_technical_details() -> None:

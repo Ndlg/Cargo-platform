@@ -61,10 +61,10 @@ const parserIssueDefinitions: Record<string, ParserIssueDefinition> = {
     action: 'ai-recognition',
   },
   fingerprint_adapter_required: {
-    label: '当前面单格式尚未接入字段适配器',
+    label: '系统尚未支持该格式，请联系维护人员接入后刷新',
     type: 'warning',
-    actionLabel: '查看面单指纹配置',
-    action: 'fingerprint-settings',
+    actionLabel: '刷新支持状态',
+    action: 'refresh',
   },
   fingerprint_field_selection_required: {
     label: '当前面单格式尚未选择提供给 AI 的字段',
@@ -87,8 +87,8 @@ const parserIssueDefinitions: Record<string, ParserIssueDefinition> = {
   rule_pack_missing: {
     label: '当前工作空间没有启用识别规则包',
     type: 'warning',
-    actionLabel: '打开识别规则包',
-    action: 'recognition-rule-packs',
+    actionLabel: '学习第一种面单格式',
+    action: 'ai-recognition',
   },
   rule_pack_invalid: {
     label: '当前识别规则包不可用于面单解析',
