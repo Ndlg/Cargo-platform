@@ -15,6 +15,7 @@ from app.api.routes.collector_runtime import (
     recognition_report_export_rows,
     recognition_report_headers,
     recognition_report_line_items,
+    recognition_report_row_is_exportable,
     recognition_report_workbook,
     recognition_report_rows_by_stall,
     recognition_rows_from_product_sku_linking_results,
@@ -58,6 +59,7 @@ def test_export_contract_keeps_matched_rows_with_or_without_images() -> None:
                 "product_sku_linking_result": {
                     "match_status": "matched",
                     "product": "鞋款A",
+                    "product_id": 1,
                     "sku": "黑色42",
                     "image": {"id": 1, "name": "黑色图"},
                     "stall": {"id": 9, "name": "至尚"},
@@ -77,6 +79,7 @@ def test_export_contract_keeps_matched_rows_with_or_without_images() -> None:
                 "product_sku_linking_result": {
                     "match_status": "matched",
                     "product": "鞋款B",
+                    "product_id": 2,
                     "sku": "白色41",
                     "image": None,
                     "stall": {"id": 9, "name": "至尚"},
@@ -150,6 +153,47 @@ def test_export_routes_non_matched_and_special_rows_to_exception_sheet() -> None
     ]
 
 
+def test_normal_export_requires_a_real_matched_product() -> None:
+    valid = {
+        "status": "matched",
+        "product_id": 10,
+        "product_name": "鞋款A",
+        "image_match_text": "鞋款A 黑色 42",
+    }
+    missing_id = {**valid, "product_id": None}
+    missing_name = {**valid, "product_name": ""}
+
+    assert recognition_report_row_is_exportable(valid) is True
+    assert recognition_report_row_is_exportable(missing_id) is False
+    assert recognition_report_row_is_exportable(missing_name) is False
+    assert recognition_exception_export_rows([missing_id, missing_name]) == [
+        ["鞋款A 黑色 42"],
+        ["鞋款A 黑色 42"],
+    ]
+
+
+def test_normal_report_always_keeps_all_seven_business_columns() -> None:
+    hidden_columns = [
+        {"key": "product_name", "label": "商品", "visible": True},
+        {"key": "sales_attr1", "label": "销售属性1", "visible": True},
+        {"key": "sku_image", "label": "图片", "visible": True},
+        {"key": "sales_attr2", "label": "销售属性2", "visible": True},
+        {"key": "quantity", "label": "数量", "visible": True},
+        {"key": "remark", "label": "备注", "visible": True},
+        {"key": "image_match_text", "label": "图片匹配文本", "visible": False},
+    ]
+
+    assert recognition_report_headers({"columns": hidden_columns}) == [
+        "商品",
+        "销售属性1",
+        "图片",
+        "销售属性2",
+        "数量",
+        "备注",
+        "图片匹配文本",
+    ]
+
+
 def test_export_keeps_matched_rows_with_missing_sales_attrs_in_normal_sheet() -> None:
     details = [
         SimpleNamespace(
@@ -158,6 +202,7 @@ def test_export_keeps_matched_rows_with_missing_sales_attrs_in_normal_sheet() ->
                 "product_sku_linking_result": {
                     "match_status": "matched",
                     "product": "鞋款A",
+                    "product_id": 1,
                     "sku": "黑色图",
                     "image": {"id": 1, "name": "黑色图"},
                     "standard_fields": {

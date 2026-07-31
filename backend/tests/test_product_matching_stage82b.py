@@ -1150,6 +1150,68 @@ def test_recognition_download_rejects_incomplete_parent_coverage(monkeypatch) ->
     assert response.json()["detail"] == "采集面单覆盖不完整，已停止生成报货文件。请先处理缺失面单。"
 
 
+def test_recognition_preview_and_download_reject_equal_count_wrong_parent_identity(monkeypatch) -> None:
+    with TestClient(app) as client:
+        headers = _headers(client)
+        with SessionLocal() as db:
+            task = CaptureTask(
+                tenant_id=1,
+                workspace_id=1,
+                name="父面单身份覆盖守门测试",
+                status="completed",
+            )
+            db.add(task)
+            db.flush()
+            raw_record = RawCaptureRecord(
+                tenant_id=1,
+                workspace_id=1,
+                task_id=task.id,
+                source_component="cainiao-cnprint",
+                source_index="parent-identity",
+                payload_format="json",
+                raw_payload=json.dumps(
+                    {
+                        "task": {
+                            "documents": [
+                                {
+                                    "documentID": "REAL-PARENT",
+                                    "contents": [{"data": {"productInfo": "鞋款A 黑色 42 1件"}}],
+                                }
+                            ]
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+                status="parsed",
+            )
+            db.add(raw_record)
+            db.commit()
+            task_id = task.id
+            wrong_raw_record_id = raw_record.id + 10000
+
+        monkeypatch.setattr(
+            collector_runtime_route,
+            "recognition_rows_for_task",
+            lambda *_args, **_kwargs: [
+                {
+                    "raw_record_id": wrong_raw_record_id,
+                    "source_label": "第1批-第1单-子1",
+                    "status": "product_unmatched",
+                    "reason": "商品未命中，请维护商品匹配规则。",
+                    "image_match_text": "鞋款A 黑色 42 1件",
+                }
+            ],
+        )
+
+        for endpoint in ("report-preview", "report-workbook"):
+            response = client.get(
+                f"/api/v1/collector-control/tasks/{task_id}/{endpoint}",
+                headers=headers,
+            )
+            assert response.status_code == 409
+            assert response.json()["detail"] == "采集面单覆盖不完整，已停止生成报货文件。请先处理缺失面单。"
+
+
 def test_recognition_export_keeps_unreadable_raw_print_in_exception_sheet(monkeypatch) -> None:
     _use_parser_service_stub(monkeypatch)
 
@@ -1193,7 +1255,7 @@ def test_recognition_export_keeps_unreadable_raw_print_in_exception_sheet(monkey
         preview = preview_response.json()
         assert preview["waybill_count"] == 1
         assert preview["order_row_count"] == 1
-        assert preview["rows"][0]["status"] == "product_unmatched"
+        assert preview["rows"][0]["status"] == "pending"
         assert preview["rows"][0]["source_label"] == "第1批-第1单-子1"
 
         workbook_response = client.get(

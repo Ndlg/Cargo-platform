@@ -7,6 +7,7 @@ from typing import Any, Iterable
 PRODUCT_SKU_LINKING_FIELDS = ("product", "sales_attr1", "sales_attr2", "quantity", "remark")
 PRODUCT_SKU_LINKING_MATCH_STATUSES = {
     "matched",
+    "pending",
     "product_unmatched",
     "sku_unmatched",
     "sku_ambiguous",
@@ -57,6 +58,16 @@ def is_special_order_row(values: dict[str, Any] | None) -> bool:
     source = values if isinstance(values, dict) else {}
     status = text_value(source.get("_order_row_status") or source.get("status")).lower()
     return status == "special"
+
+
+def order_row_parse_status(values: dict[str, Any] | None) -> str:
+    source = values if isinstance(values, dict) else {}
+    return text_value(source.get("_order_row_status")).lower()
+
+
+def order_row_review_reason(values: dict[str, Any] | None) -> str:
+    source = values if isinstance(values, dict) else {}
+    return text_value(source.get("_order_row_review_reason"))
 
 
 def normalize_field_list(value: Any) -> list[str]:
@@ -598,6 +609,26 @@ def preview_product_sku_linking(
                     "match_trace": [],
                     "match_source": "",
                     "review_reason": text_value(row.get("_order_row_review_reason") or row.get("review_reason")),
+                }
+            )
+            continue
+        parse_status = order_row_parse_status(row)
+        if parse_status and parse_status != "draft":
+            review_reason = order_row_review_reason(row)
+            result_reason = "面单解析结果需要修正规则后重算"
+            if review_reason:
+                result_reason += f"：{review_reason}"
+            result_rows.append(
+                linking_exception_result(
+                    fields,
+                    "pending",
+                    result_reason,
+                )
+                | {
+                    "row_index": index,
+                    "match_trace": [],
+                    "match_source": "",
+                    "review_reason": review_reason,
                 }
             )
             continue

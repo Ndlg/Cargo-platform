@@ -49,8 +49,13 @@ from app.api.routes.product_sku_linking import (
 from app.services.collection_contract import (
     build_raw_capture_record,
 )
-from app.services.order_row_reader import task_waybill_counts
+from app.services.order_row_reader import (
+    order_row_sample_inputs_from_records,
+    raw_records_for_task,
+    task_waybill_counts,
+)
 from app.services.product_sku_linking import exportable_product_sku_linking_result
+from app.services.regression_coverage import analyze_waybill_coverage
 from app.services.recognition_rule_packs import (
     RULE_PACK_MISSING_STATUS,
     active_recognition_rule_pack,
@@ -714,7 +719,11 @@ def normalize_recognition_report_layout(raw_layout: Any | None = None) -> dict[s
             {
                 "key": key,
                 "label": label[:40],
-                "visible": source_column.get("visible") is not False,
+                "visible": (
+                    True
+                    if key in RECOGNITION_REPORT_DEFAULT_FIELD_ORDER
+                    else source_column.get("visible") is not False
+                ),
                 "width": bounded_int(source_column.get("width"), int(definition["width"]), 8, 60),
             }
         )
@@ -877,7 +886,11 @@ def expanded_sales_attr2_values(row: dict[str, Any]) -> list[str]:
 
 
 def recognition_report_row_is_exportable(row: dict[str, Any]) -> bool:
-    return row.get("status") == "matched"
+    return (
+        row.get("status") == "matched"
+        and int_value(row.get("product_id")) is not None
+        and bool(text_value(row.get("product_name")))
+    )
 
 
 def recognition_report_base_line_item(row: dict[str, Any]) -> dict[str, Any]:
@@ -1545,7 +1558,7 @@ def require_complete_recognition_coverage(
     workspace_id: int,
     task_id: int,
     rows: list[dict[str, Any]],
-) -> tuple[int, int]:
+) -> dict[str, Any]:
     expected = recognition_expected_waybill_count(db, workspace_id=workspace_id, task_id=task_id)
     covered = recognition_waybill_count(rows)
     if expected != covered:
@@ -1553,7 +1566,42 @@ def require_complete_recognition_coverage(
             status_code=status.HTTP_409_CONFLICT,
             detail="采集面单覆盖不完整，已停止生成报货文件。请先处理缺失面单。",
         )
-    return expected, covered
+
+    records = raw_records_for_task(db, workspace_id=workspace_id, task_id=task_id)
+    if records:
+        expected_parent_documents = [
+            {
+                "raw_record_id": int(sample["raw_record_id"]),
+                "parent_sequence": int(sample["parent_sequence"]),
+            }
+            for sample in order_row_sample_inputs_from_records(records)
+        ]
+    else:
+        expected_parent_documents = []
+        for parent_sequence, detail in enumerate(
+            standard_details_for_task(db, workspace_id=workspace_id, task_id=task_id),
+            start=1,
+        ):
+            values = detail.field_values if isinstance(detail.field_values, dict) else {}
+            expected_parent_documents.append(
+                {
+                    "raw_record_id": int_value(values.get("raw_record_id")) or int(detail.id),
+                    "parent_sequence": parent_sequence,
+                }
+            )
+
+    coverage = analyze_waybill_coverage(
+        expected_parent_documents=expected_parent_documents,
+        rows=rows,
+        normal_export_count=sum(recognition_report_row_is_exportable(row) for row in rows),
+        exception_export_count=len(recognition_exception_export_rows(rows)),
+    )
+    if not coverage["ok"]:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="采集面单覆盖不完整，已停止生成报货文件。请先处理缺失面单。",
+        )
+    return coverage
 
 
 def task_or_404(db: Session, task_id: int, workspace_id: int) -> CaptureTask:
@@ -2400,6 +2448,12 @@ def preview_capture_task_recognition(
     task = task_or_404(db, task_id, workspace_id)
     details = standard_details_for_task(db, workspace_id=workspace_id, task_id=task.id)
     rows = recognition_rows_for_task(db, workspace_id=workspace_id, task_id=task.id)
+    coverage = require_complete_recognition_coverage(
+        db,
+        workspace_id=workspace_id,
+        task_id=task.id,
+        rows=rows,
+    )
     collected_waybill_count = recognition_expected_waybill_count(
         db,
         workspace_id=workspace_id,
@@ -2416,7 +2470,8 @@ def preview_capture_task_recognition(
         "waybill_count": collected_waybill_count,
         "collected_waybill_count": collected_waybill_count,
         "covered_waybill_count": covered_waybill_count,
-        "coverage_complete": collected_waybill_count == covered_waybill_count,
+        "coverage_complete": bool(coverage["ok"]),
+        "coverage": coverage,
         "order_row_count": summary["total"],
         "rows": rows,
         "summary": summary,

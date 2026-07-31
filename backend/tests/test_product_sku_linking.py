@@ -106,6 +106,44 @@ def test_product_sku_linking_keeps_special_order_rows_out_of_unmatched_counts() 
     assert preview["samples"]["special"][0]["match_status"] == "special"
 
 
+def test_product_sku_linking_keeps_needs_review_rows_out_of_matches() -> None:
+    product = record(1, "帆布鞋")
+    sku = record(21, "黑色", product_id=product.id)
+
+    preview = preview_product_sku_linking(
+        [
+            {
+                "product": "帆布鞋",
+                "sales_attr1": "黑色",
+                "sales_attr2": "42",
+                "quantity": "1",
+                "remark": "",
+                "_order_row_status": "needs_review",
+                "_order_row_review_reason": "quantity_missing",
+            }
+        ],
+        [
+            {
+                "product_match_fields": ["product"],
+                "product_keyword": "帆布鞋",
+                "product_id": product.id,
+                "sku_id": sku.id,
+            }
+        ],
+        products=[product],
+        skus=[sku],
+        images=[],
+    )
+
+    row = preview["rows"][0]
+    assert row["match_status"] == "pending"
+    assert row["product"] is None
+    assert row["sku"] is None
+    assert row["exception_reason"] == "面单解析结果需要修正规则后重算：quantity_missing"
+    assert preview["summary"]["pending"] == 1
+    assert preview["summary"]["matched"] == 0
+
+
 def test_product_sku_linking_does_not_use_catalog_assets_without_user_rule() -> None:
     product = record(1, "VAP", keywords=["vap2025"])
     image = record(11, "VAP 黑色图", file_path="storage/vap-black.png")
