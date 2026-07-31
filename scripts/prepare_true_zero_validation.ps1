@@ -70,6 +70,67 @@ if ($LASTEXITCODE -ne 0) {
     throw "One or more candidate/rollback volumes do not exist."
 }
 
+function Assert-VolumeNotMounted {
+    param(
+        [Parameter(Mandatory)]
+        [string]$VolumeName,
+        [Parameter(Mandatory)]
+        [string]$Role
+    )
+
+    $containerIds = @(
+        & docker ps --all --quiet --filter "volume=$VolumeName"
+    )
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to inspect containers using the $Role volume."
+    }
+    $containerIds = @(
+        $containerIds | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
+    if ($containerIds.Count -ne 0) {
+        throw (
+            "$Role volume must not be mounted by any container before apply: " +
+            ($containerIds -join ", ")
+        )
+    }
+}
+
+function Assert-VolumeEmpty {
+    param(
+        [Parameter(Mandatory)]
+        [string]$VolumeName,
+        [Parameter(Mandatory)]
+        [string]$Role
+    )
+
+    $probe = (
+        "import os, sys; " +
+        "entries = sorted(entry.name for entry in os.scandir('/volume')); " +
+        "print('\n'.join(entries[:20])); " +
+        "sys.exit(1 if entries else 0)"
+    )
+    $probeOutput = @(
+        & docker run --rm --pull never --network none --read-only `
+            --cap-drop ALL --security-opt no-new-privileges `
+            --mount "type=volume,source=$VolumeName,target=/volume,readonly" `
+            --entrypoint python `
+            $env:VALIDATION_BACKEND_IMAGE `
+            -c $probe 2>&1
+    )
+    if ($LASTEXITCODE -ne 0) {
+        $details = @(
+            $probeOutput |
+                ForEach-Object { "$_" } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+                Select-Object -First 20
+        ) -join ", "
+        if ([string]::IsNullOrWhiteSpace($details)) {
+            $details = "volume probe failed without output"
+        }
+        throw "$Role volume must be empty and readable before apply: $details"
+    }
+}
+
 if ($Stage -eq "rollback") {
     $env:VALIDATION_APP_VERSION = $env:ROLLBACK_APP_VERSION
     $env:VALIDATION_BACKEND_IMAGE = $env:ROLLBACK_BACKEND_IMAGE
@@ -80,6 +141,21 @@ if ($Stage -eq "rollback") {
     $env:VALIDATION_REDIS_VOLUME = $env:ROLLBACK_REDIS_VOLUME
     $env:VALIDATION_AI_SESSION_VOLUME = $env:ROLLBACK_AI_SESSION_VOLUME
 } else {
+    $candidateScratchVolumes = @(
+        @($env:VALIDATION_REDIS_VOLUME, "Candidate Redis"),
+        @($env:VALIDATION_AI_SESSION_VOLUME, "Candidate AI session")
+    )
+    foreach ($scratchVolume in $candidateScratchVolumes) {
+        Assert-VolumeNotMounted `
+            -VolumeName $scratchVolume[0] `
+            -Role $scratchVolume[1]
+    }
+    foreach ($scratchVolume in $candidateScratchVolumes) {
+        Assert-VolumeEmpty `
+            -VolumeName $scratchVolume[0] `
+            -Role $scratchVolume[1]
+    }
+
     $verificationScript = Join-Path $repoRoot "scripts\ai_validation_dataset.py"
     & docker run --rm --network none --read-only `
         --mount "type=volume,source=$env:VALIDATION_PLATFORM_VOLUME,target=/data,readonly" `

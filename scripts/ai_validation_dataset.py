@@ -242,6 +242,24 @@ def _verify_true_zero_release(
             "true-zero release is missing tables: "
             + ", ".join(sorted(missing_tables))
         )
+    cleared_counts = {
+        table: table_count(db, table)
+        for table in sorted(CLEARED_TABLES & present)
+    }
+    nonempty_cleared_tables = {
+        table: count
+        for table, count in cleared_counts.items()
+        if count != 0
+    }
+    if nonempty_cleared_tables:
+        raise ValueError(
+            "true-zero release cleared tables are not empty: "
+            + json.dumps(
+                nonempty_cleared_tables,
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
     actual_counts = {
         table: table_count(db, table)
         for table in expected_counts
@@ -306,6 +324,7 @@ def _verify_true_zero_release(
         "raw_derived_count": derived_count,
         "raw_payload_sha256": payload_sha,
         "fingerprint_count": len(fingerprint_configs),
+        "cleared_counts": cleared_counts,
     }
 
 

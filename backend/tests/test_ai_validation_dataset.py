@@ -552,6 +552,30 @@ def test_asset_manifest_and_volume_verifier_are_deterministic(
         validation_dataset.verify_true_zero_volume(cold, assets)
 
 
+def test_true_zero_release_rejects_old_derived_rows(tmp_path: Path) -> None:
+    source = tmp_path / "source.db"
+    cold = tmp_path / "cold.db"
+    create_source_database(source, with_true_zero_records=True)
+    counts, payload_sha = synthetic_release_contract(source)
+    build_test_cold_start_database(source, cold)
+    with sqlite3.connect(cold) as db:
+        db.execute(
+            "INSERT INTO standard_details VALUES (99, 1, ?, NULL, 0)",
+            (json.dumps({"product": "old-derived-row"}),),
+        )
+        db.commit()
+
+    with sqlite3.connect(cold) as db, pytest.raises(
+        ValueError,
+        match="cleared tables are not empty.*standard_details",
+    ):
+        validation_dataset._verify_true_zero_release(
+            db,
+            expected_counts=counts,
+            expected_raw_payload_sha256=payload_sha,
+        )
+
+
 def test_true_zero_cli_rejects_parser_and_oracle_options(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -576,6 +600,35 @@ def test_true_zero_cli_rejects_parser_and_oracle_options(
 
     assert error.value.code == 2
     assert not (tmp_path / "cold.db").exists()
+
+
+def true_zero_script_environment() -> dict[str, str]:
+    return {
+        **os.environ,
+        "AI_RECOGNITION_INTERNAL_TOKEN": "test-only",
+        "VALIDATION_APP_VERSION": "candidate",
+        "VALIDATION_BACKEND_IMAGE": "test/backend:candidate",
+        "VALIDATION_PARSER_IMAGE": "test/parser:candidate",
+        "VALIDATION_AI_IMAGE": "test/ai:candidate",
+        "VALIDATION_UI_IMAGE": "test/ui:candidate",
+        "VALIDATION_PLATFORM_VOLUME":
+            "cargo-platform-validation-zero-platform-candidate",
+        "VALIDATION_REDIS_VOLUME":
+            "cargo-platform-validation-zero-redis-candidate",
+        "VALIDATION_AI_SESSION_VOLUME":
+            "cargo-platform-validation-zero-ai-candidate",
+        "ROLLBACK_APP_VERSION": "rollback",
+        "ROLLBACK_BACKEND_IMAGE": "test/backend:rollback",
+        "ROLLBACK_PARSER_IMAGE": "test/parser:rollback",
+        "ROLLBACK_AI_IMAGE": "test/ai:rollback",
+        "ROLLBACK_UI_IMAGE": "test/ui:rollback",
+        "ROLLBACK_PLATFORM_VOLUME":
+            "cargo-platform-validation-adaptive-data-rollback",
+        "ROLLBACK_REDIS_VOLUME":
+            "cargo-platform-validation-adaptive-redis-rollback",
+        "ROLLBACK_AI_SESSION_VOLUME":
+            "cargo-platform-validation-adaptive-ai-sessions-rollback",
+    }
 
 
 @pytest.mark.parametrize(
@@ -609,31 +662,78 @@ def test_prepare_true_zero_script_rejects_wrong_or_duplicate_volume_roles(
     assert pwsh is not None
     repo_root = Path(__file__).resolve().parents[2]
     environment = {
-        **os.environ,
-        "AI_RECOGNITION_INTERNAL_TOKEN": "test-only",
-        "VALIDATION_APP_VERSION": "candidate",
-        "VALIDATION_BACKEND_IMAGE": "test/backend:candidate",
-        "VALIDATION_PARSER_IMAGE": "test/parser:candidate",
-        "VALIDATION_AI_IMAGE": "test/ai:candidate",
-        "VALIDATION_UI_IMAGE": "test/ui:candidate",
-        "VALIDATION_PLATFORM_VOLUME":
-            "cargo-platform-validation-zero-platform-candidate",
-        "VALIDATION_REDIS_VOLUME":
-            "cargo-platform-validation-zero-redis-candidate",
-        "VALIDATION_AI_SESSION_VOLUME":
-            "cargo-platform-validation-zero-ai-candidate",
-        "ROLLBACK_APP_VERSION": "rollback",
-        "ROLLBACK_BACKEND_IMAGE": "test/backend:rollback",
-        "ROLLBACK_PARSER_IMAGE": "test/parser:rollback",
-        "ROLLBACK_AI_IMAGE": "test/ai:rollback",
-        "ROLLBACK_UI_IMAGE": "test/ui:rollback",
-        "ROLLBACK_PLATFORM_VOLUME":
-            "cargo-platform-validation-adaptive-data-rollback",
-        "ROLLBACK_REDIS_VOLUME":
-            "cargo-platform-validation-adaptive-redis-rollback",
-        "ROLLBACK_AI_SESSION_VOLUME":
-            "cargo-platform-validation-adaptive-ai-sessions-rollback",
+        **true_zero_script_environment(),
         **override,
+    }
+
+    result = subprocess.run(
+        [
+            pwsh,
+            "-NoProfile",
+            "-File",
+            str(repo_root / "scripts" / "prepare_true_zero_validation.ps1"),
+        ],
+        cwd=repo_root,
+        env=environment,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert message in f"{result.stdout}\n{result.stderr}"
+
+
+@pytest.mark.parametrize(
+    ("fake_docker_mode", "message"),
+    [
+        ("mounted", "must not be mounted by any container"),
+        ("old-file", "must be empty"),
+    ],
+)
+def test_prepare_true_zero_script_rejects_used_candidate_scratch_volumes(
+    tmp_path: Path,
+    fake_docker_mode: str,
+    message: str,
+) -> None:
+    pwsh = shutil.which("pwsh.exe") or shutil.which("pwsh")
+    assert pwsh is not None
+    repo_root = Path(__file__).resolve().parents[2]
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    (fake_bin / "docker.cmd").write_text(
+        "\r\n".join(
+            [
+                "@echo off",
+                "set \"all_args=%*\"",
+                "if \"%FAKE_DOCKER_MODE%\"==\"mounted\" (",
+                "  echo %all_args% | findstr /C:\"ps --all --quiet --filter "
+                "volume=cargo-platform-validation-zero-ai-candidate\" >nul",
+                "  if not errorlevel 1 (",
+                "    echo stale-container",
+                "    exit /b 0",
+                "  )",
+                ")",
+                "if \"%FAKE_DOCKER_MODE%\"==\"old-file\" (",
+                "  echo %all_args% | findstr /C:\"source="
+                "cargo-platform-validation-zero-ai-candidate\" >nul",
+                "  if not errorlevel 1 (",
+                "    echo old-session.json",
+                "    exit /b 9",
+                "  )",
+                ")",
+                "exit /b 0",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    environment = {
+        **true_zero_script_environment(),
+        "FAKE_DOCKER_MODE": fake_docker_mode,
+        "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
     }
 
     result = subprocess.run(
