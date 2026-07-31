@@ -30,6 +30,8 @@ PRESERVED_TABLES = {
     "print_template_configs",
 }
 
+RESEEDED_TABLES = {"tenant_fingerprint_configs"}
+
 CLEARED_TABLES = {
     "exception_records",
     "export_records",
@@ -53,6 +55,25 @@ CLEARED_TABLES = {
 
 IGNORED_TABLES = {"alembic_version", "sqlite_sequence"}
 ORACLE_PARSER_URL = "http://127.0.0.1:8010"
+TRUE_ZERO_FINGERPRINT_FIELDS = {
+    "CN-ITEM-INFO": ["item_info", "seller_memo", "item_total_count"],
+    "CN-PRINT-XML": ["print_text"],
+    "CN-CUSTOM-CONTENT": ["custom_content"],
+    "CN-PACKAGE-ITEMS": [
+        "item_name",
+        "sku_full_name",
+        "spec_name",
+        "sku_size",
+        "item_quantity",
+    ],
+    "CLOUD-PRODUCT-INFO": [
+        "product_info",
+        "product_short_info",
+        "spec_info",
+        "remark",
+        "product_count",
+    ],
+}
 
 
 def sha256_file(path: Path) -> str:
@@ -98,7 +119,7 @@ def raw_payload_sha256(db: sqlite3.Connection) -> str:
 
 
 def _unknown_nonempty_tables(db: sqlite3.Connection) -> list[str]:
-    known = PRESERVED_TABLES | CLEARED_TABLES | IGNORED_TABLES
+    known = PRESERVED_TABLES | RESEEDED_TABLES | CLEARED_TABLES | IGNORED_TABLES
     return sorted(
         table
         for table in table_names(db) - known
@@ -172,11 +193,68 @@ def _scrub_columns(
     db.execute(f'UPDATE "{table}" SET {clause}', [value for _name, value in selected])
 
 
+def _seed_true_zero_fingerprint_configs(
+    db: sqlite3.Connection,
+    *,
+    workspace_id: int,
+) -> int:
+    present = table_names(db)
+    if "workspaces" not in present or "tenant_fingerprint_configs" not in present:
+        raise ValueError(
+            "true-zero database requires workspaces and tenant_fingerprint_configs tables"
+        )
+    workspace_columns = table_columns(db, "workspaces")
+    if not {"id", "tenant_id"} <= workspace_columns:
+        raise ValueError("workspaces must contain id and tenant_id columns")
+    row = db.execute(
+        'SELECT "tenant_id" FROM "workspaces" WHERE "id" = ?',
+        (workspace_id,),
+    ).fetchone()
+    if row is None or row[0] is None:
+        raise ValueError(f"workspace {workspace_id} has no tenant")
+    tenant_id = int(row[0])
+
+    config_columns = table_columns(db, "tenant_fingerprint_configs")
+    required = {"tenant_id", "fingerprint_code", "is_enabled", "selected_fields"}
+    if not required <= config_columns:
+        raise ValueError(
+            "tenant_fingerprint_configs is missing required columns: "
+            + ", ".join(sorted(required - config_columns))
+        )
+    db.execute('DELETE FROM "tenant_fingerprint_configs"')
+    insert_columns = [
+        "tenant_id",
+        "fingerprint_code",
+        "is_enabled",
+        "selected_fields",
+    ]
+    if "is_deleted" in config_columns:
+        insert_columns.append("is_deleted")
+    placeholders = ", ".join("?" for _ in insert_columns)
+    columns_sql = ", ".join(f'"{column}"' for column in insert_columns)
+    for code, selected_fields in TRUE_ZERO_FINGERPRINT_FIELDS.items():
+        values: list[object] = [
+            tenant_id,
+            code,
+            1,
+            json.dumps(selected_fields, ensure_ascii=False),
+        ]
+        if "is_deleted" in config_columns:
+            values.append(0)
+        db.execute(
+            f'INSERT INTO "tenant_fingerprint_configs" ({columns_sql}) '
+            f"VALUES ({placeholders})",
+            values,
+        )
+    return tenant_id
+
+
 def build_cold_start_database(
     source_db: Path,
     destination_db: Path,
     *,
     task_ids: list[int] | None = None,
+    workspace_id: int = 1,
 ) -> dict[str, object]:
     source = source_db.resolve()
     destination = destination_db.resolve()
@@ -194,44 +272,63 @@ def build_cold_start_database(
         with closing(readonly_connection(source)) as source_connection, closing(
             sqlite3.connect(temporary)
         ) as target:
+            target.execute("PRAGMA foreign_keys = ON")
             source_connection.backup(target)
             unknown = _unknown_nonempty_tables(target)
             if unknown:
                 raise ValueError(f"unknown nonempty tables: {', '.join(unknown)}")
 
             present = table_names(target)
-            selected_task_ids = (
-                _prune_capture_tasks(target, task_ids)
-                if task_ids is not None
-                else None
-            )
-            for table in sorted(CLEARED_TABLES & present):
-                target.execute(f'DELETE FROM "{table}"')
+            target.execute("BEGIN IMMEDIATE")
+            target.execute("PRAGMA defer_foreign_keys = ON")
+            try:
+                selected_task_ids = (
+                    _prune_capture_tasks(target, task_ids)
+                    if task_ids is not None
+                    else None
+                )
+                for table in sorted(CLEARED_TABLES & present):
+                    target.execute(f'DELETE FROM "{table}"')
 
-            _scrub_columns(
-                target,
-                "collectors",
-                {
-                    "token_hash": None,
-                    "is_enabled": 0,
-                    "online_status": "offline",
-                    "last_heartbeat_at": None,
-                    "status_payload": None,
-                },
-            )
-            _scrub_columns(
-                target,
-                "raw_capture_records",
-                {
-                    "parsed_payload": None,
-                    "standard_detail_id": None,
-                    "waybill_mode": None,
-                },
-            )
-            target.commit()
+                tenant_id = _seed_true_zero_fingerprint_configs(
+                    target,
+                    workspace_id=workspace_id,
+                )
+                _scrub_columns(
+                    target,
+                    "collectors",
+                    {
+                        "token_hash": None,
+                        "is_enabled": 0,
+                        "online_status": "offline",
+                        "last_heartbeat_at": None,
+                        "status_payload": None,
+                    },
+                )
+                _scrub_columns(
+                    target,
+                    "raw_capture_records",
+                    {
+                        "status": "pending",
+                        "parsed_payload": None,
+                        "standard_detail_id": None,
+                        "waybill_mode": None,
+                        "archived_at": None,
+                        "archived_by": None,
+                    },
+                )
+                target.commit()
+            except BaseException:
+                target.rollback()
+                raise
             integrity = str(target.execute("PRAGMA integrity_check").fetchone()[0])
             if integrity != "ok":
                 raise RuntimeError(f"cold-start database integrity check failed: {integrity}")
+            foreign_key_errors = target.execute("PRAGMA foreign_key_check").fetchall()
+            if foreign_key_errors:
+                raise RuntimeError(
+                    f"cold-start database foreign key check failed: {foreign_key_errors}"
+                )
             preserved_counts = {
                 table: table_count(target, table)
                 for table in sorted(PRESERVED_TABLES & present)
@@ -241,6 +338,18 @@ def build_cold_start_database(
                 for table in sorted(CLEARED_TABLES & present)
             }
             payload_sha = raw_payload_sha256(target)
+            fingerprint_configs = {
+                str(code): json.loads(selected_fields)
+                for code, selected_fields in target.execute(
+                    """
+                    SELECT fingerprint_code, selected_fields
+                    FROM tenant_fingerprint_configs
+                    WHERE tenant_id = ? AND is_enabled = 1
+                    ORDER BY fingerprint_code
+                    """,
+                    (tenant_id,),
+                )
+            }
 
         temporary.replace(destination)
     except BaseException:
@@ -252,14 +361,18 @@ def build_cold_start_database(
         raise RuntimeError("source database changed while cold-start copy was built")
 
     return {
-        "contract_version": "ai_validation_dataset_v1",
+        "contract_version": "ai_validation_dataset_v2",
         "source_path": str(source),
         "destination_path": str(destination),
         "source_sha256": source_sha,
         "destination_sha256": sha256_file(destination),
         "raw_payload_sha256": payload_sha,
         "integrity_check": integrity,
+        "foreign_key_check": "ok",
         "selected_task_ids": selected_task_ids,
+        "workspace_id": workspace_id,
+        "tenant_id": tenant_id,
+        "fingerprint_configs": fingerprint_configs,
         "preserved_counts": preserved_counts,
         "cleared_counts": cleared_counts,
     }
@@ -590,11 +703,29 @@ def main() -> int:
     parser.add_argument("--gold-output", type=Path)
     parser.add_argument("--exclude-rule-tables", action="store_true")
     parser.add_argument("--parser-url")
+    parser.add_argument(
+        "--true-zero",
+        action="store_true",
+        help="build only a zero-rule cold database; cannot be mixed with oracle inputs",
+    )
     args = parser.parse_args()
     if args.cold_db is None and args.answer_set is None and args.gold_output is None:
         parser.error("provide --cold-db, --answer-set, --gold-output, or a combination")
     if (args.answer_set is not None or args.gold_output is not None) and not args.parser_url:
         parser.error("--answer-set and --gold-output require --parser-url")
+    if args.cold_db is not None and not args.true_zero:
+        parser.error("--cold-db requires --true-zero")
+    if args.true_zero and (
+        args.answer_set is not None
+        or args.gold_output is not None
+        or args.parser_url is not None
+        or args.exclude_rule_tables
+    ):
+        parser.error(
+            "--true-zero accepts only --source-db, --cold-db, and optional --task-id"
+        )
+    if args.true_zero and args.cold_db is None:
+        parser.error("--true-zero requires --cold-db")
 
     results: dict[str, object] = {}
     if args.answer_set is not None:

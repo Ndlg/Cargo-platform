@@ -6,6 +6,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 import sqlite3
+import sys
 from threading import Thread
 from typing import Iterator
 
@@ -13,6 +14,7 @@ import pytest
 
 import scripts.ai_validation_dataset as validation_dataset
 from scripts.ai_validation_dataset import (
+    TRUE_ZERO_FINGERPRINT_FIELDS,
     build_cold_start_database,
     export_answer_set,
     export_gold_rows,
@@ -24,6 +26,20 @@ def create_source_database(path: Path, *, with_unknown_table: bool = False) -> N
     with sqlite3.connect(path) as db:
         db.executescript(
             """
+            PRAGMA foreign_keys = ON;
+            CREATE TABLE tenants (
+                id INTEGER PRIMARY KEY,
+                name TEXT
+            );
+            CREATE TABLE workspaces (
+                id INTEGER PRIMARY KEY,
+                tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+                name TEXT
+            );
+            CREATE TABLE users (
+                id INTEGER PRIMARY KEY,
+                username TEXT
+            );
             CREATE TABLE collectors (
                 id INTEGER PRIMARY KEY,
                 collector_id TEXT,
@@ -53,6 +69,8 @@ def create_source_database(path: Path, *, with_unknown_table: bool = False) -> N
                 standard_detail_id INTEGER,
                 waybill_mode TEXT,
                 archived_at TEXT,
+                archived_by INTEGER,
+                status TEXT,
                 is_deleted INTEGER DEFAULT 0
             );
             CREATE TABLE stalls (id INTEGER PRIMARY KEY, name TEXT);
@@ -89,8 +107,23 @@ def create_source_database(path: Path, *, with_unknown_table: bool = False) -> N
                 id INTEGER PRIMARY KEY,
                 payload TEXT
             );
+            CREATE TABLE tenant_fingerprint_configs (
+                id INTEGER PRIMARY KEY,
+                tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+                fingerprint_code TEXT NOT NULL,
+                is_enabled INTEGER NOT NULL,
+                selected_fields TEXT NOT NULL,
+                is_deleted INTEGER NOT NULL DEFAULT 0,
+                UNIQUE (tenant_id, fingerprint_code)
+            );
             """
         )
+        db.executemany(
+            "INSERT INTO tenants(id, name) VALUES (?, ?)",
+            [(1, "验证租户"), (2, "应清除租户")],
+        )
+        db.execute("INSERT INTO workspaces VALUES (1, 1, '验证工作区')")
+        db.execute("INSERT INTO users VALUES (1, 'Administrator')")
         db.execute(
             "INSERT INTO collectors VALUES (1, 'right', '右边', 'secret-hash', 1, 'online', 'now', '{\"pid\": 1}')"
         )
@@ -103,9 +136,9 @@ def create_source_database(path: Path, *, with_unknown_table: bool = False) -> N
             INSERT INTO raw_capture_records(
                 id, workspace_id, task_id, source_component, source_index,
                 raw_payload, source_columns, parsed_payload, standard_detail_id,
-                waybill_mode, archived_at, is_deleted
+                waybill_mode, archived_at, archived_by, status, is_deleted
             ) VALUES (?, 1, ?, 'cainiao-cnprint', ?, ?, '{"商品":"范74"}',
-                      '{"product":"old"}', 99, 'old-mode', NULL, 0)
+                      '{"product":"old"}', 99, 'old-mode', 'old-archive', 7, 'parsed', 0)
             """,
             [
                 (101, 11, "1", '{"task":{"documents":[{"contents":[{"data":{"商品":"范74"}}]}]}}'),
@@ -132,6 +165,17 @@ def create_source_database(path: Path, *, with_unknown_table: bool = False) -> N
         db.execute("INSERT INTO print_template_configs VALUES (1, '现场模板')")
         db.execute("INSERT INTO export_records VALUES (1, '{\"old\":true}')")
         db.execute("INSERT INTO recognition_rule_pack_revisions VALUES (1, '{\"old\":true}')")
+        db.executemany(
+            """
+            INSERT INTO tenant_fingerprint_configs(
+                id, tenant_id, fingerprint_code, is_enabled, selected_fields, is_deleted
+            ) VALUES (?, ?, ?, 1, ?, 0)
+            """,
+            [
+                (1, 1, "OLD", '["unsafe"]'),
+                (2, 2, "OTHER-TENANT", '["unsafe"]'),
+            ],
+        )
         if with_unknown_table:
             db.execute("CREATE TABLE future_derived_results (id INTEGER PRIMARY KEY)")
             db.execute("INSERT INTO future_derived_results VALUES (1)")
@@ -158,8 +202,17 @@ def test_build_cold_start_database_preserves_inputs_and_scrubs_results(tmp_path:
     assert sha256_file(source) == source_hash
     assert raw_payload_digest(destination) == payload_hash
     assert manifest["integrity_check"] == "ok"
+    assert manifest["foreign_key_check"] == "ok"
     assert manifest["source_sha256"] == source_hash
+    assert manifest["tenant_id"] == 1
+    assert manifest["fingerprint_configs"] == dict(
+        sorted(TRUE_ZERO_FINGERPRINT_FIELDS.items())
+    )
     with sqlite3.connect(destination) as db:
+        db.execute("PRAGMA foreign_keys = ON")
+        assert db.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert db.execute("SELECT username FROM users").fetchone()[0] == "Administrator"
         assert db.execute("SELECT COUNT(*) FROM products").fetchone()[0] == 1
         assert db.execute("SELECT COUNT(*) FROM product_skus").fetchone()[0] == 1
         assert db.execute("SELECT COUNT(*) FROM image_assets").fetchone()[0] == 1
@@ -179,9 +232,27 @@ def test_build_cold_start_database_preserves_inputs_and_scrubs_results(tmp_path:
         ).fetchone()
         assert collector == (None, 0, "offline", None, None)
         derived = db.execute(
-            "SELECT parsed_payload, standard_detail_id, waybill_mode FROM raw_capture_records ORDER BY id"
+            """
+            SELECT status, parsed_payload, standard_detail_id, waybill_mode,
+                   archived_at, archived_by
+            FROM raw_capture_records ORDER BY id
+            """
         ).fetchall()
-        assert derived == [(None, None, None), (None, None, None)]
+        assert derived == [
+            ("pending", None, None, None, None, None),
+            ("pending", None, None, None, None, None),
+        ]
+        configs = db.execute(
+            """
+            SELECT tenant_id, fingerprint_code, selected_fields
+            FROM tenant_fingerprint_configs
+            ORDER BY fingerprint_code
+            """
+        ).fetchall()
+        assert configs == [
+            (1, code, json.dumps(fields, ensure_ascii=False))
+            for code, fields in sorted(TRUE_ZERO_FINGERPRINT_FIELDS.items())
+        ]
 
 
 def test_build_cold_start_database_keeps_only_selected_completed_tasks(
@@ -205,8 +276,9 @@ def test_build_cold_start_database_keeps_only_selected_completed_tasks(
             INSERT INTO raw_capture_records(
                 id, workspace_id, task_id, source_component, source_index,
                 raw_payload, source_columns, parsed_payload, standard_detail_id,
-                waybill_mode, archived_at, is_deleted
-            ) VALUES (?, 1, ?, 'cainiao-cnprint', ?, ?, '{}', NULL, NULL, NULL, NULL, 0)
+                waybill_mode, archived_at, archived_by, status, is_deleted
+            ) VALUES (?, 1, ?, 'cainiao-cnprint', ?, ?, '{}', NULL, NULL, NULL,
+                      NULL, NULL, 'parsed', 0)
             """,
             [
                 (6401, 64, "1", duplicate_payload),
@@ -286,6 +358,32 @@ def test_build_cold_start_database_never_overwrites_destination(tmp_path: Path) 
         build_cold_start_database(source, destination)
 
     assert destination.read_bytes() == b"keep"
+
+
+def test_true_zero_cli_rejects_parser_and_oracle_options(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "ai_validation_dataset.py",
+            "--source-db",
+            str(tmp_path / "source.db"),
+            "--cold-db",
+            str(tmp_path / "cold.db"),
+            "--true-zero",
+            "--parser-url",
+            "http://127.0.0.1:8010",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as error:
+        validation_dataset.main()
+
+    assert error.value.code == 2
+    assert not (tmp_path / "cold.db").exists()
 
 
 @contextmanager
