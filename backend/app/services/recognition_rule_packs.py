@@ -207,7 +207,15 @@ def save_ai_rule_profile(
             or text_value(item.get("grammar_signature")) != grammar_signature
         )
     ]
-    profiles.append(deepcopy(profile))
+    profiles.append(
+        {
+            **deepcopy(profile),
+            "provenance": {
+                "source": "confirmed_ai_rule",
+                "learning_session_id": session_id,
+            },
+        }
+    )
     learning_records = [
         deepcopy(item)
         for item in list_value(current_payload.get("ai_learning_records"))

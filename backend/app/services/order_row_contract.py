@@ -26,6 +26,7 @@ class OrderRowDraft:
     original_text: str
     status: str
     review_reason: str
+    source_trace: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

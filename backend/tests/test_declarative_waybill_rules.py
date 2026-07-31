@@ -190,6 +190,67 @@ def test_same_structure_new_values_reuses_profile() -> None:
     assert response.json()["rows"][0]["product"] == "范30/联名"
 
 
+def test_confirmed_ai_rule_reports_compiled_rule_provenance_without_ai_call() -> None:
+    app, rules = load_parser()
+    document = one_document()
+    profile = structured_profile(rules, document)
+    profile["grammar_signature"] = rules.build_evidence(
+        document,
+        "cainiao-cnprint",
+        None,
+    )["grammar_signature"]
+    profile["provenance"] = {
+        "source": "confirmed_ai_rule",
+        "learning_session_id": "session-provenance",
+    }
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/parse/batch",
+            json={
+                "task_id": 61,
+                "raw_records": [raw_record(9021, document)],
+                "rule_pack": declarative_pack([profile]),
+            },
+        )
+
+    expected = {
+        "source": "confirmed_ai_rule",
+        "learning_session_id": "session-provenance",
+        "rule_pack_code": "ai-cold-start-r0001",
+        "rule_pack_version": "1.0.0",
+        "fingerprint": profile["fingerprint"],
+        "grammar_signature": profile["grammar_signature"],
+        "strategy": "structured_items_v1",
+        "ai_call_count": 0,
+    }
+    body = response.json()
+    assert body["status"] == "parsed"
+    assert body["diagnostics"][0]["compiled_rule"] == expected
+    assert all(row["source_trace"]["compiled_rule"] == expected for row in body["rows"])
+
+
+def test_declarative_profile_rejects_untrusted_provenance() -> None:
+    app, rules = load_parser()
+    document = one_document()
+    profile = {
+        **structured_profile(rules, document),
+        "provenance": {
+            "source": "hidden_builtin",
+            "learning_session_id": "session-provenance",
+        },
+    }
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/rule-packs/validate",
+            json={"rule_pack": declarative_pack([profile])},
+        )
+
+    assert response.json()["status"] == "invalid"
+    assert "parser_policy.format_profiles[0].provenance" in response.json()["errors"]
+
+
 def test_matching_fingerprint_with_incomplete_row_is_not_accepted() -> None:
     app, rules = load_parser()
     baseline = one_document()

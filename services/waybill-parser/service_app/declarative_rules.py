@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from hashlib import sha256
 import json
 import re
@@ -49,6 +50,7 @@ STRUCTURED_PROFILE_KEYS = {
     "fields",
     "steps",
     "defaults",
+    "provenance",
 }
 TEXT_PROFILE_KEYS = {
     "fingerprint",
@@ -61,6 +63,7 @@ TEXT_PROFILE_KEYS = {
     "item_split",
     "steps",
     "defaults",
+    "provenance",
 }
 SOURCE_PROJECTION_PROFILE_KEYS = {
     "fingerprint",
@@ -70,6 +73,7 @@ SOURCE_PROJECTION_PROFILE_KEYS = {
     "grammar_signature",
     "selected_fields",
     "rows",
+    "provenance",
 }
 PROJECTION_TOKEN_CLASSES = {"text"}
 PROJECTION_OPERATIONS = {
@@ -134,6 +138,20 @@ def validate_selected_fields(value: object, prefix: str) -> list[str]:
         )
     ):
         return [f"{prefix}.selected_fields"]
+    return []
+
+
+def validate_profile_provenance(value: object, prefix: str) -> list[str]:
+    if value is None:
+        return []
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"source", "learning_session_id"}
+        or value.get("source") != "confirmed_ai_rule"
+        or not isinstance(value.get("learning_session_id"), str)
+        or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value["learning_session_id"])
+    ):
+        return [f"{prefix}.provenance"]
     return []
 
 
@@ -408,6 +426,7 @@ def validate_format_profiles(value: object) -> list[str]:
         if not FINGERPRINT_PATTERN.fullmatch(fingerprint) or identity in identities:
             errors.append(f"{prefix}.fingerprint")
         identities.add(identity)
+        errors.extend(validate_profile_provenance(profile.get("provenance"), prefix))
         strategy = profile.get("strategy")
         if strategy == "structured_items_v1":
             errors.extend(validate_structured_profile(profile, prefix))
@@ -877,6 +896,8 @@ def parse_declarative_payload(
     source_index: str | None,
     parent_sequence: int,
     fingerprint_strategy: str = "legacy_structure_v1",
+    rule_pack_code: str = "",
+    rule_pack_version: str = "",
 ) -> tuple[ParentWaybillDraft, dict[str, Any]]:
     fingerprint = fingerprint_for_payload(payload, text_value(source_component), fingerprint_strategy)
     candidates = [
@@ -968,11 +989,44 @@ def parse_declarative_payload(
         source_index=source_index,
         parent_sequence=parent_sequence,
     )
+    provenance = (
+        profile.get("provenance")
+        if isinstance(profile.get("provenance"), dict)
+        else {}
+    )
+    compiled_rule = {
+        "source": text_value(provenance.get("source")) or "declarative_rule",
+        **(
+            {"learning_session_id": text_value(provenance.get("learning_session_id"))}
+            if text_value(provenance.get("learning_session_id"))
+            else {}
+        ),
+        "rule_pack_code": text_value(rule_pack_code),
+        "rule_pack_version": text_value(rule_pack_version),
+        "fingerprint": fingerprint,
+        "grammar_signature": text_value(profile.get("grammar_signature")),
+        "strategy": text_value(profile.get("strategy")),
+        "ai_call_count": 0,
+    }
+    parent = replace(
+        parent,
+        rows=[
+            replace(
+                row,
+                source_trace={
+                    **(row.source_trace or {}),
+                    "compiled_rule": compiled_rule,
+                },
+            )
+            for row in parent.rows
+        ],
+    )
     complete, reasons = check_parent_completeness(parent)
     return parent, {
         "raw_record_id": raw_record_id,
         "parent_label": parent.parent_label,
         "fingerprint": fingerprint,
+        "compiled_rule": compiled_rule,
         "reason": "" if complete else reasons[0],
         "reasons": reasons,
     }

@@ -293,6 +293,65 @@ def parser_payload_from_parents(task_id: int, parents: list) -> dict:
     }
 
 
+def test_parser_source_trace_survives_backend_order_row_contract() -> None:
+    compiled_rule = {
+        "source": "confirmed_ai_rule",
+        "learning_session_id": "session-trace",
+        "rule_pack_code": "ai-recognition-main",
+        "rule_pack_version": "1.0.2",
+        "fingerprint": f"sha256:{'a' * 64}",
+        "grammar_signature": f"grammar-v1:sha256:{'b' * 64}",
+        "strategy": "source_projection_v1",
+        "ai_call_count": 0,
+    }
+    payload = {
+        "parents": [
+            {
+                "raw_record_id": 99,
+                "task_id": 61,
+                "parent_label": "面单 1",
+                "source_component": "cainiao-cnprint",
+                "source_index": "99",
+                "child_count": 1,
+                "rows": [
+                    {
+                        "raw_record_id": 99,
+                        "task_id": 61,
+                        "parent_label": "面单 1",
+                        "child_label": "面单 1-子1",
+                        "child_index": 1,
+                        "child_count": 1,
+                        "source_component": "cainiao-cnprint",
+                        "source_index": "99",
+                        "product": "商品甲",
+                        "sales_attr1": "黑色",
+                        "sales_attr2": "42",
+                        "quantity": 1,
+                        "remark": "",
+                        "image_match_text": "商品甲 黑色 42",
+                        "original_text": "商品甲 黑色 42 1件",
+                        "status": "draft",
+                        "review_reason": "",
+                        "source_trace": {
+                            "product": "task.documents[0].product",
+                            "compiled_rule": compiled_rule,
+                        },
+                    }
+                ],
+            }
+        ],
+        "rows": [],
+    }
+
+    parents = order_row_reader_service.order_row_drafts_from_parser_payload(payload)
+
+    assert parents[0].rows[0].source_trace == {
+        "product": "task.documents[0].product",
+        "compiled_rule": compiled_rule,
+    }
+    assert parents[0].as_dict()["rows"][0]["source_trace"]["compiled_rule"] == compiled_rule
+
+
 def use_order_row_parser_service_stub(monkeypatch) -> None:
     def fake_parse_order_row_drafts_with_service(
         *,

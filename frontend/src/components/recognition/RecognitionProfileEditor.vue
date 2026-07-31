@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 
 import type {
   RecognitionBusinessField,
@@ -18,6 +18,8 @@ const emit = defineEmits<{
   delete: []
 }>()
 
+const openSections = ref<string[]>([])
+
 const businessFields: Array<{ key: RecognitionBusinessField; label: string }> = [
   { key: 'product', label: '商品' },
   { key: 'sales_attr1', label: '销售属性1' },
@@ -32,6 +34,16 @@ const strategyLabel = computed(() => {
   if (props.modelValue.strategy === 'structured_items_v1') return '结构化字段规则'
   if (props.modelValue.strategy === 'source_projection_v1') return '自动来源绑定规则'
   return '文本拆分规则'
+})
+
+const validationState = computed(() => {
+  const result = props.learningRecord?.compiler_result
+  if (!result) return { type: 'info' as const, title: '导入规则：没有管理员学习校验记录' }
+  const replay = result.replay_report ?? []
+  if (result.status === 'compiled' && replay.length && replay.every((item) => item.passed === true)) {
+    return { type: 'success' as const, title: `规则编译和 ${replay.length} 个样本回放已通过` }
+  }
+  return { type: 'warning' as const, title: '规则校验未通过，请重新学习这种面单格式' }
 })
 
 function patchProfile(values: Partial<RecognitionFormatProfile>) {
@@ -123,12 +135,49 @@ function sampleText(): string {
     <div class="profile-heading">
       <div>
         <el-tag type="primary">{{ strategyLabel }}</el-tag>
-        <small>格式指纹：{{ modelValue.fingerprint }}</small>
       </div>
       <el-button type="danger" plain @click="emit('delete')">删除这条规则</el-button>
     </div>
 
-    <el-form label-position="top">
+    <el-alert
+      :closable="false"
+      :title="`${modelValue.name || strategyLabel} · 已确认 ${learningRecord?.confirmed_rows?.length ?? 0} 条商品行`"
+      :description="modelValue.description || '管理员确认后生成，后续同格式面单会自动复用。'"
+      type="info"
+      show-icon
+    />
+    <el-alert
+      class="validation-alert"
+      :closable="false"
+      :title="validationState.title"
+      :type="validationState.type"
+      show-icon
+    />
+
+    <div class="learning-grid">
+      <section>
+        <h4>确认时的五字段结果</h4>
+        <el-table :data="learningRecord?.confirmed_rows ?? []" border empty-text="这条导入规则没有学习记录">
+          <el-table-column prop="product" label="商品" min-width="180" />
+          <el-table-column prop="sales_attr1" label="销售属性1" min-width="130" />
+          <el-table-column prop="sales_attr2" label="销售属性2" min-width="110" />
+          <el-table-column prop="quantity" label="数量" width="80" />
+          <el-table-column prop="remark" label="备注" min-width="140" />
+        </el-table>
+      </section>
+      <section v-if="learningRecord?.sample_payload">
+        <h4>确认时的脱敏字段样本</h4>
+        <pre>{{ sampleText() }}</pre>
+      </section>
+    </div>
+
+    <el-collapse v-model="openSections" class="technical-collapse">
+      <el-collapse-item name="technical" title="高级：查看技术路径和处理步骤">
+        <p class="technical-meta">
+          格式指纹：{{ modelValue.fingerprint }}<br />
+          语法签名：{{ modelValue.grammar_signature || '未绑定' }}
+        </p>
+        <el-form label-position="top">
       <div class="two-column">
         <el-form-item label="规则名称">
           <el-input
@@ -277,24 +326,9 @@ function sampleText(): string {
         title="这条规则由已确认样本自动生成"
         :description="`已绑定 ${modelValue.rows?.length ?? 0} 个商品行模板并通过当前样本回放；有历史样本时会同时校验。识别有误时请回到 AI 面单解析重新学习。`"
       />
-    </el-form>
-
-    <div class="learning-grid">
-      <section>
-        <h4>确认时的识别结果</h4>
-        <el-table :data="learningRecord?.confirmed_rows ?? []" border empty-text="这条导入规则没有学习记录">
-          <el-table-column prop="product" label="商品" min-width="180" />
-          <el-table-column prop="sales_attr1" label="销售属性1" min-width="130" />
-          <el-table-column prop="sales_attr2" label="销售属性2" min-width="110" />
-          <el-table-column prop="quantity" label="数量" width="80" />
-          <el-table-column prop="remark" label="备注" min-width="140" />
-        </el-table>
-      </section>
-      <section>
-        <h4>已脱敏学习样本</h4>
-        <pre>{{ sampleText() }}</pre>
-      </section>
-    </div>
+        </el-form>
+      </el-collapse-item>
+    </el-collapse>
   </section>
 </template>
 
@@ -356,8 +390,26 @@ function sampleText(): string {
   margin-top: 20px;
 }
 
+.validation-alert {
+  margin-top: 10px;
+}
+
+.technical-collapse {
+  margin-top: 18px;
+}
+
+.technical-meta {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  word-break: break-all;
+}
+
 .learning-grid h4 {
   margin: 0 0 10px;
+}
+
+.learning-grid > section:only-child {
+  grid-column: 1 / -1;
 }
 
 pre {

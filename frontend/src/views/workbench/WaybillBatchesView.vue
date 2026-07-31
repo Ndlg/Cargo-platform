@@ -42,6 +42,16 @@ const aiStatus = computed(() =>
     ? drafts.value?.status ?? ''
     : '',
 )
+const fingerprintStatus = computed(() =>
+  ['fingerprint_adapter_required', 'fingerprint_field_selection_required'].includes(drafts.value?.status ?? '')
+    ? drafts.value?.status ?? ''
+    : '',
+)
+const fingerprintStatusText = computed(() => (
+  fingerprintStatus.value === 'fingerprint_adapter_required'
+    ? '当前面单格式尚未接入字段适配器，系统没有把未知内容传给 AI。'
+    : '当前面单格式尚未选择提供给 AI 的字段，请先在面单指纹配置中选择字段。'
+))
 const aiSessionUrl = computed(() => {
   const sessionId = drafts.value?.ai_sessions?.find((item) => item.session_id)?.session_id ?? ''
   return /^[A-Za-z0-9_-]{1,128}$/.test(sessionId)
@@ -194,6 +204,15 @@ function diagnosticsSourceText(row: OrderRowDraftRecord): string {
   return row.source_index ? '可追溯到原始面单' : '缺少原始面单追溯'
 }
 
+function recognitionSourceLabel(row: OrderRowDraftRecord): string {
+  const compiledRule = row.source_trace?.compiled_rule
+  if (compiledRule?.source === 'confirmed_ai_rule') {
+    return `已确认规则自动复用（AI 调用 ${compiledRule.ai_call_count}）`
+  }
+  if (compiledRule) return `规则包自动解析（AI 调用 ${compiledRule.ai_call_count}）`
+  return '识别来源未记录'
+}
+
 function rowStatusType(row: OrderRowDraftRecord): 'success' | 'warning' | 'danger' | 'info' {
   if (row.status === 'draft') return 'success'
   if (row.status === 'special') return 'info'
@@ -328,6 +347,13 @@ onMounted(load)
 
   <el-alert v-if="error" :closable="false" :title="error" type="error" />
   <el-alert
+    v-else-if="fingerprintStatus"
+    :closable="false"
+    :title="fingerprintStatusText"
+    type="warning"
+    show-icon
+  />
+  <el-alert
     v-else-if="aiStatus"
     :closable="false"
     :title="aiStatusText"
@@ -438,6 +464,10 @@ onMounted(load)
               <span>采集来源</span>
               <strong>{{ sourceLabel(row) }} / {{ diagnosticsSourceText(row) }}</strong>
             </div>
+            <div>
+              <span>识别来源</span>
+              <strong>{{ recognitionSourceLabel(row) }}</strong>
+            </div>
           </div>
         </template>
       </el-table-column>
@@ -465,8 +495,11 @@ onMounted(load)
       <el-table-column label="备注" min-width="160" show-overflow-tooltip>
         <template #default="{ row }">{{ emptyText(row.remark) }}</template>
       </el-table-column>
-      <el-table-column label="来源" min-width="140">
+      <el-table-column label="采集来源" min-width="140">
         <template #default="{ row }">{{ sourceLabel(row) }}</template>
+      </el-table-column>
+      <el-table-column label="识别来源" min-width="240">
+        <template #default="{ row }">{{ recognitionSourceLabel(row) }}</template>
       </el-table-column>
       <el-table-column label="异常原因" min-width="240" show-overflow-tooltip>
         <template #default="{ row }">{{ rowReviewText(row) }}</template>

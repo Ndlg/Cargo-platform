@@ -64,7 +64,7 @@ onMounted(loadConfigs)
     </header>
 
     <el-alert
-      title="配置会同步到 AI 面单解析页的字段展示，不会修改现有识别规则；模型输入尚未接入。"
+      title="只有勾选且有值的字段会传给 AI；未勾选字段不会展示、传输或参与学习。保存不会修改已经生成的识别规则。"
       type="info"
       :closable="false"
       show-icon

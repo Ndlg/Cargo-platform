@@ -194,6 +194,11 @@ def order_row_drafts_from_parser_payload(payload: dict[str, Any]) -> list[Parent
                     original_text=text_value(row_payload.get("original_text")),
                     status=text_value(row_payload.get("status")) or "draft",
                     review_reason=text_value(row_payload.get("review_reason")),
+                    source_trace=(
+                        row_payload.get("source_trace")
+                        if isinstance(row_payload.get("source_trace"), dict)
+                        else None
+                    ),
                 )
             )
         parents.append(

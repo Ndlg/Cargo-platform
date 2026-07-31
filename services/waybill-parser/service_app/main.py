@@ -780,6 +780,7 @@ def parse_batch(payload: BatchParseRequest) -> dict[str, Any]:
             )
         next_parent_sequence = len(parents) + 1
         profiles = parser_policy["format_profiles"]
+        pack_meta = payload.rule_pack["pack"]
         ai_sessions: list[dict[str, Any]] = []
         unresolved_parent_count = 0
         for record in payload.raw_records:
@@ -796,6 +797,8 @@ def parse_batch(payload: BatchParseRequest) -> dict[str, Any]:
                     source_index=record.source_index,
                     parent_sequence=first_parent_sequence + document_offset,
                     fingerprint_strategy=parser_policy.get("fingerprint_strategy", "legacy_structure_v1"),
+                    rule_pack_code=str(pack_meta.get("code") or ""),
+                    rule_pack_version=str(pack_meta.get("version") or ""),
                 )
                 if diagnostic["reason"]:
                     deterministic_reason = str(diagnostic["reason"])

@@ -37,15 +37,15 @@ const editingPack = ref<RecognitionRulePackSummary | null>(null)
 const editingPayload = ref<RecognitionRulePackPayload | null>(null)
 const formatProfiles = ref<RecognitionFormatProfile[]>([])
 const learningRecords = ref<RecognitionLearningRecord[]>([])
-const selectedFingerprint = ref('')
+const selectedProfileKey = ref('')
 const editorError = ref('')
 
 const hasImportPayload = computed(() => importText.value.trim().length > 0)
 const selectedProfile = computed(() => (
-  formatProfiles.value.find((profile) => profile.fingerprint === selectedFingerprint.value) ?? null
+  formatProfiles.value.find((profile) => profileKey(profile) === selectedProfileKey.value) ?? null
 ))
 const selectedLearningRecord = computed(() => (
-  learningRecords.value.find((record) => record.fingerprint === selectedFingerprint.value)
+  selectedProfile.value ? learningRecordFor(selectedProfile.value) : undefined
 ))
 
 function readableDate(value?: string | null): string {
@@ -61,6 +61,15 @@ function profileStrategyLabel(profile: RecognitionFormatProfile): string {
   if (profile.strategy === 'structured_items_v1') return '结构化字段'
   if (profile.strategy === 'source_projection_v1') return '自动来源绑定'
   return '文本拆分'
+}
+
+function profileKey(value: { fingerprint: string; grammar_signature?: string }): string {
+  return JSON.stringify([value.fingerprint, value.grammar_signature ?? ''])
+}
+
+function learningRecordFor(profile: RecognitionFormatProfile): RecognitionLearningRecord | undefined {
+  const key = profileKey(profile)
+  return [...learningRecords.value].reverse().find((record) => profileKey(record) === key)
 }
 
 function recordValue(value: unknown): Record<string, unknown> {
@@ -259,7 +268,7 @@ async function editPackRules(pack: RecognitionRulePackSummary) {
     learningRecords.value = Array.isArray(payload.ai_learning_records)
       ? jsonCopy(payload.ai_learning_records)
       : []
-    selectedFingerprint.value = formatProfiles.value[0]?.fingerprint ?? ''
+    selectedProfileKey.value = formatProfiles.value[0] ? profileKey(formatProfiles.value[0]) : ''
     editorError.value = ''
     ruleEditorVisible.value = true
   } catch (err) {
@@ -270,9 +279,10 @@ async function editPackRules(pack: RecognitionRulePackSummary) {
 }
 
 function updateSelectedProfile(profile: RecognitionFormatProfile) {
-  const index = formatProfiles.value.findIndex((item) => item.fingerprint === profile.fingerprint)
+  const index = formatProfiles.value.findIndex((item) => profileKey(item) === selectedProfileKey.value)
   if (index < 0) return
   formatProfiles.value[index] = profile
+  selectedProfileKey.value = profileKey(profile)
 }
 
 async function deleteSelectedProfile() {
@@ -294,10 +304,10 @@ async function deleteSelectedProfile() {
   } catch {
     return
   }
-  const fingerprint = selectedProfile.value.fingerprint
-  formatProfiles.value = formatProfiles.value.filter((profile) => profile.fingerprint !== fingerprint)
-  learningRecords.value = learningRecords.value.filter((record) => record.fingerprint !== fingerprint)
-  selectedFingerprint.value = formatProfiles.value[0]?.fingerprint ?? ''
+  const key = profileKey(selectedProfile.value)
+  formatProfiles.value = formatProfiles.value.filter((profile) => profileKey(profile) !== key)
+  learningRecords.value = learningRecords.value.filter((record) => profileKey(record) !== key)
+  selectedProfileKey.value = formatProfiles.value[0] ? profileKey(formatProfiles.value[0]) : ''
 }
 
 async function savePackRules() {
@@ -490,15 +500,15 @@ onMounted(loadPacks)
         </div>
         <button
           v-for="(profile, index) in formatProfiles"
-          :key="profile.fingerprint"
+          :key="profileKey(profile)"
           type="button"
           class="profile-list__item"
-          :class="{ active: selectedFingerprint === profile.fingerprint }"
-          @click="selectedFingerprint = profile.fingerprint"
+          :class="{ active: selectedProfileKey === profileKey(profile) }"
+          @click="selectedProfileKey = profileKey(profile)"
         >
           <strong>{{ profile.name || `规则 ${index + 1}` }}</strong>
           <span>{{ profileStrategyLabel(profile) }}</span>
-          <small>{{ learningRecords.find((record) => record.fingerprint === profile.fingerprint)?.source_component || '导入规则' }}</small>
+          <small>{{ learningRecordFor(profile)?.source_component || '导入规则' }}</small>
         </button>
       </aside>
       <RecognitionProfileEditor

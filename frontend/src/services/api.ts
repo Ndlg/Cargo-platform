@@ -314,6 +314,21 @@ export interface OrderRowDraftRecord extends ApiRecord {
   original_text: string
   status: 'draft' | 'needs_review' | string
   review_reason: string
+  source_trace?: {
+    compiled_rule?: CompiledRuleTrace
+    [key: string]: unknown
+  } | null
+}
+
+export interface CompiledRuleTrace extends ApiRecord {
+  source: 'confirmed_ai_rule' | 'declarative_rule' | string
+  learning_session_id?: string
+  rule_pack_code: string
+  rule_pack_version: string
+  fingerprint: string
+  grammar_signature: string
+  strategy: string
+  ai_call_count: number
 }
 
 export interface ParentWaybillDraftRecord extends ApiRecord {
@@ -350,6 +365,7 @@ export interface OrderRowDraftsResponse extends ApiRecord {
     session_id?: string
     console_url?: string
     error?: string
+    compiled_rule?: CompiledRuleTrace
   }>
   summary: {
     parent_waybill_count: number
@@ -404,6 +420,7 @@ export interface RecognitionTextStep extends ApiRecord {
 
 export interface RecognitionFormatProfile extends ApiRecord {
   fingerprint: string
+  grammar_signature?: string
   strategy: RecognitionRuleStrategy | string
   name?: string
   description?: string
@@ -415,10 +432,15 @@ export interface RecognitionFormatProfile extends ApiRecord {
   steps?: RecognitionTextStep[]
   selected_fields?: string[]
   rows?: Array<Partial<Record<RecognitionBusinessField, ApiRecord[]>>>
+  provenance?: {
+    source: 'confirmed_ai_rule'
+    learning_session_id: string
+  }
 }
 
 export interface RecognitionLearningRecord extends ApiRecord {
   fingerprint: string
+  grammar_signature?: string
   session_id?: string
   task_id?: number
   raw_record_id?: number
@@ -426,6 +448,11 @@ export interface RecognitionLearningRecord extends ApiRecord {
   sample_payload?: Record<string, unknown>
   confirmed_rows?: Array<Partial<Record<RecognitionBusinessField, string | number>>>
   rule_evidence?: string[]
+  compiler_result?: {
+    status?: string
+    grammar_signature?: string
+    replay_report?: Array<{ kind?: string; passed?: boolean }>
+  }
 }
 
 export interface RecognitionRulePackPayload extends ApiRecord {
