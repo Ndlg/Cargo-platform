@@ -25,23 +25,21 @@ from app.services.order_row_reader import (  # noqa: E402
 from app.services.regression_coverage import analyze_waybill_coverage  # noqa: E402
 
 
-def expected_parent_counts(records: list[Any]) -> dict[int, int]:
-    counts = Counter({int(record.id): 0 for record in records})
-    for sample in order_row_sample_inputs_from_records(records):
-        try:
-            raw_record_id = int(sample.get("raw_record_id"))
-        except (TypeError, ValueError):
-            continue
-        if raw_record_id in counts:
-            counts[raw_record_id] += 1
-    return {raw_record_id: max(1, count) for raw_record_id, count in counts.items()}
+def expected_parent_documents(records: list[Any]) -> list[dict[str, int]]:
+    return [
+        {
+            "raw_record_id": int(sample["raw_record_id"]),
+            "parent_sequence": int(sample["parent_sequence"]),
+        }
+        for sample in order_row_sample_inputs_from_records(records)
+    ]
 
 
 def scan_task(db: Any, *, workspace_id: int, task_id: int) -> dict[str, Any]:
     records = raw_records_for_task(db, workspace_id=workspace_id, task_id=task_id)
     rows = recognition_rows_for_task(db, workspace_id=workspace_id, task_id=task_id)
     result = analyze_waybill_coverage(
-        expected_parent_counts=expected_parent_counts(records),
+        expected_parent_documents=expected_parent_documents(records),
         rows=rows,
         normal_export_count=sum(recognition_report_row_is_exportable(row) for row in rows),
         exception_export_count=len(recognition_exception_export_rows(rows)),
@@ -86,6 +84,9 @@ def main() -> int:
         for key in (
             "expected_parent_count",
             "recognized_parent_count",
+            "covered_parent_count",
+            "normal_parent_count",
+            "exception_parent_count",
             "result_row_count",
             "normal_export_count",
             "exception_export_count",

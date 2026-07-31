@@ -13,6 +13,7 @@ os.environ["AUTO_CREATE_TABLES"] = "true"
 os.environ["SECRET_KEY"] = "workspace-isolation-secret"
 
 from fastapi.testclient import TestClient  # noqa: E402
+import pytest  # noqa: E402
 from sqlalchemy import select  # noqa: E402
 
 from app.core.database import SessionLocal  # noqa: E402
@@ -211,9 +212,15 @@ def test_mismatched_role_membership_does_not_grant_permissions() -> None:
         assert denied_create.status_code == 403
 
 
+@pytest.mark.parametrize(
+    "has_model_candidate",
+    [True, False],
+)
 def test_ai_session_proxy_enforces_auth_workspace_write_permission_and_actor(
     monkeypatch,
+    has_model_candidate,
 ) -> None:
+    case = "model" if has_model_candidate else "failed"
     approvals: list[str] = []
     claim_payloads: list[dict[str, object]] = []
     session_workspaces: dict[str, int] = {}
@@ -226,7 +233,7 @@ def test_ai_session_proxy_enforces_auth_workspace_write_permission_and_actor(
             "remark": "",
         }
     ]
-    model_candidate = {"parents": [{"rows": rows}]}
+    model_candidate = {"parents": [{"rows": rows}]} if has_model_candidate else None
 
     def session_with_service(session_id: str) -> dict[str, object]:
         return {
@@ -287,13 +294,13 @@ def test_ai_session_proxy_enforces_auth_workspace_write_permission_and_actor(
 
     with TestClient(app) as client:
         alice_username, alice_password, workspace_a_id, _role_id = _create_user_workspace_pair(
-            "proxy_alice",
-            "proxy_workspace_a",
+            f"proxy_alice_{case}",
+            f"proxy_workspace_a_{case}",
         )
         readonly_username, readonly_password, readonly_workspace_id, readonly_role_id = (
             _create_user_workspace_pair(
-                "proxy_readonly",
-                "proxy_workspace_readonly",
+                f"proxy_readonly_{case}",
+                f"proxy_workspace_readonly_{case}",
             )
         )
         session_workspaces.update(
@@ -375,8 +382,8 @@ def test_ai_session_proxy_enforces_auth_workspace_write_permission_and_actor(
             "fingerprint_code": "CN-PACKAGE-ITEMS",
             "actor": {
                 "id": alice_id,
-                "username": "proxy_alice",
-                "display_name": "Proxy_Alice",
+                "username": f"proxy_alice_{case}",
+                "display_name": f"Proxy_Alice_{case}".title(),
             },
             "model_candidate_sha256": sha256(
                 json.dumps(

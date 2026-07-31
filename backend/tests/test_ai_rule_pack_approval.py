@@ -427,6 +427,42 @@ def test_internal_approval_synthesizes_from_original_and_preserves_duplicates(
     assert response["negative_replay"] == "not_available"
 
 
+def test_internal_approval_records_admin_rows_when_model_candidate_is_none(
+    monkeypatch,
+) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    enable_ai(monkeypatch)
+    monkeypatch.setattr(
+        ai_route,
+        "synthesize_rule_with_service",
+        lambda **_kwargs: compiled_result(),
+    )
+    request_payload = approval_request(session_id="model-failed").model_dump(
+        mode="json"
+    )
+    request_payload["model_candidate"] = None
+    request = AiRuleApprovalRequest.model_validate(request_payload)
+    APPROVAL_CLAIMS[request.approval_claim]["model_candidate_sha256"] = canonical_hash(
+        None
+    )
+
+    with Session(engine) as db:
+        add_workspace(db)
+        add_field_config(db)
+        add_record(db)
+        db.commit()
+        response = ai_route.approve_ai_rule(request, db, "test-secret")
+        pack = db.scalar(select(RecognitionRulePack))
+
+    assert response["status"] == "approved"
+    assert pack is not None
+    learning = pack.payload["ai_learning_records"][0]
+    assert learning["model_candidate"] is None
+    assert learning["administrator_rows"] == [SHOE_ROW]
+    assert learning["model_candidate_sha256"] == canonical_hash(None)
+
+
 def test_internal_approval_flushes_before_commit_and_reruns_without_refresh(
     monkeypatch,
 ) -> None:

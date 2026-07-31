@@ -22,6 +22,8 @@
       .input-value { white-space: pre-wrap; overflow-wrap: anywhere; }
       .muted { color: #6b7280; }
       .error { color: #b91c1c; }
+      details.diagnostics { margin: 12px 0; color: #6b7280; }
+      details.diagnostics pre { white-space: pre-wrap; overflow-wrap: anywhere; }
     </style>
   </head>
   <body>
@@ -51,7 +53,7 @@
         approved: "已确认并同步",
         rejected: "已拒绝",
       })[status] || "待处理";
-      const editableStatuses = ["ai_rule_pending", "candidate_invalid", "ai_rule_invalid", "ai_result_invalid"];
+      const editableStatuses = ["ai_rule_pending", "candidate_invalid", "ai_rule_invalid", "ai_result_invalid", "ai_parse_failed", "ai_unavailable"];
       const candidateRows = (candidate) => (candidate?.parents || []).flatMap((parent) => Array.isArray(parent?.rows) ? parent.rows : []);
       const apiPath = (suffix = "") => `/api/v1/ai-recognition/sessions/${encodeURIComponent(selected)}${suffix}`;
       let currentSession = null;
@@ -175,7 +177,7 @@
         document.querySelector("#session").innerHTML = `
           <article>
             <h2>识别结果 · ${statusText(session.status)}</h2>
-            ${session.error ? `<p class="error">${escapeHtml(session.error)}</p>` : ""}
+            ${session.error ? `<details class="diagnostics"><summary>查看诊断信息</summary><pre>${escapeHtml(session.error)}</pre></details>` : ""}
             ${modelInput(session)}
             ${businessTable("模型原始候选", modelRows)}
             ${businessTable("管理员五字段结果", editable ? editRows : administratorRows, { editable, id: "administrator-result" })}

@@ -517,11 +517,87 @@ def test_model_failure_is_ai_unavailable(tmp_path: Path) -> None:
     assert "model offline" in stored["error"]
 
 
-def test_admin_feedback_preserves_first_model_candidate_without_second_model_call(
+def test_model_failure_can_use_admin_rows_without_fake_model_candidate(
     tmp_path: Path,
 ) -> None:
     module = load_ai_service(tmp_path / "import-default.db")
-    model = FakeModel()
+    approvals: list[dict[str, Any]] = []
+
+    class BrokenModel:
+        calls = 0
+
+        def recognize(self, _evidence: dict[str, Any]) -> dict[str, Any]:
+            self.calls += 1
+            raise httpx.ConnectError("model offline")
+
+    model = BrokenModel()
+
+    def sender(payload: dict[str, Any], _token: str) -> dict[str, Any]:
+        approvals.append(payload)
+        return {
+            "status": "approved",
+            "compiler_result": {"status": "compiled"},
+        }
+
+    app = module.create_app(
+        model_client=model,
+        db_path=tmp_path / "sessions.db",
+        internal_token=AI_TOKEN,
+        approval_sender=sender,
+    )
+    administrator_rows = [
+        {
+            "product": "管理员确认商品",
+            "sales_attr1": "灰蓝",
+            "sales_attr2": "39",
+            "quantity": 1,
+            "remark": "",
+        }
+    ]
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/v1/recognize",
+            json=recognize_request(),
+            headers=AI_HEADERS,
+        ).json()
+        failed = wait_for_status(client, created["session_id"], "ai_unavailable")
+        feedback = client.post(
+            f"/api/v1/sessions/{created['session_id']}/feedback",
+            json={"corrected_rows": administrator_rows},
+            headers=AI_HEADERS,
+        )
+        pending = wait_for_status(client, created["session_id"], "ai_rule_pending")
+        approved = client.post(
+            f"/api/v1/sessions/{created['session_id']}/approve",
+            json={"approval_claim": "model-failure-approval-claim"},
+            headers=AI_HEADERS,
+        )
+
+    assert failed["model_candidate"] is None
+    assert feedback.status_code == 200
+    assert pending["model_candidate"] is None
+    assert pending["administrator_rows"] == administrator_rows
+    assert pending["candidate"]["parents"][0]["rows"] == administrator_rows
+    assert model.calls == 1
+    assert approved.status_code == 200
+    assert approvals[0]["model_candidate"] is None
+    assert approvals[0]["administrator_rows"] == administrator_rows
+
+
+def test_invalid_candidate_admin_feedback_preserves_model_provenance_without_retry(
+    tmp_path: Path,
+) -> None:
+    module = load_ai_service(tmp_path / "import-default.db")
+    model = FakeModel(
+        {
+            "rows": [
+                {
+                    **span_selection()["rows"][0],
+                    "product_span_ids": ["missing"],
+                }
+            ]
+        }
+    )
     app = module.create_app(
         model_client=model,
         db_path=tmp_path / "sessions.db",
@@ -534,7 +610,7 @@ def test_admin_feedback_preserves_first_model_candidate_without_second_model_cal
             json=recognize_request(),
             headers=AI_HEADERS,
         ).json()
-        original = wait_for_status(client, created["session_id"], "ai_rule_pending")
+        original = wait_for_status(client, created["session_id"], "candidate_invalid")
         response = client.post(
             f"/api/v1/sessions/{created['session_id']}/feedback",
             json={
@@ -556,6 +632,7 @@ def test_admin_feedback_preserves_first_model_candidate_without_second_model_cal
     assert len(model.calls) == 1
     assert stored["model_calls"] == 1
     assert stored["model_candidate"] == original["model_candidate"]
+    assert stored["model_candidate"]["parents"] == []
     assert stored["administrator_rows"] == [
         {
             "product": "管理员确认商品",

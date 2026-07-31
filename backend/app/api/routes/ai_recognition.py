@@ -169,12 +169,14 @@ def approve_ai_recognition_session(
             else {}
         )
     )
-    if not isinstance(model_candidate, dict) or not valid_business_rows(
-        administrator_rows
+    if (
+        "model_candidate" not in session
+        or (model_candidate is not None and not isinstance(model_candidate, dict))
+        or not valid_business_rows(administrator_rows)
     ):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="当前会话缺少可验证的模型候选或管理员结果，请重新识别。",
+            detail="当前会话缺少可验证的管理员结果，请重新识别。",
         )
     try:
         claim_payload = AiApprovalClaim(
@@ -245,7 +247,7 @@ class AiRuleApprovalRequest(BaseModel):
     format_fingerprint: str = Field(min_length=1, max_length=128)
     fingerprint_code: str = Field(min_length=1, max_length=128)
     candidate_output: dict[str, Any] = Field(default_factory=dict)
-    model_candidate: dict[str, Any]
+    model_candidate: dict[str, Any] | None
     administrator_rows: list[AiProxyOrderRow] = Field(min_length=1, max_length=100)
     validate_only: bool = False
 

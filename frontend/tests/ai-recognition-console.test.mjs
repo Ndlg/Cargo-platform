@@ -94,3 +94,31 @@ disconnectOnAlert = true;
 await vm.runInContext("confirmAndSync()", context);
 
 assert.equal(button.textContent, "detached", "a detached button must not be rewritten");
+
+vm.runInContext(`
+  render({
+    status: "ai_unavailable",
+    error: "Traceback: model transport failed",
+    model_candidate: null,
+    administrator_rows: null,
+    compiler_result: null,
+    feedback: [],
+  })
+`, context);
+
+const failedSessionHtml = elements["#session"].innerHTML;
+assert.match(
+  failedSessionHtml,
+  /id="administrator-result"/,
+  "model failure must still render editable administrator rows",
+);
+assert.match(
+  failedSessionHtml,
+  /data-field="quantity"[^>]*value="1"/,
+  "the recovery row must default quantity to one",
+);
+assert.match(
+  failedSessionHtml,
+  /<details[^>]*>[\s\S]*Traceback: model transport failed[\s\S]*<\/details>/,
+  "technical model errors must stay inside collapsed diagnostics",
+);
