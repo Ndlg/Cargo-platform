@@ -1,0 +1,71 @@
+{
+  "release": "6173-adaptive-engine-final",
+  "date": "2026-07-31",
+  "source_commit": "a44af95",
+  "branch": "codex/local-ai-waybill-recognition",
+  "runtime": {
+    "backend": {
+      "container_id": "2a55864d64424ae2e19e021dc87ee781fb1c64a040a2e7979900318b8e61689c",
+      "image": "cargo-platform-validation-backend:release-a44af95",
+      "restart_count": 0
+    },
+    "parser": {
+      "container_id": "eb13c2c35d99f000966080108334f5eaa1b525382fa4fea7b4a3bd0484dc981e",
+      "image": "cargo-platform-validation-parser:release-a44af95",
+      "restart_count": 0
+    },
+    "ai_recognition": {
+      "container_id": "d339d223bddd521b576b0cea0a02774cc22ad38183194f22aed86b1d1d4be878",
+      "image": "cargo-platform-ai-recognition:release-a44af95",
+      "restart_count": 0
+    },
+    "ui": {
+      "container_id": "b2b7106324219360f8422125335f9f8d6deee6aca6215d672a603602b3948ab0",
+      "image": "cargo-platform-validation-ui:release-74c58c6",
+      "restart_count": 0
+    }
+  },
+  "volumes": {
+    "platform": "cargo-platform-validation-zero-platform-20260731-172907",
+    "redis": "cargo-platform-validation-zero-redis-20260731-172907",
+    "ai_sessions": "cargo-platform-validation-zero-ai-20260731-172907"
+  },
+  "database_backups": {
+    "platform_sha256": "156E1DC3FC27E53743EED69D3A683F475D2D5EB00964B8C6BBCE557E98DFC371",
+    "ai_sessions_sha256": "A13EFB1C8BAFCD0DA185886A234B5E247B33B485DE5869B25632CF78A65AC76D",
+    "integrity_check": "ok",
+    "rollback_hashes_identical": true
+  },
+  "blind_trial": {
+    "parent_waybills": 283,
+    "model_sessions": 25,
+    "model_exact_rows": "0/25",
+    "model_field_accuracy_percent": 38.2609,
+    "administrator_modified_percent": 100,
+    "parents_covered_by_learned_rules": 281,
+    "explicit_unreadable_exceptions": 2,
+    "normal_export_rows": 266,
+    "exception_rows": 27,
+    "sealed_oracle_core_matches": "263/266"
+  },
+  "task_coverage": [
+    {"task_id": 64, "collected": 94, "covered": 94, "normal_rows": 88, "exception_rows": 9},
+    {"task_id": 65, "collected": 96, "covered": 96, "normal_rows": 94, "exception_rows": 5},
+    {"task_id": 66, "collected": 93, "covered": 93, "normal_rows": 84, "exception_rows": 13}
+  ],
+  "verification": {
+    "backend_tests": "435 passed",
+    "frontend_typecheck": "passed",
+    "frontend_tenant_build": "passed",
+    "frontend_server_admin_build": "passed",
+    "runtime_error_patterns": 0,
+    "rollback_exercised": true
+  },
+  "field_5173_frozen": {
+    "backend": "eb42223185ae60de5c9b24c1752e23f2e5e63f12db1b48b9e9ba5591fe64b05c",
+    "tenant_ui": "5ed09f8a74fc36a65eaf68f222998620487b1cb73c63ac66ae2aac414f069d07",
+    "parser": "5d76b24c504043c44da77962a50ca2dc42744550ec4a1666ecc8af63fc452bec",
+    "redis": "d702409461c6c1a1991a5af843330ce4cb0a53f1a51f77cd29e78dd52ea12905",
+    "restart_count": 0
+  }
+}

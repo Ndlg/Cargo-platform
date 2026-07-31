@@ -86,10 +86,10 @@ docker compose -f ops/validation-stages/20260728-night/docker-compose.yml up -d
 
 ## 当前 6173 镜像
 
-- backend：`cargo-platform-validation-backend:release-4f269cd`
-- parser：`cargo-platform-validation-parser:release-6acf1cb`
+- backend：`cargo-platform-validation-backend:release-a44af95`
+- parser：`cargo-platform-validation-parser:release-a44af95`
 - UI：`cargo-platform-validation-ui:release-74c58c6`
-- AI 识别：`cargo-platform-ai-recognition:release-74c58c6`
+- AI 识别：`cargo-platform-ai-recognition:release-a44af95`
 - 本地模型：`qwen3.5:4b-q4_K_M`
 
 ## 阶段 3（历史，已被阶段 4 替代）：管理员手动单张学习
@@ -218,6 +218,31 @@ AI 故障演练只停止 `cargo-platform-validation-ai-recognition`：
 SQLite 备份 SHA-256 完全一致。全量测试为后端 `429 passed`，前端类型检查和
 `npm run build:all` 通过；任务 64/65/66 的面单覆盖分别为 `94/94`、`96/96`、
 `93/93`。
+
+## 2026-07-31 最终发布收口
+
+- 发布源码：`a44af95`；backend、parser、AI 使用 `release-a44af95`，UI 沿用
+  `release-74c58c6`。
+- 管理员批准使用创建 AI 会话时封存的字段选择和证据 SHA-256；字段配置或原始
+  证据变化会在规则落库前返回 `evidence_changed`，不生成漂移规则。
+- 只有目标工作空间管理员或系统管理员可以把 AI 候选固化为规则。
+- 导出准入统一要求存在已匹配商品 ID 和商品名称；伪 `matched` 行会进入可操作
+  异常，不会混入供应商 Excel。
+- 真零规则盲测学习 `25` 张面单，生成并批准 `25` 个受限候选；确定性规则最终
+  自动覆盖 `281/283` 张面单，另外 `2` 张保留明确异常。
+- 4B 模型五字段整行完全一致率为 `0/25`，因此模型只负责候选，不直接写规则；
+  管理员修正后的学习样本由确定性编译器生成、重放和复用。
+- 最终三轮闭环：任务 64 为 `94 = 85 个正常父面单 + 9 个异常父面单`，任务 65
+  为 `96 = 91 + 5`，任务 66 为 `93 = 80 + 13`；无静默丢单。
+- 任务 66 最终 Excel 为 `84` 条正常商品行、`84` 张图片、`13` 条异常；正常表
+  严格七列，异常表只有 `图片匹配文本`。
+- 已真实执行 `release-a44af95 -> 上一发布镜像 -> release-a44af95`。平台库和 AI
+  会话库在三个节点的 SHA-256 均分别保持
+  `156E1DC3FC27E53743EED69D3A683F475D2D5EB00964B8C6BBCE557E98DFC371`、
+  `A13EFB1C8BAFCD0DA185886A234B5E247B33B485DE5869B25632CF78A65AC76D`，
+  `PRAGMA integrity_check=ok`。
+- 全量后端测试 `435 passed`；前端类型检查及 tenant/server-admin 生产构建通过。
+- 5173 的 backend、tenant UI、parser、Redis 容器身份与重启次数保持不变。
 
 ## 既有 5173 快照（阶段 4 未重新访问）
 
