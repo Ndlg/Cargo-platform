@@ -194,6 +194,39 @@ def test_normal_report_always_keeps_all_seven_business_columns() -> None:
     ]
 
 
+def test_normal_report_ignores_legacy_stall_column() -> None:
+    layout = {
+        "columns": [
+            {"key": "stall_name", "label": "档口", "visible": True},
+            {"key": "product_name", "label": "商品", "visible": True},
+        ]
+    }
+    row = {
+        "status": "matched",
+        "product_id": 1,
+        "product_name": "鞋款A",
+        "stall_name": "至尚",
+        "sales_attr1_text": "黑色",
+        "sales_attr2_text": "42",
+        "quantity_text": "1",
+        "remark_text": "",
+        "image_match_text": "鞋款A 黑色 42",
+    }
+
+    assert recognition_report_headers(layout) == [
+        "商品",
+        "销售属性1",
+        "图片",
+        "销售属性2",
+        "数量",
+        "备注",
+        "图片匹配文本",
+    ]
+    assert recognition_report_export_rows([row], layout) == [
+        ["鞋款A", "黑色", "", "42", 1, "", "鞋款A 黑色 42"],
+    ]
+
+
 def test_export_keeps_matched_rows_with_missing_sales_attrs_in_normal_sheet() -> None:
     details = [
         SimpleNamespace(

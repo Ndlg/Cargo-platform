@@ -2,7 +2,6 @@
 
 export type ReportFieldKey =
   | 'product_name'
-  | 'stall_name'
   | 'sales_attr1'
   | 'sku_image'
   | 'sales_attr2'
@@ -72,7 +71,6 @@ export const REPORT_FIELD_DEFINITIONS: Array<{
   defaultWidth: number
 }> = [
   { key: 'product_name', label: '商品', description: '商品匹配输出的商品', defaultWidth: 16 },
-  { key: 'stall_name', label: '档口', description: 'SKU 档口优先，未设置时使用商品默认档口', defaultWidth: 14 },
   { key: 'sales_attr1', label: '销售属性1', description: '规格、颜色、款式等第一销售属性', defaultWidth: 24 },
   { key: 'sku_image', label: '图片', description: 'SKU 绑定的报货图', defaultWidth: 18 },
   { key: 'sales_attr2', label: '销售属性2', description: '第二销售属性或补充 SKU 字段', defaultWidth: 18 },
@@ -81,16 +79,6 @@ export const REPORT_FIELD_DEFINITIONS: Array<{
   { key: 'image_match_text', label: '图片匹配文本', description: '商品匹配输出的图片追溯文本', defaultWidth: 42 },
 ]
 
-const availableColumns: ReportFieldKey[] = [
-  'product_name',
-  'stall_name',
-  'sales_attr1',
-  'sku_image',
-  'sales_attr2',
-  'quantity',
-  'remark',
-  'image_match_text',
-]
 const standardColumns: ReportFieldKey[] = [
   'product_name',
   'sales_attr1',
@@ -120,14 +108,14 @@ function fieldDefinition(key: ReportFieldKey) {
   return REPORT_FIELD_DEFINITIONS.find((field) => field.key === key) ?? REPORT_FIELD_DEFINITIONS[0]
 }
 
-function makeColumns(keys: ReportFieldKey[], hiddenKeys: ReportFieldKey[] = []): ReportLayoutColumn[] {
-  const orderedKeys = [...keys, ...availableColumns.filter((key) => !keys.includes(key))]
+function makeColumns(keys: ReportFieldKey[]): ReportLayoutColumn[] {
+  const orderedKeys = [...keys, ...standardColumns.filter((key) => !keys.includes(key))]
   return orderedKeys.map((key) => {
     const field = fieldDefinition(key)
     return {
       key,
       label: field.label,
-      visible: !hiddenKeys.includes(key),
+      visible: true,
       width: field.defaultWidth,
     }
   })
@@ -174,17 +162,6 @@ export const REPORT_LAYOUT_PRESETS: ReportLayoutPreset[] = [
       ]),
     },
   },
-  {
-    id: 'compact_no_image',
-    name: '无图简版',
-    description: '只导出文字字段，适合临时核对。',
-    layout: {
-      ...defaultReportLayout(),
-      presetId: 'compact_no_image',
-      columns: makeColumns(standardColumns, ['sku_image']),
-      rowHeight: 32,
-    },
-  },
 ]
 
 function clampNumber(value: unknown, fallback: number, min: number, max: number): number {
@@ -225,25 +202,25 @@ export function normalizeReportLayout(raw: Partial<ReportLayout> | null | undefi
 
   sourceColumns.forEach((column) => {
     const key = column?.key as ReportFieldKey
-    if (!availableColumns.includes(key) || usedKeys.has(key)) return
+    if (!standardColumns.includes(key) || usedKeys.has(key)) return
     const field = fieldDefinition(key)
     usedKeys.add(key)
     const rawLabel = String(column.label || field.label).trim() || field.label
     columns.push({
       key,
       label: LEGACY_DEFAULT_LABELS[key]?.includes(rawLabel) ? field.label : rawLabel,
-      visible: column.visible !== false,
+      visible: true,
       width: clampNumber(column.width, field.defaultWidth, 8, 60),
     })
   })
 
-  availableColumns.forEach((key) => {
+  standardColumns.forEach((key) => {
     if (usedKeys.has(key)) return
     const field = fieldDefinition(key)
     columns.push({
       key,
       label: field.label,
-      visible: standardColumns.includes(key),
+      visible: true,
       width: field.defaultWidth,
     })
   })
@@ -521,7 +498,6 @@ export function buildReportRows(
 
 export function reportCellText(row: ReportPreviewRow, key: ReportFieldKey): string | number {
   if (key === 'product_name') return row.product_name || '-'
-  if (key === 'stall_name') return row.stall_name || '未设置档口'
   if (key === 'sales_attr1') return row.sales_attr1_text || '-'
   if (key === 'sales_attr2') return row.sales_attr2_text || '-'
   if (key === 'quantity') return row.quantity

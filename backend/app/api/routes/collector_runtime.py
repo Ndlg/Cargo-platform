@@ -610,7 +610,6 @@ RECOGNITION_REPORT_HEADERS = ["商品", "销售属性1", "图片", "销售属性
 
 RECOGNITION_REPORT_FIELD_DEFINITIONS: dict[str, dict[str, Any]] = {
     "product_name": {"label": "商品", "width": 16},
-    "stall_name": {"label": "档口", "width": 14},
     "sales_attr1": {"label": "销售属性1", "width": 24},
     "sku_image": {"label": "图片", "width": 18},
     "sales_attr2": {"label": "销售属性2", "width": 18},
@@ -991,8 +990,6 @@ def recognition_report_line_items(
 def recognition_report_cell_value(row: dict[str, Any], field_key: str) -> Any:
     if field_key == "product_name":
         return row["product_category"]
-    if field_key == "stall_name":
-        return row["stall_name"]
     if field_key == "sales_attr1":
         return row["spec"]
     if field_key == "sku_image":
