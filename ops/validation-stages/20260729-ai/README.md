@@ -86,10 +86,10 @@ docker compose -f ops/validation-stages/20260728-night/docker-compose.yml up -d
 
 ## 当前 6173 镜像
 
-- backend：`cargo-platform-validation-backend:single-ai-pack-0a1a18d`
-- parser：`cargo-platform-validation-parser:manual-ai-0a7b184`
-- UI：`cargo-platform-validation-ui:ai-session-b72ee71`
-- AI 识别：`cargo-platform-ai-recognition:business-fields-fe17eea`
+- backend：`cargo-platform-validation-backend:release-4f269cd`
+- parser：`cargo-platform-validation-parser:release-6acf1cb`
+- UI：`cargo-platform-validation-ui:release-74c58c6`
+- AI 识别：`cargo-platform-ai-recognition:release-74c58c6`
 - 本地模型：`qwen3.5:4b-q4_K_M`
 
 ## 阶段 3（历史，已被阶段 4 替代）：管理员手动单张学习
@@ -198,17 +198,26 @@ AI 故障演练只停止 `cargo-platform-validation-ai-recognition`：
 - 陌生任务 `68` 返回 `ai_unavailable`，保留 `1` 张异常面单、`0` 条正常行。
 - 演练后 AI 服务已恢复，容器重启次数为 `0`。
 
-执行完整验收：
-
-```powershell
-python scripts/verify_ai_recognition_e2e.py `
-  --base-url http://127.0.0.1:18001 `
-  --ai-url http://127.0.0.1:18111 `
-  --answer-set ops/validation-stages/20260729-ai/runtime/answer-set.jsonl
-```
+上面的 `scripts/verify_ai_recognition_e2e.py` 属于旧答案集验收，只保留历史记录，
+不得用于真零规则学习或当前发布验收。
 
 2026-07-29 已实际执行整套回退和恢复：6173 成功切回 `stage-17`/`stage-14`
 及原数据卷，健康检查通过；随后恢复本目录 AI 镜像和冷库卷，完整验收再次通过。
+
+## 2026-07-31 真零规则发布节点
+
+- 平台卷：`cargo-platform-validation-zero-platform-20260731-172907`
+- Redis 卷：`cargo-platform-validation-zero-redis-20260731-172907`
+- AI 会话卷：`cargo-platform-validation-zero-ai-20260731-172907`
+- 平台库备份 SHA-256：`156E1DC3FC27E53743EED69D3A683F475D2D5EB00964B8C6BBCE557E98DFC371`
+- AI 会话库备份 SHA-256：`A13EFB1C8BAFCD0DA185886A234B5E247B33B485DE5869B25632CF78A65AC76D`
+- 代码回退镜像：backend `adaptive-659b887`、parser `adaptive-5f9576f`、
+  AI `adaptive-b794829`、UI `adaptive-2c2219d`。
+
+已用同一组数据卷实际完成“发布镜像 → 上一阶段镜像 → 发布镜像”，回退前后两份
+SQLite 备份 SHA-256 完全一致。全量测试为后端 `429 passed`，前端类型检查和
+`npm run build:all` 通过；任务 64/65/66 的面单覆盖分别为 `94/94`、`96/96`、
+`93/93`。
 
 ## 既有 5173 快照（阶段 4 未重新访问）
 
