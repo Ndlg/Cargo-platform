@@ -1592,6 +1592,71 @@ def test_order_row_draft_endpoint_prefers_standard_details_as_business_waybills(
     assert [row["product"] for row in body["rows"]] == ["鞋款A", "鞋款B"]
 
 
+def test_order_row_draft_endpoint_keeps_declared_unreadable_documents(monkeypatch) -> None:
+    calls: list[dict] = []
+
+    def fake_parser(**kwargs) -> dict:
+        calls.append(kwargs)
+        return {
+            "contract_version": "order_row_drafts_v1",
+            "task_id": 8806,
+            "status": "parsed",
+            "summary": {
+                "parent_waybill_count": 2,
+                "child_waybill_count": 0,
+                "draft_count": 0,
+                "needs_review_count": 2,
+                "special_count": 0,
+            },
+            "parents": [],
+            "rows": [],
+        }
+
+    monkeypatch.setattr(order_row_reader_service, "waybill_parser_service_enabled", lambda: True)
+    monkeypatch.setattr(order_row_reader_service, "parse_order_row_drafts_with_service", fake_parser)
+
+    payload = {
+        "task": {
+            "documents": [
+                {"documentID": "DOC-EMPTY-A", "contents": [{"data": {"shopName": "店铺甲"}}]},
+                {"documentID": "DOC-EMPTY-B", "contents": [{"data": {"BUYER_NICK": "买家乙"}}]},
+            ]
+        }
+    }
+
+    with TestClient(app) as client:
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin123"})
+        assert login.status_code == 200
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}", "X-Workspace-Id": "1"}
+
+        activate_test_rule_pack()
+
+        with SessionLocal() as db:
+            db.add(
+                RawCaptureRecord(
+                    tenant_id=1,
+                    workspace_id=1,
+                    task_id=8806,
+                    document_id="RAW-EMPTY-DOCS",
+                    source_component="cainiao-cnprint",
+                    source_index="empty-documents",
+                    payload_format="json",
+                    raw_payload=json.dumps(payload, ensure_ascii=False),
+                    status="pending",
+                )
+            )
+            db.commit()
+
+        response = client.get("/api/v1/order-row-drafts/tasks/8806", headers=headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["summary"]["parent_waybill_count"] == 2
+    assert body["summary"]["draft_count"] == 0
+    assert len(calls) == 1
+    assert len(calls[0]["raw_records"][0]["payload"]["task"]["documents"]) == 2
+
+
 def test_order_row_draft_endpoint_prefers_current_raw_waybill_samples_over_stale_standard_details(
     monkeypatch,
 ) -> None:

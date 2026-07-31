@@ -627,7 +627,13 @@ def task_order_row_drafts_payload(
     for parser_input in raw_inputs:
         parser_input["ai_field_selections"] = field_selections
     sample_inputs = order_row_sample_inputs_from_records(records)
-    if raw_inputs:
+    if raw_inputs and (
+        has_readable_waybill_samples(sample_inputs)
+        or any(
+            "task_document_has_no_readable_text" in (sample.get("warnings") or [])
+            for sample in sample_inputs
+        )
+    ):
         active_pack = active_recognition_rule_pack(db, workspace_id=workspace_id)
         if active_pack is None:
             return rule_pack_missing_order_rows_response(
