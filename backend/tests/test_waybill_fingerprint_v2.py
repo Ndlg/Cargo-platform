@@ -49,26 +49,36 @@ def _package(items: list[dict[str, object]], **extra: object) -> dict[str, objec
     }
 
 
-def test_business_text_fingerprint_ignores_values_but_keeps_layout() -> None:
-    xml_a = _xml("范33 帆布鞋，42")
-    xml_a_new_values = _xml("范74 运动鞋，39")
-    xml_other_layout = {
+def test_business_print_xml_fingerprint_ignores_business_text_and_layout() -> None:
+    integer_size = _xml("范33 帆布鞋，39")
+    decimal_size_and_product_punctuation = _xml("范-74 运动鞋，40.5")
+    different_xml_layout = {
         "contents": [
             {
-                "printXML": "<layout><text>范74 运动鞋</text><line/><text>39</text></layout>",
+                "printXML": (
+                    "<layout><text>范74 运动鞋</text>"
+                    "<line/><text>40.5</text><text>第二行商品</text></layout>"
+                ),
             }
         ]
     }
 
-    assert business_shape_fingerprint(xml_a, "cainiao-cnprint") == (
-        business_shape_fingerprint(xml_a_new_values, "cainiao-cnprint")
+    fingerprint = business_shape_fingerprint(integer_size, "cainiao-cnprint")
+    assert fingerprint == business_shape_fingerprint(
+        decimal_size_and_product_punctuation,
+        "cainiao-cnprint",
     )
-    assert business_shape_fingerprint(xml_a, "cainiao-cnprint") != (
-        business_shape_fingerprint(xml_other_layout, "cainiao-cnprint")
+    assert fingerprint == business_shape_fingerprint(
+        different_xml_layout,
+        "cainiao-cnprint",
+    )
+    assert fingerprint != business_shape_fingerprint(
+        integer_size,
+        "cloud-print-client",
     )
 
 
-def test_business_text_fingerprint_keeps_newline_and_space_layout() -> None:
+def test_business_print_xml_fingerprint_ignores_newline_and_space_layout() -> None:
     space_layout = _xml_lines("范33 帆布鞋，42")
     space_layout_new_values = _xml_lines("范74 运动鞋，39")
     newline_layout = _xml_lines("范74\n运动鞋，39")
@@ -76,12 +86,12 @@ def test_business_text_fingerprint_keeps_newline_and_space_layout() -> None:
     assert business_shape_fingerprint(space_layout, "cainiao-cnprint") == (
         business_shape_fingerprint(space_layout_new_values, "cainiao-cnprint")
     )
-    assert business_shape_fingerprint(space_layout, "cainiao-cnprint") != (
+    assert business_shape_fingerprint(space_layout, "cainiao-cnprint") == (
         business_shape_fingerprint(newline_layout, "cainiao-cnprint")
     )
 
 
-def test_business_text_fingerprint_keeps_quantity_unit_layout() -> None:
+def test_business_print_xml_fingerprint_ignores_quantity_unit_layout() -> None:
     one_piece = _xml_lines("范33 帆布鞋，42 1件")
     same_shape_new_values = _xml_lines("范74 运动鞋，39 2件")
     one_pair = _xml_lines("范74 运动鞋，39 1双")
@@ -89,7 +99,7 @@ def test_business_text_fingerprint_keeps_quantity_unit_layout() -> None:
     assert business_shape_fingerprint(one_piece, "cainiao-cnprint") == (
         business_shape_fingerprint(same_shape_new_values, "cainiao-cnprint")
     )
-    assert business_shape_fingerprint(one_piece, "cainiao-cnprint") != (
+    assert business_shape_fingerprint(one_piece, "cainiao-cnprint") == (
         business_shape_fingerprint(one_pair, "cainiao-cnprint")
     )
 

@@ -926,13 +926,9 @@ def parse_declarative_payload(
         candidate
         for candidate in candidates
         if (
-            candidate.get("strategy") == "structured_items_v1"
+            candidate.get("strategy")
+            in {"structured_items_v1", "text_pipeline_v1"}
             or not candidate.get("grammar_signature")
-            or (
-                candidate.get("strategy") == "text_pipeline_v1"
-                and candidate.get("grammar_signature")
-                == text_profile_grammar_signature(payload, candidate)
-            )
             or (
                 candidate.get("strategy") == "source_projection_v1"
                 and candidate.get("grammar_signature")

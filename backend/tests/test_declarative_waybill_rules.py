@@ -525,7 +525,7 @@ def test_text_pipeline_extract_between_can_preserve_business_delimiters() -> Non
     assert any("defaults.quantity" in error for error in invalid_default.json()["errors"])
 
 
-def test_same_fingerprint_text_grammars_coexist_and_match_exactly() -> None:
+def test_text_profiles_execute_across_grammar_and_fail_closed_on_conflict() -> None:
     _app, rules = load_parser()
     synthesizer = importlib.import_module("service_app.rule_synthesizer")
 
@@ -560,14 +560,22 @@ def test_same_fingerprint_text_grammars_coexist_and_match_exactly() -> None:
         gold_samples=[],
         negative_samples=[],
     )["rule"]
+    conflicting = synthesizer.synthesize_rule(
+        payload=item_info("蓝色，39.5 商品乙*2"),
+        source_component="cainiao-cnprint",
+        corrected_rows=[row("商品乙", "39.5", "蓝色", 2)],
+        gold_samples=[],
+        negative_samples=[],
+    )["rule"]
 
     assert comma["fingerprint"] == semicolon["fingerprint"]
     assert comma["grammar_signature"] != semicolon["grammar_signature"]
-    assert rules.validate_format_profiles([comma, semicolon]) == []
+    assert comma["grammar_signature"] != conflicting["grammar_signature"]
+    assert rules.validate_format_profiles([comma, semicolon, conflicting]) == []
 
     parent, diagnostic = rules.parse_declarative_payload(
-        item_info("绿色;40;商品丙*3"),
-        [comma, semicolon],
+        item_info("绿色，40.5 商品-丙*3"),
+        [comma],
         raw_record_id=1,
         task_id=1,
         source_component="cainiao-cnprint",
@@ -579,10 +587,10 @@ def test_same_fingerprint_text_grammars_coexist_and_match_exactly() -> None:
     assert [
         (item.product, item.sales_attr1, item.sales_attr2, item.quantity)
         for item in parent.rows
-    ] == [("商品丙", "绿色", "40", 3)]
+    ] == [("商品-丙", "绿色", "40.5", 3)]
 
-    unknown, diagnostic = rules.parse_declarative_payload(
-        item_info("紫色|41|未知商品*1"),
+    second_layout, diagnostic = rules.parse_declarative_payload(
+        item_info("绿色;40;商品丙*3"),
         [comma, semicolon],
         raw_record_id=2,
         task_id=1,
@@ -591,8 +599,37 @@ def test_same_fingerprint_text_grammars_coexist_and_match_exactly() -> None:
         parent_sequence=2,
         fingerprint_strategy="business_shape_v2",
     )
-    assert unknown.rows == []
-    assert diagnostic["reason"] == "format_profile_missing"
+    assert diagnostic["reason"] == ""
+    assert [
+        (item.product, item.sales_attr1, item.sales_attr2, item.quantity)
+        for item in second_layout.rows
+    ] == [("商品丙", "绿色", "40", 3)]
+
+    incomplete, diagnostic = rules.parse_declarative_payload(
+        item_info("绿色，40.5 商品丙"),
+        [comma],
+        raw_record_id=3,
+        task_id=1,
+        source_component="cainiao-cnprint",
+        source_index="3",
+        parent_sequence=3,
+        fingerprint_strategy="business_shape_v2",
+    )
+    assert incomplete.rows == []
+    assert diagnostic["reason"] == "missing_quantity"
+
+    ambiguous, diagnostic = rules.parse_declarative_payload(
+        item_info("绿色，40.5 商品丙*3"),
+        [comma, conflicting],
+        raw_record_id=4,
+        task_id=1,
+        source_component="cainiao-cnprint",
+        source_index="4",
+        parent_sequence=4,
+        fingerprint_strategy="business_shape_v2",
+    )
+    assert ambiguous.rows == []
+    assert diagnostic["reason"] == "profile_ambiguous"
 
     duplicate = rules.validate_format_profiles([comma, dict(comma)])
     assert "parser_policy.format_profiles[1].fingerprint" in duplicate

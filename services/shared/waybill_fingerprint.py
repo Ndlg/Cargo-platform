@@ -278,7 +278,7 @@ def grammar_signature_for_texts(texts: Iterable[str]) -> str:
 def _business_signature(payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     code, data_nodes, item_nodes, print_blocks = _detected(payload)
     if code == "CN-PRINT-XML":
-        return code, {"text": sorted({_text_grammar(block) for block in print_blocks})}
+        return code, {"fields": ["printXML"]}
     if code == "CN-PACKAGE-ITEMS":
         fields = {FIELD_SOURCE_KEYS[field["key"]] for field in _definition(code)["fields"]}
         layouts = {

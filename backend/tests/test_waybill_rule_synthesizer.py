@@ -678,16 +678,16 @@ def test_structured_format_reuses_one_rule_for_a_different_item_count() -> None:
     ]
 
 
-def test_synthesizer_refuses_rule_that_breaks_prior_gold() -> None:
+def test_synthesizer_refuses_text_rule_that_conflicts_with_prior_gold() -> None:
     result = synthesize_rule(
         payload=print_xml("黄色，43 新商品*1"),
         source_component="cainiao-cnprint",
         corrected_rows=[row("新商品", "黄色", "43", 1)],
         gold_samples=[
             {
-                "raw_payload": print_xml("商品 灰色;39【1件】"),
+                "raw_payload": print_xml("灰色，39 旧商品*2"),
                 "source_component": "cainiao-cnprint",
-                "rows": [row("商品", "灰色", "39", 1)],
+                "rows": [row("另一个确认商品", "灰色", "39", 2)],
             }
         ],
         negative_samples=[],
@@ -866,7 +866,41 @@ def test_custom_area_rule_replays_only_the_allowlisted_xml_node() -> None:
     assert private_text not in json.dumps(result, ensure_ascii=False)
 
 
-def test_text_rule_uses_selected_input_grammar_and_ignores_neighbor_gold() -> None:
+def test_text_rule_replays_integer_decimal_and_product_changes_as_gold() -> None:
+    result = synthesize_rule(
+        payload=item_info("灰黑，38 商品名称*1"),
+        source_component="cainiao-cnprint",
+        corrected_rows=[row("商品名称", "灰黑", "38", 1)],
+        gold_samples=[
+            {
+                "raw_payload": item_info("黄色，40.5 另一个-商品*2"),
+                "source_component": "cainiao-cnprint",
+                "rows": [row("另一个-商品", "黄色", "40.5", 2)],
+            }
+        ],
+        negative_samples=[],
+    )
+
+    assert result["status"] == "compiled"
+    assert result["rule"]["grammar_signature"].startswith("grammar-v1:sha256:")
+    assert replay_rule(
+        result["rule"],
+        item_info("蓝色，41.5 同语法-商品*3"),
+    ) == [row("同语法-商品", "蓝色", "41.5", 3)]
+    assert replay_rule(
+        result["rule"],
+        item_info("蓝色，41.5 缺数量分隔符"),
+    ) == []
+    assert result["replay_report"][-1] == {
+        "kind": "gold",
+        "passed": True,
+        "expected": [row("另一个-商品", "黄色", "40.5", 2)],
+        "actual": [row("另一个-商品", "黄色", "40.5", 2)],
+        "emitted_row_count": 1,
+    }
+
+
+def test_text_rule_skips_a_prior_gold_layout_that_it_cannot_complete() -> None:
     result = synthesize_rule(
         payload=item_info("灰黑，38 商品名称*1"),
         source_component="cainiao-cnprint",
@@ -882,19 +916,14 @@ def test_text_rule_uses_selected_input_grammar_and_ignores_neighbor_gold() -> No
     )
 
     assert result["status"] == "compiled"
-    assert result["rule"]["grammar_signature"].startswith("grammar-v1:sha256:")
-    assert replay_rule(
-        result["rule"],
-        item_info("蓝色，40 同语法商品*3"),
-    ) == [row("同语法商品", "蓝色", "40", 3)]
     assert replay_rule(
         result["rule"],
         item_info("黄色;43;另一个商品【2件】"),
     ) == []
     assert result["replay_report"][-1] == {
-        "kind": "gold_neighbor",
+        "kind": "gold_not_applicable",
         "passed": True,
-        "expected": [],
+        "expected": [row("另一个商品", "黄色", "43", 2)],
         "actual": [],
         "emitted_row_count": 0,
     }

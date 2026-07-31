@@ -128,7 +128,7 @@ def test_print_xml_excludes_unclassified_and_sensitive_text_nodes() -> None:
     assert evidence["excluded_field_counts"]["non_business"] == 4
 
 
-def test_quantity_unit_layout_changes_grammar_and_fingerprint() -> None:
+def test_quantity_unit_layout_changes_grammar_but_not_business_fingerprint() -> None:
     one_piece = print_xml("黄色，43 商品甲 1件")
     same_layout_new_values = print_xml("灰色，39 商品乙 2件")
     one_pair = print_xml("灰色，39 商品乙 2双")
@@ -142,7 +142,7 @@ def test_quantity_unit_layout_changes_grammar_and_fingerprint() -> None:
     assert business_shape_fingerprint(one_piece, "cainiao-cnprint") == (
         business_shape_fingerprint(same_layout_new_values, "cainiao-cnprint")
     )
-    assert business_shape_fingerprint(one_piece, "cainiao-cnprint") != (
+    assert business_shape_fingerprint(one_piece, "cainiao-cnprint") == (
         business_shape_fingerprint(one_pair, "cainiao-cnprint")
     )
 
