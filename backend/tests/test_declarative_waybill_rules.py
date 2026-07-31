@@ -316,6 +316,7 @@ def test_text_pipeline_uses_literal_operations_and_multiple_item_lines() -> None
         "fingerprint": rules.structural_fingerprint(payload, "cloud-print-client"),
         "strategy": "text_pipeline_v1",
         "text_path": "task.documents[].contents[].data.customContent",
+        "field_roles": {"sales_attr2": "shoe_size_like_numeric_segment"},
         "item_split": "\n",
         "steps": [
             {
@@ -374,6 +375,7 @@ def test_text_pipeline_reads_plain_text_from_print_xml() -> None:
         "fingerprint": rules.structural_fingerprint(payload, "cainiao-cnprint"),
         "strategy": "text_pipeline_v1",
         "text_path": "task.documents[].contents[].printXML",
+        "field_roles": {"sales_attr2": "shoe_size_like_numeric_segment"},
         "steps": [
             {"op": "rsplit", "source": "text", "delimiter": "*", "targets": ["text", "quantity"]},
             {"op": "to_positive_int", "target": "quantity"},
@@ -430,6 +432,7 @@ def test_text_pipeline_extract_between_can_preserve_business_delimiters() -> Non
         "fingerprint": rules.structural_fingerprint(baseline, "cloud-print-client"),
         "strategy": "text_pipeline_v1",
         "text_path": "task.documents[].contents[].data.productInfo",
+        "field_roles": {"sales_attr2": "shoe_size_like_numeric_segment"},
         "steps": [
             {
                 "op": "extract_between",
@@ -649,6 +652,55 @@ def test_text_profiles_execute_across_grammar_and_fail_closed_on_conflict() -> N
     invalid = {**comma, "grammar_signature": "not-a-grammar"}
     assert "parser_policy.format_profiles[0].grammar_signature" in (
         rules.validate_format_profiles([invalid])
+    )
+    duplicate_roles = {
+        **comma,
+        "field_roles": {
+            "sales_attr1": "shoe_size_like_numeric_segment",
+            "sales_attr2": "shoe_size_like_numeric_segment",
+        },
+    }
+    assert "parser_policy.format_profiles[0].field_roles" in (
+        rules.validate_format_profiles([duplicate_roles])
+    )
+    duplicate_role_parent, diagnostic = rules.parse_declarative_payload(
+        item_info("42，39 商品甲*1"),
+        [duplicate_roles],
+        raw_record_id=6,
+        task_id=1,
+        source_component="cainiao-cnprint",
+        source_index="6",
+        parent_sequence=6,
+        fingerprint_strategy="business_shape_v2",
+    )
+    assert duplicate_role_parent.rows == []
+    assert diagnostic["reason"] == "missing_order_rows"
+
+    missing_roles = {key: value for key, value in comma.items() if key != "field_roles"}
+    assert "parser_policy.format_profiles[0].field_roles" in (
+        rules.validate_format_profiles([missing_roles])
+    )
+    missing_role_parent, diagnostic = rules.parse_declarative_payload(
+        item_info("灰黑，38 商品甲*1"),
+        [missing_roles],
+        raw_record_id=7,
+        task_id=1,
+        source_component="cainiao-cnprint",
+        source_index="7",
+        parent_sequence=7,
+        fingerprint_strategy="business_shape_v2",
+    )
+    assert missing_role_parent.rows == []
+    assert diagnostic["reason"] == "format_profile_missing"
+
+    empty_roles_without_grammar = {
+        key: value
+        for key, value in comma.items()
+        if key != "grammar_signature"
+    }
+    empty_roles_without_grammar["field_roles"] = {}
+    assert "parser_policy.format_profiles[0].grammar_signature" in (
+        rules.validate_format_profiles([empty_roles_without_grammar])
     )
 
 

@@ -278,6 +278,13 @@ def validate_text_step(
     return errors
 
 
+def field_roles_are_unique(field_roles: dict[str, Any]) -> bool:
+    values = list(field_roles.values())
+    return all(isinstance(value, str) for value in values) and len(values) == len(
+        set(values)
+    )
+
+
 def validate_text_profile(profile: dict[str, Any], prefix: str) -> list[str]:
     errors: list[str] = []
     if set(profile) - TEXT_PROFILE_KEYS:
@@ -302,17 +309,19 @@ def validate_text_profile(profile: dict[str, Any], prefix: str) -> list[str]:
     ):
         errors.append(f"{prefix}.grammar_signature")
     field_roles = profile.get("field_roles")
-    if field_roles is not None and (
+    if (
         not isinstance(field_roles, dict)
-        or not field_roles
         or any(
             field not in ROW_FIELDS - {"image_match_text", "quantity"}
             or not isinstance(token_class, str)
             or token_class not in FIELD_ROLE_TOKEN_CLASSES
             for field, token_class in field_roles.items()
         )
+        or not field_roles_are_unique(field_roles)
     ):
         errors.append(f"{prefix}.field_roles")
+    elif not field_roles and grammar_signature is None:
+        errors.append(f"{prefix}.grammar_signature")
     item_split = profile.get("item_split")
     if item_split is not None and (
         not isinstance(item_split, str) or not item_split or len(item_split) > 64
@@ -722,6 +731,8 @@ def text_field_roles_match(
     parent: ParentWaybillDraft,
     field_roles: dict[str, str],
 ) -> bool:
+    if not field_roles_are_unique(field_roles):
+        return False
     role_classes = set(field_roles.values())
     unassigned_fields = (
         ROW_FIELDS - {"image_match_text", "quantity"} - field_roles.keys()
@@ -929,7 +940,10 @@ def parse_with_format_profile(
         return structured_parent(payload, profile, **kwargs)
     if profile["strategy"] == "text_pipeline_v1":
         parent = text_parent(payload, profile, **kwargs)
-        if not text_field_roles_match(parent, profile.get("field_roles", {})):
+        if "field_roles" not in profile or not text_field_roles_match(
+            parent,
+            profile["field_roles"],
+        ):
             return replace(parent, child_count=0, rows=[])
         return parent
     return source_projection_parent(payload, profile, **kwargs)
@@ -970,11 +984,11 @@ def parse_declarative_payload(
         for candidate in candidates
         if (
             candidate.get("strategy") == "structured_items_v1"
-            or not candidate.get("grammar_signature")
             or (
                 candidate.get("strategy") == "text_pipeline_v1"
+                and "field_roles" in candidate
                 and (
-                    candidate.get("field_roles")
+                    candidate["field_roles"]
                     or candidate.get("grammar_signature")
                     == text_profile_grammar_signature(payload, candidate)
                 )

@@ -943,6 +943,27 @@ def test_text_rule_rejects_two_fields_with_the_same_restrictive_role() -> None:
     assert result["rule"] is None
 
 
+def test_text_rule_without_restrictive_roles_keeps_exact_grammar() -> None:
+    result = synthesize_rule(
+        payload=item_info("蓝色，均码 范74*1"),
+        source_component="cainiao-cnprint",
+        corrected_rows=[row("范74", "蓝色", "均码", 1)],
+        gold_samples=[],
+        negative_samples=[],
+    )
+
+    assert result["status"] == "compiled"
+    assert result["rule"]["field_roles"] == {}
+    assert replay_rule(
+        result["rule"],
+        item_info("红色，均码 范75*2"),
+    ) == [row("范75", "红色", "均码", 2)]
+    assert replay_rule(
+        result["rule"],
+        item_info("40.5，均码 范75-新款*2"),
+    ) == []
+
+
 def test_text_rule_skips_a_prior_gold_layout_that_it_cannot_complete() -> None:
     result = synthesize_rule(
         payload=item_info("灰黑，38 商品名称*1"),

@@ -6,6 +6,7 @@ from typing import Any
 
 from service_app.declarative_rules import (
     apply_projection_operations,
+    field_roles_are_unique,
     parse_with_format_profile,
     projection_grammar_signature,
     projection_source_path,
@@ -486,7 +487,7 @@ def _field_roles(corrected_rows: list[dict[str, Any]]) -> dict[str, str] | None:
             ):
                 roles[field] = token_class
                 break
-    return roles if len(roles) == len(set(roles.values())) else None
+    return roles if field_roles_are_unique(roles) else None
 
 
 def _projection_candidates(
@@ -978,13 +979,15 @@ def _replay_rule(
         and rule.get("grammar_signature") != projection_grammar_signature(evidence)
     ):
         return 0, []
-    if (
-        rule.get("strategy") == "text_pipeline_v1"
-        and rule.get("grammar_signature")
-        and not rule.get("field_roles")
-        and rule.get("grammar_signature") != text_profile_grammar_signature(payload, rule)
-    ):
-        return 0, []
+    if rule.get("strategy") == "text_pipeline_v1":
+        if "field_roles" not in rule:
+            return 0, []
+        if (
+            not rule["field_roles"]
+            and rule.get("grammar_signature")
+            != text_profile_grammar_signature(payload, rule)
+        ):
+            return 0, []
     parent = parse_with_format_profile(
         payload,
         rule,
@@ -1064,8 +1067,7 @@ def synthesize_rule(
                 "rule": None,
                 "replay_report": [],
             }
-        if field_roles:
-            rule["field_roles"] = field_roles
+        rule["field_roles"] = field_roles
     rule = {**rule, "fingerprint": evidence["structural_fingerprint"]}
     if (
         _rule_operations(rule) - ALLOWED_OPERATIONS
