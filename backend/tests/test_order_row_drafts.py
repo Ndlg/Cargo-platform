@@ -1657,6 +1657,75 @@ def test_order_row_draft_endpoint_keeps_declared_unreadable_documents(monkeypatc
     assert len(calls[0]["raw_records"][0]["payload"]["task"]["documents"]) == 2
 
 
+def test_order_rows_for_task_keeps_declared_unreadable_documents_over_stale_details(
+    monkeypatch,
+) -> None:
+    with TestClient(app):
+        pass
+    payload = {
+        "task": {
+            "documents": [
+                {"documentID": "DOC-EMPTY-A", "contents": [{"data": {"shopName": "店铺甲"}}]},
+                {"documentID": "DOC-EMPTY-B", "contents": [{"data": {"BUYER_NICK": "买家乙"}}]},
+            ]
+        }
+    }
+    with SessionLocal() as db:
+        db.add_all(
+            [
+                RawCaptureRecord(
+                    tenant_id=1,
+                    workspace_id=1,
+                    task_id=8807,
+                    document_id="RAW-EMPTY-DOCS-DOWNSTREAM",
+                    source_component="cainiao-cnprint",
+                    source_index="empty-documents-downstream",
+                    payload_format="json",
+                    raw_payload=json.dumps(payload, ensure_ascii=False),
+                    status="pending",
+                ),
+                StandardDetail(
+                    tenant_id=1,
+                    workspace_id=1,
+                    standard_detail_batch_id=1,
+                    field_values={
+                        "capture_task_id": 8807,
+                        "product_short_text": "不得复用的旧缓存商品 黑色 39 1件",
+                    },
+                ),
+            ]
+        )
+        db.commit()
+
+    expected_exceptions = [
+        {"parent_sequence": 1, "reason": "task_document_has_no_readable_text"},
+        {"parent_sequence": 2, "reason": "task_document_has_no_readable_text"},
+    ]
+
+    def fake_raw(*_args, **_kwargs):
+        return [], expected_exceptions
+
+    def reject_stale_details(*_args, **_kwargs):
+        raise AssertionError("Declared raw documents must stay authoritative.")
+
+    monkeypatch.setattr(order_row_reader_service, "parse_raw_records_to_order_rows", fake_raw)
+    monkeypatch.setattr(
+        order_row_reader_service,
+        "parse_standard_details_to_order_rows",
+        reject_stale_details,
+    )
+
+    with SessionLocal() as db:
+        rows, exceptions = order_row_reader_service.order_rows_for_task(
+            db,
+            workspace_id=1,
+            task_id=8807,
+        )
+
+    assert rows == []
+    assert exceptions == expected_exceptions
+
+
 def test_order_row_draft_endpoint_prefers_current_raw_waybill_samples_over_stale_standard_details(
     monkeypatch,
 ) -> None:

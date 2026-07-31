@@ -158,6 +158,13 @@ def has_readable_waybill_samples(sample_inputs: list[dict[str, Any]]) -> bool:
     return False
 
 
+def raw_waybill_samples_are_authoritative(sample_inputs: list[dict[str, Any]]) -> bool:
+    return has_readable_waybill_samples(sample_inputs) or any(
+        "task_document_has_no_readable_text" in (sample.get("warnings") or [])
+        for sample in sample_inputs
+    )
+
+
 def order_row_drafts_from_parser_payload(payload: dict[str, Any]) -> list[ParentWaybillDraft]:
     parents: list[ParentWaybillDraft] = []
     for parent_payload in payload.get("parents") or []:
@@ -462,7 +469,7 @@ def order_rows_for_task(
 ) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
     records = raw_records_for_task(db, workspace_id=workspace_id, task_id=task_id)
     sample_inputs = order_row_sample_inputs_from_records(records)
-    if records and has_readable_waybill_samples(sample_inputs):
+    if records and raw_waybill_samples_are_authoritative(sample_inputs):
         return parse_raw_records_to_order_rows(
             db, workspace_id=workspace_id, task_id=task_id, records=records
         )
@@ -627,13 +634,7 @@ def task_order_row_drafts_payload(
     for parser_input in raw_inputs:
         parser_input["ai_field_selections"] = field_selections
     sample_inputs = order_row_sample_inputs_from_records(records)
-    if raw_inputs and (
-        has_readable_waybill_samples(sample_inputs)
-        or any(
-            "task_document_has_no_readable_text" in (sample.get("warnings") or [])
-            for sample in sample_inputs
-        )
-    ):
+    if raw_inputs and raw_waybill_samples_are_authoritative(sample_inputs):
         active_pack = active_recognition_rule_pack(db, workspace_id=workspace_id)
         if active_pack is None:
             return rule_pack_missing_order_rows_response(
