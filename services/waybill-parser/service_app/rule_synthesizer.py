@@ -360,7 +360,10 @@ def _compile_source_order_text_rule(
     suffix = text[segments[-1][1] :]
     if (
         len(prefix) > 8
-        or any(char.isalnum() for char in prefix)
+        or (
+            any(char.isalnum() for char in prefix)
+            and (prefix[-1].isalnum() or prefix[-1].isspace())
+        )
         or len(suffix) > 8
         or (
             suffix.strip()

@@ -723,6 +723,39 @@ def test_synthesizer_rejects_field_labels_and_negative_matches() -> None:
     assert negative["rule"] is None
 
 
+def test_text_rule_compiles_a_guarded_business_prefix() -> None:
+    result = synthesize_rule(
+        payload=print_xml("微信至尚--NB 白灰 42,,*1"),
+        source_component="cainiao-cnprint",
+        corrected_rows=[row("NB", "白灰", "42", 1)],
+        gold_samples=[],
+        negative_samples=[],
+    )
+
+    assert result["status"] == "compiled"
+    assert result["rule"]["strategy"] == "text_pipeline_v1"
+    assert result["rule"]["steps"][0] == {
+        "op": "strip_prefix",
+        "target": "text",
+        "literal": "微信至尚--",
+    }
+    assert replay_rule(
+        result["rule"],
+        print_xml("微信至尚--亚瑟士 白黄 40.5,,*2"),
+    ) == [row("亚瑟士", "白黄", "40.5", 2)]
+    assert replay_rule(
+        result["rule"],
+        print_xml("其他店铺--亚瑟士 白黄 40.5,,*2"),
+    ) == []
+    assert synthesize_rule(
+        payload=print_xml("微信至尚NB 白灰 42,,*1"),
+        source_component="cainiao-cnprint",
+        corrected_rows=[row("NB", "白灰", "42", 1)],
+        gold_samples=[],
+        negative_samples=[],
+    )["status"] == "compiler_capability_missing"
+
+
 def test_structured_synthesis_never_uses_excluded_raw_leaves() -> None:
     result = synthesize_rule(
         payload=structured_items(
