@@ -52,7 +52,7 @@ FIELD_LABEL_PREFIX = re.compile(
 )
 ARRAY_INDEX = re.compile(r"\[\d+\]")
 PROJECTION_DELIMITER_RUN = re.compile(
-    r"[,，;；|/、](?:\s*[,，;；|/、])*"
+    r"(?:[,，;；|/、](?:\s*[,，;；|/、])*|[-–—]{2,})"
 )
 PROJECTION_XML_TEXT = re.compile(r"^(.*)\.text\[\d+\]$")
 MAX_PROJECTION_TEXT_SPANS = 200
@@ -639,8 +639,15 @@ def _projection_candidates(
                     continue
                 first_part = apply_projection_operations(text, [split_part])
                 nested_delimiters = dict.fromkeys(
-                    match.group()
-                    for match in PROJECTION_DELIMITER_RUN.finditer(first_part)
+                    [
+                        match.group()
+                        for match in PROJECTION_DELIMITER_RUN.finditer(first_part)
+                    ]
+                    + (
+                        [match.group() for match in re.finditer(r"\s+", first_part)]
+                        if re.fullmatch(r"[-–—]{2,}", delimiter)
+                        else []
+                    )
                 )
                 for nested_delimiter in nested_delimiters:
                     nested_count = first_part.count(nested_delimiter) + 1

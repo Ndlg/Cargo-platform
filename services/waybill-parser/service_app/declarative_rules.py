@@ -777,7 +777,9 @@ def projection_grammar_signature(evidence: dict[str, Any]) -> str:
                 source_path,
                 token_class,
                 occurrence,
-                grammar_signature_for_texts([str(span["original_text"])]),
+                grammar_signature_for_texts(
+                    [re.sub(r"(?<=\d)[.．](?=\d)", "", str(span["original_text"]))]
+                ),
             )
         )
     encoded = json.dumps(

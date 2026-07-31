@@ -760,6 +760,47 @@ def test_text_rule_compiles_a_guarded_business_prefix() -> None:
     )["status"] == "compiler_capability_missing"
 
 
+def test_projection_rule_compiles_prefixed_space_fields_with_separate_quantity() -> None:
+    def payload(seller_memo: str, quantity: int) -> dict[str, object]:
+        return {
+            "task": {
+                "documents": [
+                    {
+                        "contents": [
+                            {},
+                            {
+                                "data": {
+                                    "ITEM_INFO": "补差价",
+                                    "SELLER_MEMO": seller_memo,
+                                    "ITEM_TOTAL_COUNT": str(quantity),
+                                }
+                            },
+                        ]
+                    }
+                ]
+            }
+        }
+
+    result = synthesize_rule(
+        payload=payload("微信--HOKA 白灰 对图 38.5", 1),
+        source_component="cainiao-cnprint",
+        corrected_rows=[row("HOKA", "白灰", "38.5", 1, "对图")],
+        gold_samples=[],
+        negative_samples=[],
+    )
+
+    assert result["status"] == "compiled"
+    assert result["rule"]["strategy"] == "source_projection_v1"
+    assert replay_rule(
+        result["rule"],
+        payload("微信--ASICS 蓝白 先拍照 40", 2),
+    ) == [row("ASICS", "蓝白", "40", 2, "先拍照")]
+    assert replay_rule(
+        result["rule"],
+        payload("ASICS 蓝白 先拍照 40", 2),
+    ) == []
+
+
 def test_text_rule_compiles_a_bracketed_product_with_trailing_fields() -> None:
     result = synthesize_rule(
         payload=custom_content(
