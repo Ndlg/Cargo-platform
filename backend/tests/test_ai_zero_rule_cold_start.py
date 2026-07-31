@@ -1,6 +1,7 @@
 from copy import deepcopy
 import json
 from pathlib import Path
+import re
 import sys
 from typing import Any
 
@@ -426,5 +427,24 @@ def test_zero_rule_learning_compiles_once_then_reuses_without_ai(
             assert trace["learning_session_id"] == session_id
             assert trace["ai_call_count"] == 0
             assert len(model.calls) == 1
+            assert len(synthesis_calls) == 1
+            learned_input = json.dumps(
+                {
+                    "model_calls": model.calls,
+                    "synthesis_calls": synthesis_calls,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            for holdout_value in (
+                "UNSELECTED_HOLDOUT_SECRET",
+                "复用休闲鞋",
+                "黑白",
+            ):
+                assert holdout_value not in learned_input
+            assert re.search(
+                r"(?<![0-9A-Fa-f])42(?![0-9A-Fa-f])",
+                learned_input,
+            ) is None
     finally:
         ai_route.get_settings.cache_clear()
