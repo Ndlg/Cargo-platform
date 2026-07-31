@@ -119,6 +119,8 @@ def create_app(
     model = model_client or OllamaModelClient(
         base_url=os.getenv("OLLAMA_URL", "http://local-model:11434"),
         model=os.getenv("OLLAMA_MODEL", "qwen3.5:4b-q4_K_M"),
+        request_timeout_seconds=float(os.getenv("OLLAMA_REQUEST_TIMEOUT_SECONDS", "30")),
+        max_output_tokens=int(os.getenv("OLLAMA_MAX_OUTPUT_TOKENS", "1024")),
     )
     store = SessionStore(database_path)
     app = FastAPI(

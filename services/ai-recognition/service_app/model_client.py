@@ -14,6 +14,9 @@ SYSTEM_PROMPT = """你只负责从给定证据片段中选择字段来源，不�
 product_span_ids 至少一个；quantity_span_id 必须选择正整数数量片段。
 同一个 span_id 在一行内只能属于一个字段。"""
 
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 30.0
+DEFAULT_MAX_OUTPUT_TOKENS = 1024
+
 
 def _id_array(span_ids: list[str], *, minimum: int = 0) -> dict[str, Any]:
     return {
@@ -73,11 +76,17 @@ class OllamaModelClient:
         *,
         base_url: str,
         model: str,
+        request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
         http_client: httpx.Client | None = None,
     ) -> None:
+        if request_timeout_seconds <= 0 or max_output_tokens <= 0:
+            raise ValueError("Ollama request limits must be positive")
         self.base_url = base_url.rstrip("/")
         self.model = model
-        self.http_client = http_client or httpx.Client(timeout=120.0)
+        self.request_timeout_seconds = request_timeout_seconds
+        self.max_output_tokens = max_output_tokens
+        self.http_client = http_client or httpx.Client()
 
     def recognize(self, evidence: dict[str, Any]) -> dict[str, Any]:
         response = self.http_client.post(
@@ -95,8 +104,13 @@ class OllamaModelClient:
                 "stream": False,
                 "think": False,
                 "keep_alive": "10m",
-                "options": {"temperature": 0, "num_ctx": 4096},
+                "options": {
+                    "temperature": 0,
+                    "num_ctx": 4096,
+                    "num_predict": self.max_output_tokens,
+                },
             },
+            timeout=self.request_timeout_seconds,
         )
         response.raise_for_status()
         content = response.json().get("message", {}).get("content")

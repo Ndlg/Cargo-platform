@@ -778,6 +778,7 @@ def test_ollama_request_contains_only_bounded_evidence_and_span_schema(tmp_path:
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured.update(json.loads(request.content))
+        captured["timeout"] = request.extensions["timeout"]
         return httpx.Response(
             200,
             json={"message": {"content": json.dumps(span_selection(), ensure_ascii=False)}},
@@ -799,6 +800,73 @@ def test_ollama_request_contains_only_bounded_evidence_and_span_schema(tmp_path:
     assert "original_text" not in encoded
     assert captured["think"] is False
     assert captured["stream"] is False
+    assert captured["options"]["num_predict"] == 1024
+    assert captured["timeout"]["read"] == 30.0
+
+
+def test_ollama_timeout_becomes_editable_ai_failure(tmp_path: Path) -> None:
+    module = load_ai_service(tmp_path / "import-default.db")
+    captured: dict[str, Any] = {}
+
+    class TimeoutClient:
+        def post(self, _url: str, *, json: dict[str, Any], timeout: float) -> None:
+            captured.update(payload=json, timeout=timeout)
+            raise httpx.ReadTimeout("model request timed out")
+
+    model = module.OllamaModelClient(
+        base_url="http://ollama",
+        model="qwen-test",
+        request_timeout_seconds=7,
+        max_output_tokens=256,
+        http_client=TimeoutClient(),
+    )
+    app = module.create_app(
+        model_client=model,
+        db_path=tmp_path / "sessions.db",
+        internal_token=AI_TOKEN,
+    )
+
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/v1/recognize",
+            json=recognize_request(),
+            headers=AI_HEADERS,
+        ).json()
+        failed = wait_for_status(client, created["session_id"], "ai_unavailable")
+
+    assert captured["timeout"] == 7
+    assert captured["payload"]["options"]["num_predict"] == 256
+    assert failed["candidate"] is None
+    assert failed["status"] == "ai_unavailable"
+    assert failed["error"] == "model request timed out"
+
+
+def test_create_app_reads_ollama_request_limits(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = load_ai_service(tmp_path / "import-default.db")
+    captured: dict[str, Any] = {}
+
+    class ConfiguredModel:
+        model = "qwen-test"
+
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(module, "OllamaModelClient", ConfiguredModel)
+    monkeypatch.setenv("OLLAMA_REQUEST_TIMEOUT_SECONDS", "9")
+    monkeypatch.setenv("OLLAMA_MAX_OUTPUT_TOKENS", "384")
+    app = module.create_app(
+        db_path=tmp_path / "sessions.db",
+        internal_token=AI_TOKEN,
+    )
+
+    with TestClient(app):
+        pass
+
+    assert captured["request_timeout_seconds"] == 9
+    assert captured["max_output_tokens"] == 384
 
 
 def test_existing_session_database_adds_document_sequence_column(tmp_path: Path) -> None:
