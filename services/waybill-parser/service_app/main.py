@@ -417,17 +417,30 @@ def ai_diagnostic(
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     try:
         source_component = str(record.source_component or "unknown")
-        evidence = build_evidence(
-            document_payload,
-            source_component,
-        )
+        evidence = build_evidence(document_payload, source_component, [])
         selected_fields = record.ai_field_selections.get(evidence["fingerprint_code"])
-        if selected_fields is not None:
-            evidence = build_evidence(
-                document_payload,
-                source_component,
-                selected_fields,
+        if evidence["fingerprint_code"] == "UNKNOWN" or not selected_fields:
+            reason = (
+                "fingerprint_adapter_required"
+                if evidence["fingerprint_code"] == "UNKNOWN"
+                else "fingerprint_field_selection_required"
             )
+            return {
+                "raw_record_id": record.raw_record_id,
+                "parent_label": parent.parent_label,
+                "fingerprint": evidence["fingerprint_code"],
+                "reason": reason,
+                "deterministic_reason": deterministic_reason,
+            }, None
+        evidence = build_evidence(document_payload, source_component, selected_fields)
+        if not evidence["spans"]:
+            return {
+                "raw_record_id": record.raw_record_id,
+                "parent_label": parent.parent_label,
+                "fingerprint": evidence["fingerprint_code"],
+                "reason": "fingerprint_adapter_required",
+                "deterministic_reason": deterministic_reason,
+            }, None
         result = recognize_with_ai(
             workspace_id=workspace_id,
             task_id=task_id,
@@ -470,6 +483,10 @@ def ai_diagnostic(
 
 def overall_ai_status(diagnostics: list[dict[str, Any]]) -> str:
     reasons = {str(diagnostic.get("reason") or "") for diagnostic in diagnostics}
+    if "fingerprint_adapter_required" in reasons:
+        return "fingerprint_adapter_required"
+    if "fingerprint_field_selection_required" in reasons:
+        return "fingerprint_field_selection_required"
     if "ai_unavailable" in reasons:
         return "ai_unavailable"
     if "ai_parse_failed" in reasons:
@@ -528,6 +545,8 @@ def ai_fallback_response(payload: BatchParseRequest, deterministic_reason: str) 
             "candidate_invalid",
             "ai_rule_invalid",
             "ai_result_invalid",
+            "fingerprint_adapter_required",
+            "fingerprint_field_selection_required",
         }
         for diagnostic in diagnostics
     )
@@ -807,6 +826,8 @@ def parse_batch(payload: BatchParseRequest) -> dict[str, Any]:
             "ai_result_invalid",
             "ai_unavailable",
             "ai_parse_failed",
+            "fingerprint_adapter_required",
+            "fingerprint_field_selection_required",
         }
         if ai_reasons:
             parse_status = overall_ai_status(diagnostics)

@@ -57,6 +57,10 @@ def payload(quantity: object = 1) -> dict[str, Any]:
     }
 
 
+def known_ai_payload() -> dict[str, Any]:
+    return {"contents": [{"data": {"productInfo": "范74 45 1件"}}]}
+
+
 def raw_record(value: dict[str, Any]) -> dict[str, Any]:
     return {
         "raw_record_id": 901,
@@ -148,13 +152,17 @@ def parse(
     value: dict[str, Any],
     *,
     allow_ai: bool = False,
+    ai_field_selections: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
+    record = raw_record(value)
+    if ai_field_selections is not None:
+        record["ai_field_selections"] = ai_field_selections
     return client.post(
         "/api/v1/parse/batch",
         json={
             "workspace_id": 1,
             "task_id": 61,
-            "raw_records": [raw_record(value)],
+            "raw_records": [record],
             "rule_pack": rule_pack,
             "allow_ai": allow_ai,
         },
@@ -182,7 +190,13 @@ def test_manual_single_waybill_parse_creates_one_ai_session(monkeypatch) -> None
     with fake_ai() as (url, requests):
         monkeypatch.setenv("AI_RECOGNITION_URL", url)
         with TestClient(app) as client:
-            body = parse(client, None, payload(), allow_ai=True)
+            body = parse(
+                client,
+                None,
+                known_ai_payload(),
+                allow_ai=True,
+                ai_field_selections={"CLOUD-PRODUCT-INFO": ["product_info"]},
+            )
 
     assert body["status"] == "ai_rule_pending"
     assert body["rows"] == []
@@ -299,12 +313,93 @@ def test_manual_parse_forwards_tenant_fingerprint_field_selection(monkeypatch) -
     assert all(not path.endswith(".remark") for path in paths)
 
 
+def test_manual_parse_without_tenant_field_selection_does_not_use_catalog_defaults(monkeypatch) -> None:
+    app, _rules = load_parser()
+    with fake_ai() as (url, requests):
+        monkeypatch.setenv("AI_RECOGNITION_URL", url)
+        with TestClient(app) as client:
+            body = parse(
+                client,
+                None,
+                {"contents": [{"data": {"productInfo": "范74 45 1件"}}]},
+                allow_ai=True,
+            )
+
+    assert body["status"] == "fingerprint_field_selection_required"
+    assert body["diagnostics"][0]["reason"] == "fingerprint_field_selection_required"
+    assert requests == []
+
+
+def test_manual_parse_unknown_fingerprint_requires_adapter_without_ai(monkeypatch) -> None:
+    app, _rules = load_parser()
+    with fake_ai() as (url, requests):
+        monkeypatch.setenv("AI_RECOGNITION_URL", url)
+        with TestClient(app) as client:
+            body = parse(client, None, {"unknown": "unreadable"}, allow_ai=True)
+
+    assert body["status"] == "fingerprint_adapter_required"
+    assert body["diagnostics"][0]["reason"] == "fingerprint_adapter_required"
+    assert requests == []
+
+
+def test_manual_parse_without_readable_authorized_evidence_requires_adapter(monkeypatch) -> None:
+    app, _rules = load_parser()
+    record = raw_record({"contents": [{"data": {"productInfo": "范74 45 1件"}}]})
+    record["ai_field_selections"] = {"CLOUD-PRODUCT-INFO": ["product_count"]}
+    with fake_ai() as (url, requests):
+        monkeypatch.setenv("AI_RECOGNITION_URL", url)
+        with TestClient(app) as client:
+            body = client.post(
+                "/api/v1/parse/batch",
+                json={
+                    "workspace_id": 1,
+                    "task_id": 61,
+                    "raw_records": [record],
+                    "rule_pack": None,
+                    "allow_ai": True,
+                },
+            ).json()
+
+    assert body["status"] == "fingerprint_adapter_required"
+    assert body["diagnostics"][0]["reason"] == "fingerprint_adapter_required"
+    assert requests == []
+
+
+def test_manual_parse_known_authorized_fingerprint_without_profile_still_calls_ai(monkeypatch) -> None:
+    app, rules = load_parser()
+    record = raw_record({"contents": [{"data": {"productInfo": "范74 45 1件"}}]})
+    record["ai_field_selections"] = {"CLOUD-PRODUCT-INFO": ["product_info"]}
+    with fake_ai() as (url, requests):
+        monkeypatch.setenv("AI_RECOGNITION_URL", url)
+        with TestClient(app) as client:
+            body = client.post(
+                "/api/v1/parse/batch",
+                json={
+                    "workspace_id": 1,
+                    "task_id": 61,
+                    "raw_records": [record],
+                    "rule_pack": pack([profile(rules, payload())]),
+                    "allow_ai": True,
+                },
+            ).json()
+
+    assert body["status"] == "ai_rule_pending"
+    assert body["diagnostics"][0]["deterministic_reason"] == "format_profile_missing"
+    assert len(requests) == 1
+
+
 def test_manual_parse_keeps_invalid_span_selection_editable(monkeypatch) -> None:
     app, _rules = load_parser()
     with fake_ai("candidate_invalid") as (url, _requests):
         monkeypatch.setenv("AI_RECOGNITION_URL", url)
         with TestClient(app) as client:
-            body = parse(client, None, payload(), allow_ai=True)
+            body = parse(
+                client,
+                None,
+                known_ai_payload(),
+                allow_ai=True,
+                ai_field_selections={"CLOUD-PRODUCT-INFO": ["product_info"]},
+            )
 
     assert body["status"] == "candidate_invalid"
     assert body["ai_sessions"][0]["session_id"] == "session-1"
@@ -318,7 +413,13 @@ def test_ai_service_unavailable_status_is_preserved(monkeypatch) -> None:
     with fake_ai("ai_unavailable") as (url, _requests):
         monkeypatch.setenv("AI_RECOGNITION_URL", url)
         with TestClient(app) as client:
-            body = parse(client, None, payload(), allow_ai=True)
+            body = parse(
+                client,
+                None,
+                known_ai_payload(),
+                allow_ai=True,
+                ai_field_selections={"CLOUD-PRODUCT-INFO": ["product_info"]},
+            )
 
     assert body["status"] == "ai_unavailable"
     assert body["diagnostics"][0]["reason"] == "ai_unavailable"
@@ -330,7 +431,13 @@ def test_manual_parse_keeps_rule_approval_in_progress(monkeypatch) -> None:
     with fake_ai("approving") as (url, _requests):
         monkeypatch.setenv("AI_RECOGNITION_URL", url)
         with TestClient(app) as client:
-            body = parse(client, None, payload(), allow_ai=True)
+            body = parse(
+                client,
+                None,
+                known_ai_payload(),
+                allow_ai=True,
+                ai_field_selections={"CLOUD-PRODUCT-INFO": ["product_info"]},
+            )
 
     assert body["status"] == "approving"
     assert body["diagnostics"][0]["reason"] == "approving"
@@ -397,7 +504,14 @@ def test_ai_network_failure_is_business_exception_not_parser_500(monkeypatch) ->
             json={
                 "workspace_id": 1,
                 "task_id": 61,
-                "raw_records": [raw_record(payload())],
+                "raw_records": [
+                    {
+                        **raw_record(known_ai_payload()),
+                        "ai_field_selections": {
+                            "CLOUD-PRODUCT-INFO": ["product_info"]
+                        },
+                    }
+                ],
                 "rule_pack": None,
                 "allow_ai": True,
             },
@@ -413,7 +527,13 @@ def test_ai_unavailable_response_is_distinct_from_transport_failure(monkeypatch)
     with fake_ai("ai_unavailable") as (url, _requests):
         monkeypatch.setenv("AI_RECOGNITION_URL", url)
         with TestClient(app) as client:
-            body = parse(client, None, payload(), allow_ai=True)
+            body = parse(
+                client,
+                None,
+                known_ai_payload(),
+                allow_ai=True,
+                ai_field_selections={"CLOUD-PRODUCT-INFO": ["product_info"]},
+            )
 
     assert body["status"] == "ai_unavailable"
     assert body["diagnostics"][0]["reason"] == "ai_unavailable"
