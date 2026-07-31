@@ -713,6 +713,37 @@ def test_structured_format_reuses_paths_and_fails_closed_on_conflict() -> None:
     assert parent.rows == []
     assert diagnostic["reason"] == "profile_ambiguous"
 
+    image_by_product = {
+        **compact,
+        "grammar_signature": f"grammar-v1:sha256:{'a' * 64}",
+        "fields": {
+            **compact["fields"],
+            "image_match_text": "itemName",
+        },
+    }
+    image_by_spec = {
+        **compact,
+        "grammar_signature": f"grammar-v1:sha256:{'b' * 64}",
+        "fields": {
+            **compact["fields"],
+            "image_match_text": "skuFullName",
+        },
+    }
+    assert rules.validate_format_profiles([image_by_product, image_by_spec]) == []
+
+    parent, diagnostic = rules.parse_declarative_payload(
+        payload("商品甲"),
+        [image_by_product, image_by_spec],
+        raw_record_id=4,
+        task_id=1,
+        source_component="cainiao-cnprint",
+        source_index="4",
+        parent_sequence=4,
+        fingerprint_strategy="business_shape_v2",
+    )
+    assert parent.rows == []
+    assert diagnostic["reason"] == "profile_ambiguous"
+
 
 def test_rule_pack_validation_rejects_regex_script_and_unbounded_paths() -> None:
     app, _rules = load_parser()

@@ -990,6 +990,7 @@ def parse_declarative_payload(
                 row.sales_attr2,
                 row.quantity,
                 row.remark,
+                row.image_match_text,
             )
             for row in candidate_parent.rows
         )
