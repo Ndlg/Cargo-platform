@@ -327,18 +327,86 @@ def test_manual_parse_without_tenant_field_selection_does_not_use_catalog_defaul
 
     assert body["status"] == "fingerprint_field_selection_required"
     assert body["diagnostics"][0]["reason"] == "fingerprint_field_selection_required"
+    assert body["message"] == "当前面单格式尚未选择提供给 AI 的字段，请先在指纹配置中选择至少一个非空字段后重试。"
+    assert body["ai_sessions"] == []
+    assert body["summary"]["pending_rule_pack_count"] == 0
     assert requests == []
 
 
 def test_manual_parse_unknown_fingerprint_requires_adapter_without_ai(monkeypatch) -> None:
     app, _rules = load_parser()
+    record = raw_record({"unknown": "unreadable"})
+    record["ai_field_selections"] = {"UNKNOWN": ["unknown"]}
     with fake_ai() as (url, requests):
         monkeypatch.setenv("AI_RECOGNITION_URL", url)
         with TestClient(app) as client:
-            body = parse(client, None, {"unknown": "unreadable"}, allow_ai=True)
+            body = client.post(
+                "/api/v1/parse/batch",
+                json={
+                    "workspace_id": 1,
+                    "task_id": 61,
+                    "raw_records": [record],
+                    "rule_pack": None,
+                    "allow_ai": True,
+                },
+            ).json()
 
     assert body["status"] == "fingerprint_adapter_required"
     assert body["diagnostics"][0]["reason"] == "fingerprint_adapter_required"
+    assert body["message"] == "当前面单格式尚未接入字段适配器，请先维护该格式的字段适配后重试。"
+    assert body["ai_sessions"] == []
+    assert body["summary"]["pending_rule_pack_count"] == 0
+    assert requests == []
+
+
+def test_local_fingerprint_eligibility_precedes_missing_ai_url(monkeypatch) -> None:
+    app, _rules = load_parser()
+    monkeypatch.delenv("AI_RECOGNITION_URL", raising=False)
+
+    with TestClient(app) as client:
+        unknown = parse(
+            client,
+            None,
+            {"unknown": "unreadable"},
+            allow_ai=True,
+            ai_field_selections={"UNKNOWN": ["unknown"]},
+        )
+        unselected = parse(client, None, known_ai_payload(), allow_ai=True)
+        eligible = parse(
+            client,
+            None,
+            known_ai_payload(),
+            allow_ai=True,
+            ai_field_selections={"CLOUD-PRODUCT-INFO": ["product_info"]},
+        )
+
+    assert unknown["status"] == "fingerprint_adapter_required"
+    assert unselected["status"] == "fingerprint_field_selection_required"
+    assert eligible["status"] == "ai_unavailable"
+
+
+def test_active_pack_local_fingerprint_exceptions_have_actionable_messages(monkeypatch) -> None:
+    app, rules = load_parser()
+    rule_pack = pack([profile(rules, payload())])
+    with fake_ai() as (url, requests):
+        monkeypatch.setenv("AI_RECOGNITION_URL", url)
+        with TestClient(app) as client:
+            unknown = parse(
+                client,
+                rule_pack,
+                {"unknown": "unreadable"},
+                allow_ai=True,
+                ai_field_selections={"UNKNOWN": ["unknown"]},
+            )
+            unselected = parse(client, rule_pack, known_ai_payload(), allow_ai=True)
+
+    assert unknown["status"] == "fingerprint_adapter_required"
+    assert unknown["message"] == "当前面单格式尚未接入字段适配器，请先维护该格式的字段适配后重试。"
+    assert unselected["status"] == "fingerprint_field_selection_required"
+    assert unselected["message"] == "当前面单格式尚未选择提供给 AI 的字段，请先在指纹配置中选择至少一个非空字段后重试。"
+    assert unknown["ai_sessions"] == unselected["ai_sessions"] == []
+    assert unknown["summary"]["pending_rule_pack_count"] == 0
+    assert unselected["summary"]["pending_rule_pack_count"] == 0
     assert requests == []
 
 
@@ -422,6 +490,7 @@ def test_ai_service_unavailable_status_is_preserved(monkeypatch) -> None:
             )
 
     assert body["status"] == "ai_unavailable"
+    assert body["message"] == "AI 识别服务不可用，请检查服务配置或稍后重试。"
     assert body["diagnostics"][0]["reason"] == "ai_unavailable"
     assert body["diagnostics"][0]["error"] == "model failed"
 
@@ -453,6 +522,7 @@ def test_complete_known_profile_does_not_call_ai(monkeypatch) -> None:
             body = parse(client, pack([profile(rules, value)]), value)
 
     assert body["status"] == "parsed"
+    assert "message" not in body
     assert body["rows"][0]["product"] == "范74"
     assert requests == []
 

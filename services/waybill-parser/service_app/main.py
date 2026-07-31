@@ -10,7 +10,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from service_app.ai_client import (
     AiRecognitionUnavailable,
-    ai_recognition_enabled,
     recognize_with_ai,
 )
 from service_app.declarative_rules import (
@@ -28,6 +27,7 @@ from service_app.order_row_engine import (
     order_row_draft_summary,
 )
 from service_app.rule_synthesizer import synthesize_rule as synthesize_waybill_rule
+from services.shared.waybill_fingerprint import inspect_fingerprint
 
 
 app = FastAPI(
@@ -60,6 +60,26 @@ REQUIRED_MULTI_ITEM_FIELDS = (
     "pair_product_lines_with_labeled_attr_lines",
     "output_item_rows",
 )
+PENDING_AI_SESSION_STATUSES = {
+    "model_running",
+    "approving",
+    "ai_rule_pending",
+    "candidate_invalid",
+    "ai_rule_invalid",
+    "ai_result_invalid",
+}
+AI_STATUS_MESSAGES = {
+    "model_running": "AI 正在识别当前面单，请稍后刷新。",
+    "approving": "管理员确认正在生成识别规则，请稍后刷新。",
+    "ai_rule_pending": "AI 已生成候选结果，请管理员确认后生成识别规则。",
+    "candidate_invalid": "AI 候选结果不完整，请管理员修正五个业务字段后确认。",
+    "ai_rule_invalid": "管理员确认未生成有效识别规则，请修正业务字段后重试。",
+    "ai_result_invalid": "AI 返回结果不符合五字段要求，请管理员修正后确认。",
+    "ai_unavailable": "AI 识别服务不可用，请检查服务配置或稍后重试。",
+    "ai_parse_failed": "AI 识别结果处理失败，请检查当前面单字段后重试。",
+    "fingerprint_adapter_required": "当前面单格式尚未接入字段适配器，请先维护该格式的字段适配后重试。",
+    "fingerprint_field_selection_required": "当前面单格式尚未选择提供给 AI 的字段，请先在指纹配置中选择至少一个非空字段后重试。",
+}
 
 
 class StandardDetailParseInput(BaseModel):
@@ -417,18 +437,19 @@ def ai_diagnostic(
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     try:
         source_component = str(record.source_component or "unknown")
-        evidence = build_evidence(document_payload, source_component, [])
-        selected_fields = record.ai_field_selections.get(evidence["fingerprint_code"])
-        if evidence["fingerprint_code"] == "UNKNOWN" or not selected_fields:
+        inspection = inspect_fingerprint(document_payload, source_component)
+        fingerprint_code = inspection["fingerprint_code"] if inspection else "UNKNOWN"
+        selected_fields = record.ai_field_selections.get(fingerprint_code)
+        if fingerprint_code == "UNKNOWN" or not selected_fields:
             reason = (
                 "fingerprint_adapter_required"
-                if evidence["fingerprint_code"] == "UNKNOWN"
+                if fingerprint_code == "UNKNOWN"
                 else "fingerprint_field_selection_required"
             )
             return {
                 "raw_record_id": record.raw_record_id,
                 "parent_label": parent.parent_label,
-                "fingerprint": evidence["fingerprint_code"],
+                "fingerprint": fingerprint_code,
                 "reason": reason,
                 "deterministic_reason": deterministic_reason,
             }, None
@@ -538,24 +559,16 @@ def ai_fallback_response(payload: BatchParseRequest, deterministic_reason: str) 
     summary = order_row_draft_summary(parents)
     summary["needs_review_count"] = len(parents)
     summary["pending_rule_pack_count"] = sum(
-        diagnostic["reason"] in {
-            "model_running",
-            "approving",
-            "ai_rule_pending",
-            "candidate_invalid",
-            "ai_rule_invalid",
-            "ai_result_invalid",
-            "fingerprint_adapter_required",
-            "fingerprint_field_selection_required",
-        }
+        diagnostic["reason"] in PENDING_AI_SESSION_STATUSES
         for diagnostic in diagnostics
     )
+    status = overall_ai_status(diagnostics)
     return {
         "contract_version": ORDER_ROW_DRAFTS_CONTRACT_VERSION,
         "task_id": payload.task_id,
-        "status": overall_ai_status(diagnostics),
+        "status": status,
         "rule_pack_required": deterministic_reason == "rule_pack_missing",
-        "message": "AI recognition requires administrator confirmation before these rows can be used.",
+        "message": AI_STATUS_MESSAGES.get(status, "AI 识别需要管理员确认后才能生成订单行。"),
         "summary": summary,
         "recognition_rule_pack": None,
         "diagnostics": diagnostics,
@@ -679,7 +692,6 @@ def parse_batch(payload: BatchParseRequest) -> dict[str, Any]:
     if not payload.rule_pack:
         if (
             payload.allow_ai
-            and ai_recognition_enabled()
             and payload.workspace_id is not None
             and payload.task_id is not None
             and payload.raw_records
@@ -789,7 +801,6 @@ def parse_batch(payload: BatchParseRequest) -> dict[str, Any]:
                     deterministic_reason = str(diagnostic["reason"])
                     if (
                         payload.allow_ai
-                        and ai_recognition_enabled()
                         and payload.workspace_id is not None
                         and payload.task_id is not None
                     ):
@@ -818,12 +829,7 @@ def parse_batch(payload: BatchParseRequest) -> dict[str, Any]:
 
         reasons = {diagnostic["reason"] for diagnostic in diagnostics if diagnostic["reason"]}
         ai_reasons = reasons & {
-            "model_running",
-            "approving",
-            "ai_rule_pending",
-            "candidate_invalid",
-            "ai_rule_invalid",
-            "ai_result_invalid",
+            *PENDING_AI_SESSION_STATUSES,
             "ai_unavailable",
             "ai_parse_failed",
             "fingerprint_adapter_required",
@@ -842,20 +848,18 @@ def parse_batch(payload: BatchParseRequest) -> dict[str, Any]:
         summary = order_row_draft_summary(parents)
         summary["needs_review_count"] += unresolved_parent_count
         summary["pending_rule_pack_count"] = sum(
-            diagnostic["reason"] in {
-                "model_running",
-                "approving",
-                "ai_rule_pending",
-                "candidate_invalid",
-                "ai_rule_invalid",
-                "ai_result_invalid",
-            }
+            diagnostic["reason"] in PENDING_AI_SESSION_STATUSES
             for diagnostic in diagnostics
         )
         return {
             "contract_version": ORDER_ROW_DRAFTS_CONTRACT_VERSION,
             "task_id": payload.task_id,
             "status": parse_status,
+            **(
+                {"message": AI_STATUS_MESSAGES[parse_status]}
+                if parse_status in AI_STATUS_MESSAGES
+                else {}
+            ),
             "summary": summary,
             "diagnostics": diagnostics,
             "ai_sessions": ai_sessions,
