@@ -3,10 +3,11 @@ from __future__ import annotations
 import secrets
 from hashlib import sha256
 import json
-from typing import Annotated, Any
+from typing import Annotated, Any, Callable
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Path, status
-from pydantic import BaseModel, ConfigDict, Field
+import httpx
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -17,10 +18,17 @@ from app.core.database import get_db
 from app.core.deps import get_current_user, get_workspace_id, require_write
 from app.models import RawCaptureRecord, RecognitionRulePack, Workspace
 from app.services.ai_recognition_client import (
+    AiRecognitionServiceError,
     approve_ai_recognition_session_with_service,
     feedback_ai_recognition_session_with_service,
     get_ai_recognition_session_with_service,
     reject_ai_recognition_session_with_service,
+)
+from app.services.ai_approval_claims import (
+    ApprovalClaimStoreUnavailable,
+    consume_approval_claim,
+    create_approval_claim,
+    revoke_approval_claim,
 )
 from app.services.order_row_reader import order_rows_for_task, parser_raw_record_inputs
 from app.services.recognition_rule_packs import (
@@ -70,8 +78,47 @@ class AiApprovalActor(BaseModel):
     display_name: str = Field(default="", max_length=255)
 
 
+class AiApprovalClaim(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str = Field(min_length=1, max_length=128)
+    workspace_id: int = Field(ge=1)
+    task_id: int = Field(ge=1)
+    raw_record_id: int = Field(ge=1)
+    document_sequence: int = Field(ge=1)
+    fingerprint: str = Field(min_length=1, max_length=128)
+    fingerprint_code: str = Field(min_length=1, max_length=128)
+    actor: AiApprovalActor
+    model_candidate_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    administrator_rows_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+def call_ai_recognition_service(
+    operation: Callable[[], dict[str, Any]],
+) -> dict[str, Any]:
+    try:
+        return operation()
+    except AiRecognitionServiceError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail=exc.detail,
+        ) from exc
+    except (httpx.HTTPError, RuntimeError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="识别服务暂时不可用。",
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="识别服务返回了无效响应。",
+        ) from exc
+
+
 def session_in_workspace(session_id: str, workspace_id: int) -> dict[str, Any]:
-    session = get_ai_recognition_session_with_service(session_id)
+    session = call_ai_recognition_service(
+        lambda: get_ai_recognition_session_with_service(session_id)
+    )
     if session.get("workspace_id") != workspace_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -97,9 +144,11 @@ def feedback_ai_recognition_session(
     workspace_id: int = Depends(get_workspace_id),
 ) -> dict[str, Any]:
     session_in_workspace(session_id, workspace_id)
-    return feedback_ai_recognition_session_with_service(
-        session_id,
-        request.model_dump(mode="json"),
+    return call_ai_recognition_service(
+        lambda: feedback_ai_recognition_session_with_service(
+            session_id,
+            request.model_dump(mode="json"),
+        )
     )
 
 
@@ -109,15 +158,67 @@ def approve_ai_recognition_session(
     current_user: CurrentUser = Depends(require_write),
     workspace_id: int = Depends(get_workspace_id),
 ) -> dict[str, Any]:
-    session_in_workspace(session_id, workspace_id)
-    return approve_ai_recognition_session_with_service(
-        session_id,
-        actor={
-            "id": current_user.id,
-            "username": current_user.username,
-            "display_name": current_user.display_name,
-        },
+    session = session_in_workspace(session_id, workspace_id)
+    model_candidate = session.get("model_candidate")
+    administrator_rows = comparable_rows(
+        {"rows": session.get("administrator_rows")}
+        if isinstance(session.get("administrator_rows"), list)
+        else (
+            session.get("candidate")
+            if isinstance(session.get("candidate"), dict)
+            else {}
+        )
     )
+    if not isinstance(model_candidate, dict) or not valid_business_rows(
+        administrator_rows
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="当前会话缺少可验证的模型候选或管理员结果，请重新识别。",
+        )
+    try:
+        claim_payload = AiApprovalClaim(
+            session_id=session_id,
+            workspace_id=workspace_id,
+            task_id=session.get("task_id"),
+            raw_record_id=session.get("raw_record_id"),
+            document_sequence=session.get("document_sequence"),
+            fingerprint=session.get("fingerprint"),
+            fingerprint_code=session.get("fingerprint_code"),
+            actor={
+                "id": current_user.id,
+                "username": current_user.username,
+                "display_name": current_user.display_name,
+            },
+            model_candidate_sha256=canonical_sha256(model_candidate),
+            administrator_rows_sha256=canonical_sha256(
+                administrator_rows
+            ),
+        )
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="当前会话缺少完整的来源信息，请重新识别。",
+        ) from exc
+    try:
+        approval_claim = create_approval_claim(
+            claim_payload.model_dump(mode="json")
+        )
+    except ApprovalClaimStoreUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    try:
+        return call_ai_recognition_service(
+            lambda: approve_ai_recognition_session_with_service(
+                session_id,
+                approval_claim=approval_claim,
+            )
+        )
+    except HTTPException:
+        revoke_approval_claim(approval_claim)
+        raise
 
 
 @router.post("/ai-recognition/sessions/{session_id}/reject")
@@ -127,10 +228,15 @@ def reject_ai_recognition_session(
     workspace_id: int = Depends(get_workspace_id),
 ) -> dict[str, Any]:
     session_in_workspace(session_id, workspace_id)
-    return reject_ai_recognition_session_with_service(session_id)
+    return call_ai_recognition_service(
+        lambda: reject_ai_recognition_session_with_service(session_id)
+    )
 
 
 class AiRuleApprovalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    approval_claim: str = Field(min_length=16, max_length=256)
     session_id: str = Field(min_length=1, max_length=128)
     workspace_id: int = Field(ge=1)
     task_id: int = Field(ge=1)
@@ -141,9 +247,6 @@ class AiRuleApprovalRequest(BaseModel):
     candidate_output: dict[str, Any] = Field(default_factory=dict)
     model_candidate: dict[str, Any]
     administrator_rows: list[AiProxyOrderRow] = Field(min_length=1, max_length=100)
-    model_candidate_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    administrator_rows_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    actor: AiApprovalActor
     validate_only: bool = False
 
 
@@ -326,6 +429,8 @@ def ensure_idempotent_approval_matches(
     *,
     request: AiRuleApprovalRequest,
     expected_rows: list[dict[str, Any]],
+    model_candidate_sha256: str,
+    administrator_rows_sha256: str,
 ) -> None:
     matches = (
         learning_record.get("task_id") == request.task_id
@@ -345,12 +450,12 @@ def ensure_idempotent_approval_matches(
         and (
             not learning_record.get("model_candidate_sha256")
             or learning_record.get("model_candidate_sha256")
-            == request.model_candidate_sha256
+            == model_candidate_sha256
         )
         and (
             not learning_record.get("administrator_rows_sha256")
             or learning_record.get("administrator_rows_sha256")
-            == request.administrator_rows_sha256
+            == administrator_rows_sha256
         )
     )
     if not matches:
@@ -479,14 +584,43 @@ def approve_ai_rule(
     ):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid AI recognition token.")
 
+    try:
+        claim_payload = consume_approval_claim(request.approval_claim)
+    except ApprovalClaimStoreUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    if claim_payload is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="审批凭证无效、已过期或已使用。",
+        )
+    try:
+        claim = AiApprovalClaim.model_validate(claim_payload)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="审批凭证无效、已过期或已使用。",
+        ) from exc
+
     administrator_rows = [
         row.model_dump(mode="json")
         for row in request.administrator_rows
     ]
-    actor = request.actor.model_dump(mode="json")
+    model_candidate_sha256 = canonical_sha256(request.model_candidate)
+    administrator_rows_sha256 = canonical_sha256(administrator_rows)
+    actor = claim.actor.model_dump(mode="json")
     if (
-        canonical_sha256(request.model_candidate) != request.model_candidate_sha256
-        or canonical_sha256(administrator_rows) != request.administrator_rows_sha256
+        claim.session_id != request.session_id
+        or claim.workspace_id != request.workspace_id
+        or claim.task_id != request.task_id
+        or claim.raw_record_id != request.raw_record_id
+        or claim.document_sequence != request.document_sequence
+        or claim.fingerprint != request.format_fingerprint
+        or claim.fingerprint_code != request.fingerprint_code
+        or model_candidate_sha256 != claim.model_candidate_sha256
+        or administrator_rows_sha256 != claim.administrator_rows_sha256
         or comparable_rows(request.candidate_output) != administrator_rows
     ):
         raise HTTPException(
@@ -530,6 +664,8 @@ def approve_ai_rule(
             existing_learning_record,
             request=request,
             expected_rows=expected_rows,
+            model_candidate_sha256=model_candidate_sha256,
+            administrator_rows_sha256=administrator_rows_sha256,
         )
         if request.validate_only:
             return {
@@ -619,8 +755,8 @@ def approve_ai_rule(
                 "model_candidate": request.model_candidate,
                 "administrator_rows": expected_rows,
                 "compiler_result": compiler_result,
-                "model_candidate_sha256": request.model_candidate_sha256,
-                "administrator_rows_sha256": request.administrator_rows_sha256,
+                "model_candidate_sha256": model_candidate_sha256,
+                "administrator_rows_sha256": administrator_rows_sha256,
                 "approved_at": utc_now_iso(),
                 "approved_by": actor,
                 "replay_report": synthesis.get("replay_report") or [],

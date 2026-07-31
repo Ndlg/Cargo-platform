@@ -31,13 +31,33 @@ SHOE_ROW = {
     "quantity": 1,
     "remark": "",
 }
+APPROVAL_CLAIMS: dict[str, dict] = {}
 
 
 @pytest.fixture(autouse=True)
-def clear_settings_cache():
+def clear_settings_cache(monkeypatch):
     ai_route.get_settings.cache_clear()
+    APPROVAL_CLAIMS.clear()
+    monkeypatch.setattr(
+        ai_route,
+        "consume_approval_claim",
+        lambda claim: APPROVAL_CLAIMS.pop(claim, None),
+        raising=False,
+    )
     yield
     ai_route.get_settings.cache_clear()
+    APPROVAL_CLAIMS.clear()
+
+
+def canonical_hash(value: object) -> str:
+    return sha256(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 def candidate_profile(fingerprint: str, *, product_path: str = "name") -> dict:
@@ -82,17 +102,26 @@ def approval_request(
         ]
     }
 
-    def canonical_hash(value: object) -> str:
-        return sha256(
-            json.dumps(
-                value,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        ).hexdigest()
+    approval_claim = f"approval-claim-{len(APPROVAL_CLAIMS) + 1}"
+    APPROVAL_CLAIMS[approval_claim] = {
+        "session_id": session_id,
+        "workspace_id": 1,
+        "task_id": 61,
+        "raw_record_id": raw_record_id,
+        "document_sequence": document_sequence,
+        "fingerprint": FINGERPRINT,
+        "fingerprint_code": "CN-PACKAGE-ITEMS",
+        "actor": {
+            "id": 7,
+            "username": "admin",
+            "display_name": "管理员",
+        },
+        "model_candidate_sha256": canonical_hash(model_candidate),
+        "administrator_rows_sha256": canonical_hash(administrator_rows),
+    }
 
     return AiRuleApprovalRequest(
+        approval_claim=approval_claim,
         session_id=session_id,
         workspace_id=1,
         task_id=61,
@@ -103,13 +132,6 @@ def approval_request(
         candidate_output={"parents": [{"rows": administrator_rows}]},
         model_candidate=model_candidate,
         administrator_rows=administrator_rows,
-        model_candidate_sha256=canonical_hash(model_candidate),
-        administrator_rows_sha256=canonical_hash(administrator_rows),
-        actor={
-            "id": 7,
-            "username": "admin",
-            "display_name": "管理员",
-        },
         validate_only=validate_only,
     )
 
@@ -386,13 +408,18 @@ def test_internal_approval_synthesizes_from_original_and_preserves_duplicates(
         "display_name": "管理员",
     }
     assert learning[0]["approved_at"].endswith("+00:00")
-    assert learning[0]["model_candidate_sha256"] == approval_request(
-        rows=[SHOE_ROW, SHOE_ROW],
-        model_rows=[{**SHOE_ROW, "product": "model shoe"}],
-    ).model_candidate_sha256
-    assert learning[0]["administrator_rows_sha256"] == approval_request(
-        rows=[SHOE_ROW, SHOE_ROW],
-    ).administrator_rows_sha256
+    assert learning[0]["model_candidate_sha256"] == canonical_hash(
+        {
+            "parents": [
+                {
+                    "rows": [{**SHOE_ROW, "product": "model shoe"}],
+                }
+            ]
+        }
+    )
+    assert learning[0]["administrator_rows_sha256"] == canonical_hash(
+        [SHOE_ROW, SHOE_ROW]
+    )
     assert "sample_payload" not in learning[0]
     assert "rule_evidence" not in learning[0]
     assert revision is not None
@@ -827,7 +854,25 @@ def test_same_fingerprint_history_is_loaded_as_gold_from_original_record(
     ]
 
 
-def test_internal_approval_rejects_noncanonical_stage_hashes(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("session_id", "other-session"),
+        ("workspace_id", 2),
+        ("task_id", 62),
+        ("raw_record_id", 101),
+        ("document_sequence", 2),
+        ("fingerprint", f"sha256:{'5' * 64}"),
+        ("fingerprint_code", "CN-ITEM-INFO"),
+        ("model_candidate_sha256", "0" * 64),
+        ("administrator_rows_sha256", "1" * 64),
+    ],
+)
+def test_internal_approval_rejects_claim_binding_mismatch(
+    monkeypatch,
+    field: str,
+    value: object,
+) -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
     enable_ai(monkeypatch)
@@ -838,7 +883,7 @@ def test_internal_approval_rejects_noncanonical_stage_hashes(monkeypatch) -> Non
         lambda **kwargs: calls.append(kwargs) or compiled_result(),
     )
     request = approval_request()
-    request.model_candidate_sha256 = "0" * 64
+    APPROVAL_CLAIMS[request.approval_claim][field] = value
 
     with Session(engine) as db:
         add_workspace(db)
@@ -849,6 +894,33 @@ def test_internal_approval_rejects_noncanonical_stage_hashes(monkeypatch) -> Non
 
     assert exc.value.status_code == 422
     assert calls == []
+    assert request.approval_claim not in APPROVAL_CLAIMS
+
+
+def test_internal_approval_claim_replay_is_rejected(monkeypatch) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    enable_ai(monkeypatch)
+    monkeypatch.setattr(
+        ai_route,
+        "synthesize_rule_with_service",
+        lambda **_kwargs: compiled_result(),
+    )
+    request = approval_request(validate_only=True)
+
+    with Session(engine) as db:
+        add_workspace(db)
+        add_record(db)
+        db.commit()
+        first = ai_route.approve_ai_rule(request, db, "test-secret")
+        with pytest.raises(HTTPException) as exc:
+            ai_route.approve_ai_rule(request, db, "test-secret")
+
+    assert first == {
+        "status": "valid",
+        "format_fingerprint": FINGERPRINT,
+    }
+    assert exc.value.status_code == 401
 
 
 @pytest.mark.parametrize("corruption", ["deleted", "missing_sequence", "invalid_rows"])

@@ -90,15 +90,7 @@ class FeedbackRequest(BaseModel):
         return self
 
 
-class ApprovalActor(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    id: int = Field(ge=1)
-    username: str = Field(min_length=1, max_length=255)
-    display_name: str = Field(default="", max_length=255)
-
-
 class ApprovalRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    actor: ApprovalActor
+    approval_claim: str = Field(min_length=16, max_length=256)

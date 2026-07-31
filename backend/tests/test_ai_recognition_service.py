@@ -589,16 +589,11 @@ def test_approval_sends_only_resolved_candidate_not_model_rule(tmp_path: Path) -
             json=recognize_request(),
             headers=AI_HEADERS,
         ).json()
+        assert created["fingerprint_code"] == "CN-PACKAGE-ITEMS"
         wait_for_status(client, created["session_id"], "ai_rule_pending")
         approved = client.post(
             f"/api/v1/sessions/{created['session_id']}/approve",
-            json={
-                "actor": {
-                    "id": 7,
-                    "username": "admin",
-                    "display_name": "管理员",
-                }
-            },
+            json={"approval_claim": "opaque-approval-claim-1"},
             headers=AI_HEADERS,
         )
 
@@ -612,13 +607,10 @@ def test_approval_sends_only_resolved_candidate_not_model_rule(tmp_path: Path) -
     assert payload["model_candidate"]["parents"] == payload["candidate_output"]["parents"]
     assert "span_selection" in payload["model_candidate"]
     assert payload["administrator_rows"] == payload["candidate_output"]["parents"][0]["rows"]
-    assert payload["actor"] == {
-        "id": 7,
-        "username": "admin",
-        "display_name": "管理员",
-    }
-    assert len(payload["model_candidate_sha256"]) == 64
-    assert len(payload["administrator_rows_sha256"]) == 64
+    assert payload["approval_claim"] == "opaque-approval-claim-1"
+    assert "actor" not in payload
+    assert "model_candidate_sha256" not in payload
+    assert "administrator_rows_sha256" not in payload
     assert approved.json()["compiler_result"] == {"status": "approved"}
 
 
@@ -653,13 +645,7 @@ def test_rerun_warning_does_not_move_ai_session_back_to_pending(tmp_path: Path) 
         wait_for_status(client, created["session_id"], "ai_rule_pending")
         approved = client.post(
             f"/api/v1/sessions/{created['session_id']}/approve",
-            json={
-                "actor": {
-                    "id": 7,
-                    "username": "admin",
-                    "display_name": "管理员",
-                }
-            },
+            json={"approval_claim": "opaque-approval-claim-2"},
             headers=AI_HEADERS,
         )
         stored = client.get(
@@ -775,7 +761,9 @@ def test_existing_session_database_adds_document_sequence_column(tmp_path: Path)
     assert session["compiler_result"] is None
 
 
-def test_legacy_session_database_migrates_three_stage_values(tmp_path: Path) -> None:
+def test_legacy_corrected_session_does_not_invent_model_or_compiler_provenance(
+    tmp_path: Path,
+) -> None:
     module = load_ai_service(tmp_path / "import-default.db")
     database = tmp_path / "legacy-three-stage.db"
     candidate = {
@@ -794,7 +782,7 @@ def test_legacy_session_database_migrates_three_stage_values(tmp_path: Path) -> 
         ]
     }
     corrected_rows = [{**candidate["parents"][0]["rows"][0], "product": "管理员结果"}]
-    compiler_result = {"status": "approved"}
+    platform_response = {"status": "approved", "warnings": []}
     with sqlite3.connect(database) as db:
         db.execute(
             """
@@ -819,7 +807,74 @@ def test_legacy_session_database_migrates_three_stage_values(tmp_path: Path) -> 
             (
                 json.dumps(candidate),
                 json.dumps([json.dumps({"corrected_rows": corrected_rows})]),
-                json.dumps(compiler_result),
+                json.dumps(platform_response),
+            ),
+        )
+
+    session = module.SessionStore(database).get("legacy")
+
+    assert session is not None
+    assert session["model_candidate"] is None
+    assert session["administrator_rows"] == corrected_rows
+    assert session["compiler_result"] is None
+
+
+def test_legacy_session_migrates_only_provable_model_and_nested_compiler_values(
+    tmp_path: Path,
+) -> None:
+    module = load_ai_service(tmp_path / "import-default.db")
+    database = tmp_path / "legacy-provable-stages.db"
+    candidate = {
+        "parents": [
+            {
+                "rows": [
+                    {
+                        "product": "旧模型候选",
+                        "sales_attr1": "",
+                        "sales_attr2": "",
+                        "quantity": 1,
+                        "remark": "",
+                    }
+                ]
+            }
+        ]
+    }
+    compiler_result = {
+        "status": "compiled",
+        "fingerprint": "v2:test",
+        "grammar_signature": "grammar-a",
+        "replay_report": [],
+    }
+    with sqlite3.connect(database) as db:
+        db.execute(
+            """
+            CREATE TABLE recognition_sessions (
+                session_id TEXT PRIMARY KEY, request_key TEXT NOT NULL UNIQUE,
+                workspace_id INTEGER NOT NULL, task_id INTEGER NOT NULL,
+                raw_record_id INTEGER NOT NULL, source_component TEXT NOT NULL,
+                fingerprint TEXT NOT NULL, deterministic_failure_reason TEXT NOT NULL,
+                sanitized_payload TEXT NOT NULL, candidate TEXT, feedback TEXT NOT NULL DEFAULT '[]',
+                platform_response TEXT, status TEXT NOT NULL, error TEXT,
+                model_calls INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            )
+            """
+        )
+        db.execute(
+            """
+            INSERT INTO recognition_sessions VALUES (
+                'legacy', 'legacy-key', 1, 61, 901, 'test', 'v2:test', 'missing',
+                '{}', ?, '[]', ?, 'approved', NULL, 1, 'old', 'old'
+            )
+            """,
+            (
+                json.dumps(candidate),
+                json.dumps(
+                    {
+                        "status": "approved",
+                        "compiler_result": compiler_result,
+                        "warnings": [],
+                    }
+                ),
             ),
         )
 
@@ -827,7 +882,7 @@ def test_legacy_session_database_migrates_three_stage_values(tmp_path: Path) -> 
 
     assert session is not None
     assert session["model_candidate"] == candidate
-    assert session["administrator_rows"] == corrected_rows
+    assert session["administrator_rows"] is None
     assert session["compiler_result"] == compiler_result
 
 
@@ -860,13 +915,7 @@ def test_health_is_public_but_all_ai_api_endpoints_require_internal_token(
             (
                 "POST",
                 "/api/v1/sessions/not-found/approve",
-                {
-                    "actor": {
-                        "id": 7,
-                        "username": "admin",
-                        "display_name": "管理员",
-                    }
-                },
+                {"approval_claim": "opaque-approval-claim-3"},
             ),
             ("POST", "/api/v1/sessions/not-found/reject", None),
         ]

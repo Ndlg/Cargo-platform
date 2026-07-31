@@ -60,28 +60,61 @@ class SessionStore:
                     "ALTER TABLE recognition_sessions "
                     "ADD COLUMN generation INTEGER NOT NULL DEFAULT 0"
                 )
-            for column in ("model_candidate", "administrator_rows", "compiler_result"):
-                if column not in columns:
-                    db.execute(f"ALTER TABLE recognition_sessions ADD COLUMN {column} TEXT")
-            db.execute(
-                "UPDATE recognition_sessions "
-                "SET model_candidate = candidate WHERE model_candidate IS NULL AND candidate IS NOT NULL"
-            )
-            db.execute(
-                "UPDATE recognition_sessions "
-                "SET compiler_result = platform_response "
-                "WHERE compiler_result IS NULL AND platform_response IS NOT NULL"
-            )
-            for row in db.execute(
-                "SELECT session_id, feedback FROM recognition_sessions "
-                "WHERE administrator_rows IS NULL AND feedback != '[]'"
-            ).fetchall():
-                corrected_rows = self.legacy_administrator_rows(row["feedback"])
-                if corrected_rows:
+            added_stage_columns = {
+                column
+                for column in (
+                    "model_candidate",
+                    "administrator_rows",
+                    "compiler_result",
+                )
+                if column not in columns
+            }
+            for column in added_stage_columns:
+                db.execute(f"ALTER TABLE recognition_sessions ADD COLUMN {column} TEXT")
+            if "administrator_rows" in added_stage_columns:
+                for row in db.execute(
+                    "SELECT session_id, feedback FROM recognition_sessions "
+                    "WHERE feedback != '[]'"
+                ).fetchall():
+                    corrected_rows = self.legacy_administrator_rows(row["feedback"])
+                    if corrected_rows:
+                        db.execute(
+                            "UPDATE recognition_sessions SET administrator_rows = ? "
+                            "WHERE session_id = ?",
+                            (
+                                json.dumps(corrected_rows, ensure_ascii=False),
+                                row["session_id"],
+                            ),
+                        )
+            if "model_candidate" in added_stage_columns:
+                for row in db.execute(
+                    "SELECT session_id, candidate, feedback FROM recognition_sessions "
+                    "WHERE candidate IS NOT NULL"
+                ).fetchall():
+                    if self.legacy_has_feedback(row["feedback"]):
+                        continue
                     db.execute(
-                        "UPDATE recognition_sessions SET administrator_rows = ? WHERE session_id = ?",
-                        (json.dumps(corrected_rows, ensure_ascii=False), row["session_id"]),
+                        "UPDATE recognition_sessions SET model_candidate = ? "
+                        "WHERE session_id = ?",
+                        (row["candidate"], row["session_id"]),
                     )
+            if "compiler_result" in added_stage_columns:
+                for row in db.execute(
+                    "SELECT session_id, platform_response FROM recognition_sessions "
+                    "WHERE platform_response IS NOT NULL"
+                ).fetchall():
+                    compiler_result = self.legacy_compiler_result(
+                        row["platform_response"]
+                    )
+                    if compiler_result is not None:
+                        db.execute(
+                            "UPDATE recognition_sessions SET compiler_result = ? "
+                            "WHERE session_id = ?",
+                            (
+                                json.dumps(compiler_result, ensure_ascii=False),
+                                row["session_id"],
+                            ),
+                        )
             db.commit()
 
     def connect(self) -> sqlite3.Connection:
@@ -103,6 +136,29 @@ class SessionStore:
             if isinstance(rows, list) and rows:
                 return [row for row in rows if isinstance(row, dict)] or None
         return None
+
+    @staticmethod
+    def legacy_has_feedback(feedback_json: str) -> bool:
+        try:
+            messages = json.loads(feedback_json or "[]")
+        except json.JSONDecodeError:
+            return True
+        return bool(messages) if isinstance(messages, list) else True
+
+    @staticmethod
+    def legacy_compiler_result(
+        platform_response_json: str,
+    ) -> dict[str, Any] | None:
+        try:
+            platform_response = json.loads(platform_response_json)
+        except json.JSONDecodeError:
+            return None
+        compiler_result = (
+            platform_response.get("compiler_result")
+            if isinstance(platform_response, dict)
+            else None
+        )
+        return compiler_result if isinstance(compiler_result, dict) else None
 
     @staticmethod
     def decode(row: sqlite3.Row | None) -> dict[str, Any] | None:

@@ -227,6 +227,7 @@
         busy = true;
         const button = document.querySelector("#confirm-button");
         const status = document.querySelector("#operation-status");
+        document.querySelector("#operation-error").textContent = "";
         if (button) {
           button.disabled = true;
           button.textContent = "正在处理…";
@@ -255,6 +256,10 @@
         } finally {
           busy = false;
           status.textContent = "";
+          if (button && button.isConnected) {
+            button.disabled = false;
+            button.textContent = "确认并同步规则";
+          }
         }
       }
 

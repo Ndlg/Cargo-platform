@@ -73,7 +73,7 @@ def default_approval_sender(platform_url: str) -> ApprovalSender:
 
 def platform_rule_payload(
     session: dict[str, Any],
-    actor: dict[str, Any],
+    approval_claim: str,
 ) -> dict[str, Any]:
     model_candidate = session["model_candidate"]
     administrator_rows = session["administrator_rows"]
@@ -90,20 +90,8 @@ def platform_rule_payload(
         },
         "model_candidate": model_candidate,
         "administrator_rows": administrator_rows,
-        "model_candidate_sha256": canonical_sha256(model_candidate),
-        "administrator_rows_sha256": canonical_sha256(administrator_rows),
-        "actor": actor,
+        "approval_claim": approval_claim,
     }
-
-
-def canonical_sha256(value: Any) -> str:
-    encoded = json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return sha256(encoded).hexdigest()
 
 
 def business_rows(candidate: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -162,6 +150,11 @@ def create_app(
             "session_id": session_id,
             "status": session["status"],
             "fingerprint": session["fingerprint"],
+            "fingerprint_code": (
+                session["sanitized_payload"].get("fingerprint_code")
+                if isinstance(session["sanitized_payload"], dict)
+                else None
+            ),
             "workspace_id": session["workspace_id"],
             "task_id": session["task_id"],
             "raw_record_id": session["raw_record_id"],
@@ -401,7 +394,7 @@ def create_app(
             platform_response = sender(
                 platform_rule_payload(
                     claimed,
-                    request.actor.model_dump(mode="json"),
+                    request.approval_claim,
                 ),
                 token,
             )

@@ -1,3 +1,5 @@
+from hashlib import sha256
+import json
 import os
 from pathlib import Path
 
@@ -212,16 +214,32 @@ def test_mismatched_role_membership_does_not_grant_permissions() -> None:
 def test_ai_session_proxy_enforces_auth_workspace_write_permission_and_actor(
     monkeypatch,
 ) -> None:
-    approvals: list[dict[str, object]] = []
+    approvals: list[str] = []
+    claim_payloads: list[dict[str, object]] = []
     session_workspaces: dict[str, int] = {}
+    rows = [
+        {
+            "product": "鞋",
+            "sales_attr1": "",
+            "sales_attr2": "",
+            "quantity": 1,
+            "remark": "",
+        }
+    ]
+    model_candidate = {"parents": [{"rows": rows}]}
 
     def session_with_service(session_id: str) -> dict[str, object]:
         return {
             "session_id": session_id,
             "workspace_id": session_workspaces[session_id],
+            "task_id": 61,
+            "raw_record_id": 901,
+            "document_sequence": 2,
+            "fingerprint": "v2:CN-PACKAGE-ITEMS:test",
+            "fingerprint_code": "CN-PACKAGE-ITEMS",
             "status": "ai_rule_pending",
-            "model_candidate": None,
-            "administrator_rows": None,
+            "model_candidate": model_candidate,
+            "administrator_rows": rows,
             "compiler_result": None,
         }
 
@@ -242,8 +260,20 @@ def test_ai_session_proxy_enforces_auth_workspace_write_permission_and_actor(
     monkeypatch.setattr(
         ai_route,
         "approve_ai_recognition_session_with_service",
-        lambda session_id, *, actor: approvals.append(actor)
+        lambda session_id, *, approval_claim: approvals.append(approval_claim)
         or {**session_with_service(session_id), "status": "approved"},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        ai_route,
+        "create_approval_claim",
+        lambda payload: claim_payloads.append(payload) or "opaque-claim",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        ai_route,
+        "revoke_approval_claim",
+        lambda _claim: None,
         raising=False,
     )
     monkeypatch.setattr(
@@ -333,13 +363,155 @@ def test_ai_session_proxy_enforces_auth_workspace_write_permission_and_actor(
         readonly_reject.status_code,
     } == {403}
     assert approved.status_code == 200
-    assert approvals == [
+    assert approvals == ["opaque-claim"]
+    assert claim_payloads == [
         {
-            "id": alice_id,
-            "username": "proxy_alice",
-            "display_name": "Proxy_Alice",
+            "session_id": "workspace-a-session",
+            "workspace_id": workspace_a_id,
+            "task_id": 61,
+            "raw_record_id": 901,
+            "document_sequence": 2,
+            "fingerprint": "v2:CN-PACKAGE-ITEMS:test",
+            "fingerprint_code": "CN-PACKAGE-ITEMS",
+            "actor": {
+                "id": alice_id,
+                "username": "proxy_alice",
+                "display_name": "Proxy_Alice",
+            },
+            "model_candidate_sha256": sha256(
+                json.dumps(
+                    model_candidate,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest(),
+            "administrator_rows_sha256": sha256(
+                json.dumps(
+                    rows,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest(),
         }
     ]
+
+
+def test_ai_session_proxy_preserves_stale_closed_compiler_and_unavailable_errors(
+    monkeypatch,
+) -> None:
+    from app.services.ai_recognition_client import AiRecognitionServiceError
+
+    rows = [
+        {
+            "product": "鞋",
+            "sales_attr1": "",
+            "sales_attr2": "",
+            "quantity": 1,
+            "remark": "",
+        }
+    ]
+    session = {
+        "session_id": "controlled-error-session",
+        "workspace_id": None,
+        "task_id": 61,
+        "raw_record_id": 902,
+        "document_sequence": 1,
+        "fingerprint": "v2:CN-PACKAGE-ITEMS:error",
+        "fingerprint_code": "CN-PACKAGE-ITEMS",
+        "status": "ai_rule_pending",
+        "model_candidate": {"parents": [{"rows": rows}]},
+        "administrator_rows": rows,
+        "compiler_result": None,
+    }
+
+    with TestClient(app) as client:
+        username, password, workspace_id, _role_id = _create_user_workspace_pair(
+            "proxy_errors",
+            "proxy_errors_workspace",
+        )
+        headers = _login(client, username, password, workspace_id)
+        session["workspace_id"] = workspace_id
+
+        monkeypatch.setattr(
+            ai_route,
+            "get_ai_recognition_session_with_service",
+            lambda _session_id: (_ for _ in ()).throw(
+                AiRecognitionServiceError(404, "会话已过期。")
+            ),
+        )
+        stale = client.get(
+            "/api/v1/ai-recognition/sessions/controlled-error-session",
+            headers=headers,
+        )
+
+        monkeypatch.setattr(
+            ai_route,
+            "get_ai_recognition_session_with_service",
+            lambda _session_id: session,
+        )
+        monkeypatch.setattr(
+            ai_route,
+            "feedback_ai_recognition_session_with_service",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AiRecognitionServiceError(409, "会话已经关闭。")
+            ),
+        )
+        closed = client.post(
+            "/api/v1/ai-recognition/sessions/controlled-error-session/feedback",
+            headers=headers,
+            json={"corrected_rows": rows},
+        )
+
+        monkeypatch.setattr(
+            ai_route,
+            "create_approval_claim",
+            lambda _payload: "compiler-claim",
+            raising=False,
+        )
+        revoked: list[str] = []
+        monkeypatch.setattr(
+            ai_route,
+            "revoke_approval_claim",
+            revoked.append,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            ai_route,
+            "approve_ai_recognition_session_with_service",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AiRecognitionServiceError(422, "规则编译未通过。")
+            ),
+        )
+        compiler_rejected = client.post(
+            "/api/v1/ai-recognition/sessions/controlled-error-session/approve",
+            headers=headers,
+        )
+
+        monkeypatch.setattr(
+            ai_route,
+            "reject_ai_recognition_session_with_service",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AiRecognitionServiceError(503, "识别服务暂时不可用。")
+            ),
+        )
+        unavailable = client.post(
+            "/api/v1/ai-recognition/sessions/controlled-error-session/reject",
+            headers=headers,
+        )
+
+    assert (stale.status_code, stale.json()["detail"]) == (404, "会话已过期。")
+    assert (closed.status_code, closed.json()["detail"]) == (409, "会话已经关闭。")
+    assert (compiler_rejected.status_code, compiler_rejected.json()["detail"]) == (
+        422,
+        "规则编译未通过。",
+    )
+    assert (unavailable.status_code, unavailable.json()["detail"]) == (
+        503,
+        "识别服务暂时不可用。",
+    )
+    assert revoked == ["compiler-claim"]
 
 
 def teardown_module() -> None:
