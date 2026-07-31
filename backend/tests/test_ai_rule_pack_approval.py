@@ -379,6 +379,50 @@ def test_ai_approval_keeps_text_profiles_with_distinct_parsing_shapes() -> None:
     assert len(payload["parser_policy"]["format_profiles"]) == 2
 
 
+def test_ai_approval_replaces_source_projection_in_the_same_grammar_slot() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    base = {
+        "fingerprint": FINGERPRINT,
+        "strategy": "source_projection_v1",
+        "grammar_signature": "grammar-v1:sha256:" + "2" * 64,
+        "rows": [
+            {
+                "product": [],
+                "sales_attr1": [],
+                "sales_attr2": [],
+                "quantity": [],
+                "remark": [],
+            }
+        ],
+    }
+
+    with Session(engine) as db:
+        save_ai_rule_profile(
+            db,
+            tenant_id=1,
+            workspace_id=1,
+            session_id="session-old-projection",
+            profile={**base, "rows": [{**base["rows"][0], "product": ["old"]}]},
+            validate=lambda payload: {"status": "valid", "errors": []},
+        )
+        db.commit()
+        pack = save_ai_rule_profile(
+            db,
+            tenant_id=1,
+            workspace_id=1,
+            session_id="session-new-projection",
+            profile={**base, "rows": [{**base["rows"][0], "product": ["new"]}]},
+            validate=lambda payload: {"status": "valid", "errors": []},
+        )
+        db.commit()
+        payload = deepcopy(pack.payload)
+
+    profiles = payload["parser_policy"]["format_profiles"]
+    assert len(profiles) == 1
+    assert profiles[0]["rows"][0]["product"] == ["new"]
+
+
 def test_ai_approval_rejects_invalid_candidate_without_creating_pack() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)

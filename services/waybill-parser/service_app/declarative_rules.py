@@ -134,6 +134,7 @@ def validate_selected_fields(value: object, prefix: str) -> list[str]:
         return []
     if (
         not isinstance(value, list)
+        or not value
         or len(value) > 100
         or len(value) != len(set(value))
         or any(
@@ -448,12 +449,23 @@ def validate_format_profiles(value: object) -> list[str]:
             continue
         fingerprint = text_value(profile.get("fingerprint"))
         strategy = text_value(profile.get("strategy"))
-        identity = json.dumps(
+        identity_payload = (
             {
-                key: value
-                for key, value in profile.items()
+                key: item
+                for key, item in profile.items()
                 if key != "provenance"
-            },
+            }
+            if strategy == "text_pipeline_v1"
+            else {
+                "fingerprint": fingerprint,
+                "strategy": strategy,
+                "selected_fields": profile.get("selected_fields") or [],
+                "grammar_signature": text_value(profile.get("grammar_signature"))
+                or None,
+            }
+        )
+        identity = json.dumps(
+            identity_payload,
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),

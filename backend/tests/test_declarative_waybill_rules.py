@@ -784,6 +784,50 @@ def test_same_grammar_text_profiles_keep_distinct_parsing_shapes() -> None:
         ] == [expected]
 
 
+def test_source_projection_profiles_have_one_rule_per_grammar_slot() -> None:
+    _app, rules = load_parser()
+    part = {
+        "source_path": "task.documents[].contents[].data.productInfo",
+        "token_class": "text",
+        "occurrence": 0,
+    }
+    base = {
+        "fingerprint": f"sha256:{'8' * 64}",
+        "strategy": "source_projection_v1",
+        "grammar_signature": f"grammar-v1:sha256:{'9' * 64}",
+        "rows": [
+            {
+                "product": [part],
+                "sales_attr1": [],
+                "sales_attr2": [],
+                "quantity": [part],
+                "remark": [],
+            }
+        ],
+    }
+    changed = {
+        **base,
+        "rows": [
+            {
+                **base["rows"][0],
+                "product": [
+                    {
+                        **part,
+                        "source_path": "task.documents[].contents[].data.productShortInfo",
+                    }
+                ],
+            }
+        ],
+    }
+
+    assert "parser_policy.format_profiles[1].fingerprint" in (
+        rules.validate_format_profiles([base, changed])
+    )
+    assert "parser_policy.format_profiles[0].selected_fields" in (
+        rules.validate_format_profiles([{**base, "selected_fields": []}])
+    )
+
+
 def test_structured_format_reuses_paths_and_fails_closed_on_conflict() -> None:
     _app, rules = load_parser()
     synthesizer = importlib.import_module("service_app.rule_synthesizer")

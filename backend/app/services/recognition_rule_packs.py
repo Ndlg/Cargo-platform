@@ -197,6 +197,8 @@ def save_ai_rule_profile(
             return False
         if strategy == "structured_items_v1":
             return True
+        if strategy == "source_projection_v1":
+            return text_value(item.get("grammar_signature")) == grammar_signature
         return (
             text_value(item.get("grammar_signature")) == grammar_signature
             and {
