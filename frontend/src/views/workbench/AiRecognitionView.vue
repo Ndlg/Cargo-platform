@@ -15,6 +15,7 @@ import {
   type WaybillReadingSample,
 } from '../../services/api'
 import { useSessionStore } from '../../stores/session'
+import { selectCaptureRoundId } from './captureRoundSelection'
 
 type FingerprintPresentation = {
   code: string
@@ -185,13 +186,6 @@ function taskStatus(value?: string | null): string {
   return value || ''
 }
 
-function queryPositiveInt(value: unknown): number | null {
-  const rawValue = Array.isArray(value) ? value[0] : value
-  if (rawValue === undefined || rawValue === null || rawValue === '') return null
-  const parsed = Number(rawValue)
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : null
-}
-
 function reasonLabel(reason: string): string {
   const labels: Record<string, string> = {
     rule_pack_missing: '尚无识别规则',
@@ -206,12 +200,7 @@ function reasonLabel(reason: string): string {
 async function loadTasks() {
   const records = (await getRecords('/capture-tasks?limit=200')) as CaptureTaskRecord[]
   tasks.value = records
-  const sorted = [...records].sort((a, b) => b.id - a.id)
-  const taskIds = new Set(sorted.map((task) => task.id))
-  const routeTaskId = queryPositiveInt(route.query.task_id)
-  selectedTaskId.value = routeTaskId && taskIds.has(routeTaskId)
-    ? routeTaskId
-    : sorted[0]?.id ?? null
+  selectedTaskId.value = selectCaptureRoundId(records, route.query.task_id)
 }
 
 async function loadQueue() {
