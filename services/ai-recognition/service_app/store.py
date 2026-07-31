@@ -31,6 +31,9 @@ class SessionStore:
                     fingerprint TEXT NOT NULL,
                     deterministic_failure_reason TEXT NOT NULL,
                     sanitized_payload TEXT NOT NULL,
+                    model_candidate TEXT,
+                    administrator_rows TEXT,
+                    compiler_result TEXT,
                     candidate TEXT,
                     feedback TEXT NOT NULL DEFAULT '[]',
                     platform_response TEXT,
@@ -57,6 +60,28 @@ class SessionStore:
                     "ALTER TABLE recognition_sessions "
                     "ADD COLUMN generation INTEGER NOT NULL DEFAULT 0"
                 )
+            for column in ("model_candidate", "administrator_rows", "compiler_result"):
+                if column not in columns:
+                    db.execute(f"ALTER TABLE recognition_sessions ADD COLUMN {column} TEXT")
+            db.execute(
+                "UPDATE recognition_sessions "
+                "SET model_candidate = candidate WHERE model_candidate IS NULL AND candidate IS NOT NULL"
+            )
+            db.execute(
+                "UPDATE recognition_sessions "
+                "SET compiler_result = platform_response "
+                "WHERE compiler_result IS NULL AND platform_response IS NOT NULL"
+            )
+            for row in db.execute(
+                "SELECT session_id, feedback FROM recognition_sessions "
+                "WHERE administrator_rows IS NULL AND feedback != '[]'"
+            ).fetchall():
+                corrected_rows = self.legacy_administrator_rows(row["feedback"])
+                if corrected_rows:
+                    db.execute(
+                        "UPDATE recognition_sessions SET administrator_rows = ? WHERE session_id = ?",
+                        (json.dumps(corrected_rows, ensure_ascii=False), row["session_id"]),
+                    )
             db.commit()
 
     def connect(self) -> sqlite3.Connection:
@@ -65,11 +90,34 @@ class SessionStore:
         return db
 
     @staticmethod
+    def legacy_administrator_rows(feedback_json: str) -> list[dict[str, Any]] | None:
+        try:
+            messages = json.loads(feedback_json or "[]")
+        except json.JSONDecodeError:
+            return None
+        for message in reversed(messages if isinstance(messages, list) else []):
+            try:
+                rows = json.loads(message).get("corrected_rows")
+            except (AttributeError, TypeError, json.JSONDecodeError):
+                continue
+            if isinstance(rows, list) and rows:
+                return [row for row in rows if isinstance(row, dict)] or None
+        return None
+
+    @staticmethod
     def decode(row: sqlite3.Row | None) -> dict[str, Any] | None:
         if row is None:
             return None
         result = dict(row)
-        for field in ("sanitized_payload", "candidate", "feedback", "platform_response"):
+        for field in (
+            "sanitized_payload",
+            "model_candidate",
+            "administrator_rows",
+            "compiler_result",
+            "candidate",
+            "feedback",
+            "platform_response",
+        ):
             if result.get(field):
                 result[field] = json.loads(result[field])
             elif field == "feedback":
@@ -173,17 +221,29 @@ class SessionStore:
         status: str,
         error: str | None = None,
         count_model_call: bool = True,
+        record_model_candidate: bool = True,
     ) -> dict[str, Any]:
+        encoded_candidate = (
+            json.dumps(candidate, ensure_ascii=False) if candidate is not None else None
+        )
+        current_candidate = encoded_candidate if status == "ai_rule_pending" else None
         with closing(self.connect()) as db:
             db.execute(
                 """
                 UPDATE recognition_sessions
-                SET candidate = ?, status = ?, error = ?,
+                SET candidate = ?,
+                    model_candidate = CASE
+                        WHEN ? AND model_candidate IS NULL THEN ?
+                        ELSE model_candidate
+                    END,
+                    status = ?, error = ?,
                     model_calls = model_calls + ?, updated_at = ?
                 WHERE session_id = ? AND generation = ? AND status = 'model_running'
                 """,
                 (
-                    json.dumps(candidate, ensure_ascii=False) if candidate is not None else None,
+                    current_candidate,
+                    int(record_model_candidate),
+                    encoded_candidate,
                     status,
                     error,
                     int(count_model_call),
@@ -198,7 +258,12 @@ class SessionStore:
             raise KeyError(session_id)
         return result
 
-    def append_feedback(self, session_id: str, message: str) -> dict[str, Any]:
+    def append_feedback(
+        self,
+        session_id: str,
+        message: str,
+        administrator_rows: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         with closing(self.connect()) as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute(
@@ -213,11 +278,21 @@ class SessionStore:
             db.execute(
                 """
                 UPDATE recognition_sessions
-                SET feedback = ?, candidate = NULL, status = 'model_running',
+                SET feedback = ?, administrator_rows = COALESCE(?, administrator_rows),
+                    candidate = NULL, status = 'model_running',
                     error = NULL, generation = generation + 1, updated_at = ?
                 WHERE session_id = ?
                 """,
-                (json.dumps(feedback, ensure_ascii=False), utc_now(), session_id),
+                (
+                    json.dumps(feedback, ensure_ascii=False),
+                    (
+                        json.dumps(administrator_rows, ensure_ascii=False)
+                        if administrator_rows is not None
+                        else None
+                    ),
+                    utc_now(),
+                    session_id,
+                ),
             )
             db.commit()
         result = self.get(session_id)
@@ -225,15 +300,27 @@ class SessionStore:
             raise KeyError(session_id)
         return result
 
-    def claim_approval(self, session_id: str, generation: int) -> dict[str, Any] | None:
+    def claim_approval(
+        self,
+        session_id: str,
+        generation: int,
+        administrator_rows: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
         with closing(self.connect()) as db:
             cursor = db.execute(
                 """
                 UPDATE recognition_sessions
-                SET status = 'approving', updated_at = ?
+                SET status = 'approving',
+                    administrator_rows = COALESCE(administrator_rows, ?),
+                    updated_at = ?
                 WHERE session_id = ? AND generation = ? AND status = 'ai_rule_pending'
                 """,
-                (utc_now(), session_id, generation),
+                (
+                    json.dumps(administrator_rows, ensure_ascii=False),
+                    utc_now(),
+                    session_id,
+                    generation,
+                ),
             )
             db.commit()
         return self.get(session_id) if cursor.rowcount == 1 else None
@@ -244,6 +331,7 @@ class SessionStore:
         status: str,
         *,
         platform_response: dict[str, Any] | None = None,
+        compiler_result: dict[str, Any] | None = None,
         error: str | None = None,
         generation: int | None = None,
         expected_status: str | None = None,
@@ -255,6 +343,9 @@ class SessionStore:
                 status,
                 json.dumps(platform_response, ensure_ascii=False)
                 if platform_response is not None
+                else None,
+                json.dumps(compiler_result, ensure_ascii=False)
+                if compiler_result is not None
                 else None,
                 error,
                 utc_now(),
@@ -272,7 +363,7 @@ class SessionStore:
             cursor = db.execute(
                 f"""
                 UPDATE recognition_sessions
-                SET status = ?, platform_response = ?, error = ?, updated_at = ?
+                SET status = ?, platform_response = ?, compiler_result = ?, error = ?, updated_at = ?
                 WHERE {' AND '.join(conditions)}
                 """,
                 parameters,

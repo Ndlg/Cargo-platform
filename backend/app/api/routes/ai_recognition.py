@@ -1,22 +1,33 @@
 from __future__ import annotations
 
 import secrets
-from typing import Any
+from hashlib import sha256
+import json
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, Header, HTTPException, Path, status
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.core.context import CurrentUser
 from app.core.database import get_db
+from app.core.deps import get_current_user, get_workspace_id, require_write
 from app.models import RawCaptureRecord, RecognitionRulePack, Workspace
+from app.services.ai_recognition_client import (
+    approve_ai_recognition_session_with_service,
+    feedback_ai_recognition_session_with_service,
+    get_ai_recognition_session_with_service,
+    reject_ai_recognition_session_with_service,
+)
 from app.services.order_row_reader import order_rows_for_task, parser_raw_record_inputs
 from app.services.recognition_rule_packs import (
     AI_RULE_PACK_CODE,
     recognition_rule_pack_summary,
     save_ai_rule_profile,
+    utc_now_iso,
 )
 from app.services.tenant_fingerprint_configs import selected_fields_for_fingerprint
 from app.services.waybill_parser_client import (
@@ -26,7 +37,97 @@ from app.services.waybill_parser_client import (
 from app.services.waybill_reading import task_documents
 
 
-router = APIRouter(prefix="/internal/ai-recognition", tags=["ai-recognition-internal"])
+router = APIRouter(tags=["ai-recognition"])
+AiSessionId = Annotated[
+    str,
+    Path(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$"),
+]
+
+
+class AiProxyOrderRow(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    product: str = Field(min_length=1, max_length=512)
+    sales_attr1: str = Field(default="", max_length=512)
+    sales_attr2: str = Field(default="", max_length=512)
+    quantity: int = Field(ge=1, le=100_000)
+    remark: str = Field(default="", max_length=1000)
+
+
+class AiProxyFeedbackRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    message: str = Field(default="", max_length=2000)
+    corrected_rows: list[AiProxyOrderRow] | None = Field(default=None, min_length=1, max_length=100)
+    note: str = Field(default="", max_length=2000)
+
+
+class AiApprovalActor(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: int = Field(ge=1)
+    username: str = Field(min_length=1, max_length=255)
+    display_name: str = Field(default="", max_length=255)
+
+
+def session_in_workspace(session_id: str, workspace_id: int) -> dict[str, Any]:
+    session = get_ai_recognition_session_with_service(session_id)
+    if session.get("workspace_id") != workspace_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Workspace access denied.",
+        )
+    return session
+
+
+@router.get("/ai-recognition/sessions/{session_id}")
+def get_ai_recognition_session(
+    session_id: AiSessionId,
+    _current_user: CurrentUser = Depends(get_current_user),
+    workspace_id: int = Depends(get_workspace_id),
+) -> dict[str, Any]:
+    return session_in_workspace(session_id, workspace_id)
+
+
+@router.post("/ai-recognition/sessions/{session_id}/feedback")
+def feedback_ai_recognition_session(
+    session_id: AiSessionId,
+    request: AiProxyFeedbackRequest,
+    _current_user: CurrentUser = Depends(require_write),
+    workspace_id: int = Depends(get_workspace_id),
+) -> dict[str, Any]:
+    session_in_workspace(session_id, workspace_id)
+    return feedback_ai_recognition_session_with_service(
+        session_id,
+        request.model_dump(mode="json"),
+    )
+
+
+@router.post("/ai-recognition/sessions/{session_id}/approve")
+def approve_ai_recognition_session(
+    session_id: AiSessionId,
+    current_user: CurrentUser = Depends(require_write),
+    workspace_id: int = Depends(get_workspace_id),
+) -> dict[str, Any]:
+    session_in_workspace(session_id, workspace_id)
+    return approve_ai_recognition_session_with_service(
+        session_id,
+        actor={
+            "id": current_user.id,
+            "username": current_user.username,
+            "display_name": current_user.display_name,
+        },
+    )
+
+
+@router.post("/ai-recognition/sessions/{session_id}/reject")
+def reject_ai_recognition_session(
+    session_id: AiSessionId,
+    _current_user: CurrentUser = Depends(require_write),
+    workspace_id: int = Depends(get_workspace_id),
+) -> dict[str, Any]:
+    session_in_workspace(session_id, workspace_id)
+    return reject_ai_recognition_session_with_service(session_id)
 
 
 class AiRuleApprovalRequest(BaseModel):
@@ -38,6 +139,11 @@ class AiRuleApprovalRequest(BaseModel):
     format_fingerprint: str = Field(min_length=1, max_length=128)
     fingerprint_code: str = Field(min_length=1, max_length=128)
     candidate_output: dict[str, Any] = Field(default_factory=dict)
+    model_candidate: dict[str, Any]
+    administrator_rows: list[AiProxyOrderRow] = Field(min_length=1, max_length=100)
+    model_candidate_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    administrator_rows_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    actor: AiApprovalActor
     validate_only: bool = False
 
 
@@ -65,6 +171,17 @@ def comparable_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
         for row in rows
         if isinstance(row, dict)
     ]
+
+
+def canonical_sha256(value: Any) -> str:
+    return sha256(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 def valid_business_rows(rows: list[dict[str, Any]]) -> bool:
@@ -135,7 +252,14 @@ def gold_samples_for_fingerprint(
             continue
         raw_record_id = learning_record.get("raw_record_id")
         document_sequence = learning_record.get("document_sequence")
-        confirmed_rows = comparable_rows({"rows": learning_record.get("confirmed_rows")})
+        confirmed_rows = comparable_rows(
+            {
+                "rows": (
+                    learning_record.get("administrator_rows")
+                    or learning_record.get("confirmed_rows")
+                )
+            }
+        )
         if (
             not isinstance(raw_record_id, int)
             or isinstance(raw_record_id, bool)
@@ -209,7 +333,25 @@ def ensure_idempotent_approval_matches(
         and learning_record.get("document_sequence") == request.document_sequence
         and learning_record.get("fingerprint") == request.format_fingerprint
         and learning_record.get("fingerprint_code") == request.fingerprint_code
-        and comparable_rows({"rows": learning_record.get("confirmed_rows")}) == expected_rows
+        and comparable_rows(
+            {
+                "rows": (
+                    learning_record.get("administrator_rows")
+                    or learning_record.get("confirmed_rows")
+                )
+            }
+        )
+        == expected_rows
+        and (
+            not learning_record.get("model_candidate_sha256")
+            or learning_record.get("model_candidate_sha256")
+            == request.model_candidate_sha256
+        )
+        and (
+            not learning_record.get("administrator_rows_sha256")
+            or learning_record.get("administrator_rows_sha256")
+            == request.administrator_rows_sha256
+        )
     )
     if not matches:
         raise HTTPException(
@@ -310,6 +452,7 @@ def approved_response(
     format_fingerprint: str,
     reruns: list[dict[str, Any]],
     warnings: list[str],
+    compiler_result: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "status": "approved",
@@ -318,10 +461,11 @@ def approved_response(
         "negative_replay": "not_available",
         "reruns": reruns,
         "warnings": warnings,
+        "compiler_result": compiler_result,
     }
 
 
-@router.post("/approve")
+@router.post("/internal/ai-recognition/approve")
 def approve_ai_rule(
     request: AiRuleApprovalRequest,
     db: Session = Depends(get_db),
@@ -334,6 +478,21 @@ def approve_ai_rule(
         or not secrets.compare_digest(token, settings.ai_recognition_internal_token)
     ):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid AI recognition token.")
+
+    administrator_rows = [
+        row.model_dump(mode="json")
+        for row in request.administrator_rows
+    ]
+    actor = request.actor.model_dump(mode="json")
+    if (
+        canonical_sha256(request.model_candidate) != request.model_candidate_sha256
+        or canonical_sha256(administrator_rows) != request.administrator_rows_sha256
+        or comparable_rows(request.candidate_output) != administrator_rows
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="AI 审批来源审计信息无效，未同步规则。",
+        )
 
     workspace = db.get(Workspace, request.workspace_id)
     if workspace is None or workspace.is_deleted:
@@ -351,7 +510,7 @@ def approve_ai_rule(
     if record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Raw waybill not found.")
 
-    expected_rows = comparable_rows(request.candidate_output)
+    expected_rows = administrator_rows
     if not valid_business_rows(expected_rows):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -395,6 +554,11 @@ def approve_ai_rule(
             format_fingerprint=request.format_fingerprint,
             reruns=reruns,
             warnings=warnings,
+            compiler_result=(
+                existing_learning_record.get("compiler_result")
+                if isinstance(existing_learning_record.get("compiler_result"), dict)
+                else None
+            ),
         )
 
     try:
@@ -430,6 +594,12 @@ def approve_ai_rule(
                 "candidate_invalid": "管理员确认的五字段结果无效。",
             }.get(str(synthesis.get("status") or ""), "识别规则合成失败。")
             raise ValueError(f"{reason}旧规则未修改。")
+        compiler_result = {
+            "status": "compiled",
+            "fingerprint": request.format_fingerprint,
+            "grammar_signature": profile.get("grammar_signature"),
+            "replay_report": synthesis.get("replay_report") or [],
+        }
         pack = save_ai_rule_profile(
             db,
             tenant_id=workspace.tenant_id,
@@ -446,6 +616,13 @@ def approve_ai_rule(
                 "fingerprint_code": request.fingerprint_code,
                 "grammar_signature": profile.get("grammar_signature"),
                 "confirmed_rows": expected_rows,
+                "model_candidate": request.model_candidate,
+                "administrator_rows": expected_rows,
+                "compiler_result": compiler_result,
+                "model_candidate_sha256": request.model_candidate_sha256,
+                "administrator_rows_sha256": request.administrator_rows_sha256,
+                "approved_at": utc_now_iso(),
+                "approved_by": actor,
                 "replay_report": synthesis.get("replay_report") or [],
                 "negative_replay": "not_available",
             },
@@ -491,4 +668,5 @@ def approve_ai_rule(
         format_fingerprint=request.format_fingerprint,
         reruns=reruns,
         warnings=warnings,
+        compiler_result=compiler_result,
     )

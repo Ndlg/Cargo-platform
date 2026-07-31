@@ -43,6 +43,12 @@ def recognize_with_ai(
     try:
         response = httpx.post(
             f"{base_url}/api/v1/recognize",
+            headers={
+                "X-AI-Recognition-Token": os.getenv(
+                    "AI_RECOGNITION_INTERNAL_TOKEN",
+                    "",
+                ).strip(),
+            },
             json={
                 "workspace_id": workspace_id,
                 "task_id": task_id,

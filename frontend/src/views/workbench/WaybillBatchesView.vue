@@ -42,7 +42,12 @@ const aiStatus = computed(() =>
     ? drafts.value?.status ?? ''
     : '',
 )
-const aiSessionUrl = computed(() => drafts.value?.ai_sessions?.find((item) => item.console_url)?.console_url ?? '')
+const aiSessionUrl = computed(() => {
+  const sessionId = drafts.value?.ai_sessions?.find((item) => item.session_id)?.session_id ?? ''
+  return /^[A-Za-z0-9_-]{1,128}$/.test(sessionId)
+    ? `/ai-recognition-console.html?session=${encodeURIComponent(sessionId)}`
+    : ''
+})
 const aiStatusText = computed(() => {
   if (aiStatus.value === 'ai_rule_pending') return '新格式待管理员确认'
   if (aiStatus.value === 'ai_unavailable') return 'AI 识别服务不可用，已固化规则仍可继续使用'

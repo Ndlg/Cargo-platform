@@ -16,6 +16,8 @@ import httpx
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PACKAGE_DIR = REPO_ROOT / "services" / "ai-recognition" / "service_app"
+AI_TOKEN = "test-internal-token"
+AI_HEADERS = {"X-AI-Recognition-Token": AI_TOKEN}
 
 
 def load_ai_service(default_db: Path):
@@ -142,7 +144,10 @@ def wait_for_status(
     deadline = time.monotonic() + 2
     payload: dict[str, Any] = {}
     while time.monotonic() < deadline:
-        payload = client.get(f"/api/v1/sessions/{session_id}").json()
+        payload = client.get(
+            f"/api/v1/sessions/{session_id}",
+            headers=AI_HEADERS,
+        ).json()
         if payload["status"] == status:
             return payload
         time.sleep(0.01)
@@ -397,12 +402,20 @@ def test_recognize_returns_running_before_slow_model_finishes(tmp_path: Path) ->
             return super().recognize(evidence)
 
     model = SlowModel()
-    app = module.create_app(model_client=model, db_path=tmp_path / "sessions.db")
+    app = module.create_app(
+        model_client=model,
+        db_path=tmp_path / "sessions.db",
+        internal_token=AI_TOKEN,
+    )
     result: dict[str, Any] = {}
     with TestClient(app) as client:
         thread = Thread(
             target=lambda: result.update(
-                response=client.post("/api/v1/recognize", json=recognize_request())
+                response=client.post(
+                    "/api/v1/recognize",
+                    json=recognize_request(),
+                    headers=AI_HEADERS,
+                )
             ),
             daemon=True,
         )
@@ -424,12 +437,12 @@ def test_recognize_reuses_identical_safe_evidence_session(tmp_path: Path) -> Non
     app = module.create_app(
         model_client=model,
         db_path=tmp_path / "sessions.db",
-        console_base_url="http://127.0.0.1:6183",
+        internal_token=AI_TOKEN,
     )
 
     with TestClient(app) as client:
-        first = client.post("/api/v1/recognize", json=recognize_request())
-        second = client.post("/api/v1/recognize", json=recognize_request())
+        first = client.post("/api/v1/recognize", json=recognize_request(), headers=AI_HEADERS)
+        second = client.post("/api/v1/recognize", json=recognize_request(), headers=AI_HEADERS)
         stored = wait_for_status(client, first.json()["session_id"], "ai_rule_pending")
 
     assert first.json()["session_id"] == second.json()["session_id"]
@@ -447,7 +460,11 @@ def test_recognize_reuses_identical_safe_evidence_session(tmp_path: Path) -> Non
 
 def test_recognize_rejects_raw_payload_and_mismatched_evidence_identity(tmp_path: Path) -> None:
     module = load_ai_service(tmp_path / "import-default.db")
-    app = module.create_app(model_client=FakeModel(), db_path=tmp_path / "sessions.db")
+    app = module.create_app(
+        model_client=FakeModel(),
+        db_path=tmp_path / "sessions.db",
+        internal_token=AI_TOKEN,
+    )
     raw = recognize_request()
     raw["payload"] = {"receiverName": "张三"}
     raw.pop("evidence")
@@ -455,8 +472,8 @@ def test_recognize_rejects_raw_payload_and_mismatched_evidence_identity(tmp_path
     mismatch["source_component"] = "other"
 
     with TestClient(app) as client:
-        raw_response = client.post("/api/v1/recognize", json=raw)
-        mismatch_response = client.post("/api/v1/recognize", json=mismatch)
+        raw_response = client.post("/api/v1/recognize", json=raw, headers=AI_HEADERS)
+        mismatch_response = client.post("/api/v1/recognize", json=mismatch, headers=AI_HEADERS)
 
     assert raw_response.status_code == 422
     assert mismatch_response.status_code == 422
@@ -465,13 +482,18 @@ def test_recognize_rejects_raw_payload_and_mismatched_evidence_identity(tmp_path
 def test_invalid_selection_is_editable_business_result(tmp_path: Path) -> None:
     module = load_ai_service(tmp_path / "import-default.db")
     model = FakeModel({"rows": [{**span_selection()["rows"][0], "product_span_ids": ["missing"]}]})
-    app = module.create_app(model_client=model, db_path=tmp_path / "sessions.db")
+    app = module.create_app(
+        model_client=model,
+        db_path=tmp_path / "sessions.db",
+        internal_token=AI_TOKEN,
+    )
 
     with TestClient(app) as client:
-        response = client.post("/api/v1/recognize", json=recognize_request())
+        response = client.post("/api/v1/recognize", json=recognize_request(), headers=AI_HEADERS)
         stored = wait_for_status(client, response.json()["session_id"], "candidate_invalid")
 
-    assert stored["candidate"]["parents"] == []
+    assert stored["candidate"] is None
+    assert stored["model_candidate"]["parents"] == []
     assert "unknown span" in stored["error"]
 
 
@@ -482,23 +504,37 @@ def test_model_failure_is_ai_unavailable(tmp_path: Path) -> None:
         def recognize(self, _evidence: dict[str, Any]) -> dict[str, Any]:
             raise httpx.ConnectError("model offline")
 
-    app = module.create_app(model_client=BrokenModel(), db_path=tmp_path / "sessions.db")
+    app = module.create_app(
+        model_client=BrokenModel(),
+        db_path=tmp_path / "sessions.db",
+        internal_token=AI_TOKEN,
+    )
     with TestClient(app) as client:
-        response = client.post("/api/v1/recognize", json=recognize_request())
+        response = client.post("/api/v1/recognize", json=recognize_request(), headers=AI_HEADERS)
         stored = wait_for_status(client, response.json()["session_id"], "ai_unavailable")
 
     assert stored["candidate"] is None
     assert "model offline" in stored["error"]
 
 
-def test_admin_corrected_rows_are_authoritative_without_second_model_call(tmp_path: Path) -> None:
+def test_admin_feedback_preserves_first_model_candidate_without_second_model_call(
+    tmp_path: Path,
+) -> None:
     module = load_ai_service(tmp_path / "import-default.db")
     model = FakeModel()
-    app = module.create_app(model_client=model, db_path=tmp_path / "sessions.db")
+    app = module.create_app(
+        model_client=model,
+        db_path=tmp_path / "sessions.db",
+        internal_token=AI_TOKEN,
+    )
 
     with TestClient(app) as client:
-        created = client.post("/api/v1/recognize", json=recognize_request()).json()
-        wait_for_status(client, created["session_id"], "ai_rule_pending")
+        created = client.post(
+            "/api/v1/recognize",
+            json=recognize_request(),
+            headers=AI_HEADERS,
+        ).json()
+        original = wait_for_status(client, created["session_id"], "ai_rule_pending")
         response = client.post(
             f"/api/v1/sessions/{created['session_id']}/feedback",
             json={
@@ -512,12 +548,23 @@ def test_admin_corrected_rows_are_authoritative_without_second_model_call(tmp_pa
                     }
                 ]
             },
+            headers=AI_HEADERS,
         )
         stored = wait_for_status(client, created["session_id"], "ai_rule_pending")
 
     assert response.status_code == 200
     assert len(model.calls) == 1
     assert stored["model_calls"] == 1
+    assert stored["model_candidate"] == original["model_candidate"]
+    assert stored["administrator_rows"] == [
+        {
+            "product": "管理员确认商品",
+            "sales_attr1": "灰蓝",
+            "sales_attr2": "39",
+            "quantity": 2,
+            "remark": "",
+        }
+    ]
     assert stored["candidate"]["parents"][0]["rows"][0]["product"] == "管理员确认商品"
     assert "span_selection" not in stored["candidate"]
 
@@ -533,21 +580,46 @@ def test_approval_sends_only_resolved_candidate_not_model_rule(tmp_path: Path) -
     app = module.create_app(
         model_client=FakeModel(),
         db_path=tmp_path / "sessions.db",
-        internal_token="shared",
+        internal_token=AI_TOKEN,
         approval_sender=sender,
     )
     with TestClient(app) as client:
-        created = client.post("/api/v1/recognize", json=recognize_request()).json()
+        created = client.post(
+            "/api/v1/recognize",
+            json=recognize_request(),
+            headers=AI_HEADERS,
+        ).json()
         wait_for_status(client, created["session_id"], "ai_rule_pending")
-        approved = client.post(f"/api/v1/sessions/{created['session_id']}/approve")
+        approved = client.post(
+            f"/api/v1/sessions/{created['session_id']}/approve",
+            json={
+                "actor": {
+                    "id": 7,
+                    "username": "admin",
+                    "display_name": "管理员",
+                }
+            },
+            headers=AI_HEADERS,
+        )
 
     assert approved.status_code == 200
     payload, token = approvals[0]
-    assert token == "shared"
+    assert token == AI_TOKEN
     assert "candidate_rule" not in payload
     assert "rule_evidence" not in payload
     assert payload["fingerprint_code"] == "CN-PACKAGE-ITEMS"
     assert payload["candidate_output"]["parents"][0]["rows"][0]["product"] == "范74"
+    assert payload["model_candidate"]["parents"] == payload["candidate_output"]["parents"]
+    assert "span_selection" in payload["model_candidate"]
+    assert payload["administrator_rows"] == payload["candidate_output"]["parents"][0]["rows"]
+    assert payload["actor"] == {
+        "id": 7,
+        "username": "admin",
+        "display_name": "管理员",
+    }
+    assert len(payload["model_candidate_sha256"]) == 64
+    assert len(payload["administrator_rows_sha256"]) == 64
+    assert approved.json()["compiler_result"] == {"status": "approved"}
 
 
 def test_rerun_warning_does_not_move_ai_session_back_to_pending(tmp_path: Path) -> None:
@@ -569,18 +641,36 @@ def test_rerun_warning_does_not_move_ai_session_back_to_pending(tmp_path: Path) 
     app = module.create_app(
         model_client=FakeModel(),
         db_path=tmp_path / "sessions.db",
-        internal_token="shared",
+        internal_token=AI_TOKEN,
         approval_sender=sender,
     )
     with TestClient(app) as client:
-        created = client.post("/api/v1/recognize", json=recognize_request()).json()
+        created = client.post(
+            "/api/v1/recognize",
+            json=recognize_request(),
+            headers=AI_HEADERS,
+        ).json()
         wait_for_status(client, created["session_id"], "ai_rule_pending")
-        approved = client.post(f"/api/v1/sessions/{created['session_id']}/approve")
-        stored = client.get(f"/api/v1/sessions/{created['session_id']}").json()
+        approved = client.post(
+            f"/api/v1/sessions/{created['session_id']}/approve",
+            json={
+                "actor": {
+                    "id": 7,
+                    "username": "admin",
+                    "display_name": "管理员",
+                }
+            },
+            headers=AI_HEADERS,
+        )
+        stored = client.get(
+            f"/api/v1/sessions/{created['session_id']}",
+            headers=AI_HEADERS,
+        ).json()
 
     assert approved.status_code == 200
     assert approved.json()["status"] == "approved"
     assert stored["status"] == "approved"
+    assert stored["compiler_result"] == stored["platform_response"]
     assert stored["platform_response"]["warnings"] == [
         "采集轮次 61 重算失败：parser offline"
     ]
@@ -680,27 +770,141 @@ def test_existing_session_database_adds_document_sequence_column(tmp_path: Path)
 
     assert session["document_sequence"] == 3
     assert session["generation"] == 1
+    assert session["model_candidate"] is None
+    assert session["administrator_rows"] is None
+    assert session["compiler_result"] is None
 
 
-def test_health_console_fingerprint_catalog_and_inspection_remain_available(tmp_path: Path) -> None:
+def test_legacy_session_database_migrates_three_stage_values(tmp_path: Path) -> None:
     module = load_ai_service(tmp_path / "import-default.db")
-    app = module.create_app(model_client=FakeModel(), db_path=tmp_path / "sessions.db")
+    database = tmp_path / "legacy-three-stage.db"
+    candidate = {
+        "parents": [
+            {
+                "rows": [
+                    {
+                        "product": "旧候选",
+                        "sales_attr1": "",
+                        "sales_attr2": "",
+                        "quantity": 1,
+                        "remark": "",
+                    }
+                ]
+            }
+        ]
+    }
+    corrected_rows = [{**candidate["parents"][0]["rows"][0], "product": "管理员结果"}]
+    compiler_result = {"status": "approved"}
+    with sqlite3.connect(database) as db:
+        db.execute(
+            """
+            CREATE TABLE recognition_sessions (
+                session_id TEXT PRIMARY KEY, request_key TEXT NOT NULL UNIQUE,
+                workspace_id INTEGER NOT NULL, task_id INTEGER NOT NULL,
+                raw_record_id INTEGER NOT NULL, source_component TEXT NOT NULL,
+                fingerprint TEXT NOT NULL, deterministic_failure_reason TEXT NOT NULL,
+                sanitized_payload TEXT NOT NULL, candidate TEXT, feedback TEXT NOT NULL DEFAULT '[]',
+                platform_response TEXT, status TEXT NOT NULL, error TEXT,
+                model_calls INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            )
+            """
+        )
+        db.execute(
+            """
+            INSERT INTO recognition_sessions VALUES (
+                'legacy', 'legacy-key', 1, 61, 901, 'test', 'v2:test', 'missing',
+                '{}', ?, ?, ?, 'approved', NULL, 1, 'old', 'old'
+            )
+            """,
+            (
+                json.dumps(candidate),
+                json.dumps([json.dumps({"corrected_rows": corrected_rows})]),
+                json.dumps(compiler_result),
+            ),
+        )
+
+    session = module.SessionStore(database).get("legacy")
+
+    assert session is not None
+    assert session["model_candidate"] == candidate
+    assert session["administrator_rows"] == corrected_rows
+    assert session["compiler_result"] == compiler_result
+
+
+def test_health_is_public_but_all_ai_api_endpoints_require_internal_token(
+    tmp_path: Path,
+) -> None:
+    module = load_ai_service(tmp_path / "import-default.db")
+    app = module.create_app(
+        model_client=FakeModel(),
+        db_path=tmp_path / "sessions.db",
+        internal_token=AI_TOKEN,
+    )
     with TestClient(app) as client:
         health = client.get("/health")
-        console = client.get("/console")
-        catalog = client.get("/api/v1/fingerprints")
+        protected_requests = [
+            ("GET", "/api/v1/fingerprints", None),
+            (
+                "POST",
+                "/api/v1/fingerprints/inspect",
+                {"source_component": "test", "payload": {}},
+            ),
+            ("POST", "/api/v1/recognize", recognize_request()),
+            ("GET", "/api/v1/sessions", None),
+            ("GET", "/api/v1/sessions/not-found", None),
+            (
+                "POST",
+                "/api/v1/sessions/not-found/feedback",
+                {"note": "test"},
+            ),
+            (
+                "POST",
+                "/api/v1/sessions/not-found/approve",
+                {
+                    "actor": {
+                        "id": 7,
+                        "username": "admin",
+                        "display_name": "管理员",
+                    }
+                },
+            ),
+            ("POST", "/api/v1/sessions/not-found/reject", None),
+        ]
+        denied = [
+            client.request(method, path, json=body, headers=headers)
+            for method, path, body in protected_requests
+            for headers in (
+                {},
+                {"X-AI-Recognition-Token": "wrong"},
+            )
+        ]
+        catalog = client.get("/api/v1/fingerprints", headers=AI_HEADERS)
         inspection = client.post(
             "/api/v1/fingerprints/inspect",
             json={
                 "source_component": "cainiao-cnprint",
                 "payload": {"contents": [{"data": {"ITEM_INFO": "范74 灰蓝 39【1件】"}}]},
             },
+            headers=AI_HEADERS,
         )
+        recognize = client.post(
+            "/api/v1/recognize",
+            json=recognize_request(),
+            headers=AI_HEADERS,
+        )
+        session = client.get(
+            f"/api/v1/sessions/{recognize.json()['session_id']}",
+            headers=AI_HEADERS,
+        )
+        console = client.get("/console")
 
     assert health.json()["status"] == "ok"
-    assert "本地 AI 面单识别会话" in console.text
+    assert {response.status_code for response in denied} == {401}
     assert len(catalog.json()["fingerprints"]) == 5
     assert inspection.json()["fingerprint_code"] == "CN-ITEM-INFO"
+    assert recognize.status_code == 200
+    assert session.status_code == 200
+    assert console.status_code == 404
 
 
 def test_ai_service_has_no_rule_compiler_or_model_rule_contract(tmp_path: Path) -> None:

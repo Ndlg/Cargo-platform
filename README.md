@@ -53,9 +53,10 @@ docker compose --env-file .env -f docker-compose.release.yml -f docker-compose.a
 docker exec cargo-platform-local-model ollama pull qwen3.5:4b-q4_K_M
 ```
 
-The AI console is available at `http://127.0.0.1:18111/console`. If only the AI
-service is unavailable, already confirmed declarative rules continue to parse
-known formats; unfamiliar formats remain reviewable exceptions.
+AI sessions are opened from the platform's `AI 面单解析` page; the AI service
+has no browser-facing port. If only that internal service is unavailable,
+already confirmed declarative rules continue to parse known formats; unfamiliar
+formats remain reviewable exceptions.
 
 Release `0.2.0-rc.1` publishes five version-matched images: backend, tenant UI,
 admin UI, waybill parser, and AI recognition. See `CHANGELOG.md`.

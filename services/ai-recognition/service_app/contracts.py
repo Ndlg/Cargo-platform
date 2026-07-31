@@ -88,3 +88,17 @@ class FeedbackRequest(BaseModel):
         if not self.message.strip() and not self.note.strip() and not self.corrected_rows:
             raise ValueError("feedback is empty")
         return self
+
+
+class ApprovalActor(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: int = Field(ge=1)
+    username: str = Field(min_length=1, max_length=255)
+    display_name: str = Field(default="", max_length=255)
+
+
+class ApprovalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actor: ApprovalActor

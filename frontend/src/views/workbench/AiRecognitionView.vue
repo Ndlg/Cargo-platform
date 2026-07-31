@@ -41,14 +41,19 @@ const fingerprintConfigs = ref<TenantFingerprintConfig[]>([])
 const loading = ref(false)
 const startingSampleId = ref('')
 const error = ref('')
-const consoleUrl = ref('')
+const recognitionSessionId = ref('')
 const currentSessionLabel = ref('')
 const sessionError = ref('')
+const consolePath = computed(() =>
+  recognitionSessionId.value
+    ? `/ai-recognition-console.html?session=${encodeURIComponent(recognitionSessionId.value)}`
+    : '',
+)
 
 const sessionStatusText = computed(() => {
   if (startingSampleId.value) return '正在创建会话'
   if (sessionError.value) return '启动失败'
-  if (consoleUrl.value) return '会话已连接'
+  if (recognitionSessionId.value) return '会话已连接'
   return '等待选择面单'
 })
 
@@ -58,14 +63,22 @@ function savedSessionKey(): string {
 }
 
 function restoreSavedSession() {
-  consoleUrl.value = ''
+  recognitionSessionId.value = ''
   currentSessionLabel.value = ''
   sessionError.value = ''
   const key = savedSessionKey()
   if (!key) return
   try {
-    const saved = JSON.parse(localStorage.getItem(key) || '{}') as { consoleUrl?: string; label?: string }
-    consoleUrl.value = saved.consoleUrl || ''
+    const saved = JSON.parse(localStorage.getItem(key) || '{}') as {
+      sessionId?: string
+      consoleUrl?: string
+      label?: string
+    }
+    const legacySessionId = saved.consoleUrl
+      ? new URL(saved.consoleUrl, window.location.origin).searchParams.get('session') ?? ''
+      : ''
+    const candidate = saved.sessionId || legacySessionId
+    recognitionSessionId.value = /^[A-Za-z0-9_-]{1,128}$/.test(candidate) ? candidate : ''
     currentSessionLabel.value = saved.label || ''
   } catch {
     localStorage.removeItem(key)
@@ -74,10 +87,13 @@ function restoreSavedSession() {
 
 function saveCurrentSession() {
   const key = savedSessionKey()
-  if (!key || !consoleUrl.value) return
+  if (!key || !recognitionSessionId.value) return
   localStorage.setItem(
     key,
-    JSON.stringify({ consoleUrl: consoleUrl.value, label: currentSessionLabel.value }),
+    JSON.stringify({
+      sessionId: recognitionSessionId.value,
+      label: currentSessionLabel.value,
+    }),
   )
 }
 
@@ -188,7 +204,7 @@ async function loadQueue() {
   if (!selectedTaskId.value) {
     samples.value = []
     drafts.value = null
-    consoleUrl.value = ''
+    recognitionSessionId.value = ''
     currentSessionLabel.value = ''
     return
   }
@@ -215,7 +231,7 @@ async function start(item: QueueItem) {
   if (!selectedTaskId.value || startingSampleId.value) return
   startingSampleId.value = item.sample_id
   currentSessionLabel.value = `面单 ${item.parentSequence}`
-  consoleUrl.value = ''
+  recognitionSessionId.value = ''
   sessionError.value = ''
   localStorage.removeItem(savedSessionKey())
   error.value = ''
@@ -226,8 +242,11 @@ async function start(item: QueueItem) {
       parent_sequence: item.parentSequence,
     })
     const recognitionSession = result.ai_sessions?.[0]
-    if (recognitionSession?.console_url) {
-      consoleUrl.value = recognitionSession.console_url
+    if (
+      recognitionSession?.session_id
+      && /^[A-Za-z0-9_-]{1,128}$/.test(recognitionSession.session_id)
+    ) {
+      recognitionSessionId.value = recognitionSession.session_id
       saveCurrentSession()
       ElMessage.success('已开始解析这一张面单')
     } else if (result.status === 'parsed') {
@@ -247,7 +266,7 @@ async function start(item: QueueItem) {
 }
 
 function handleConsoleMessage(event: MessageEvent) {
-  if (!consoleUrl.value || event.origin !== new URL(consoleUrl.value).origin) return
+  if (!recognitionSessionId.value || event.origin !== window.location.origin) return
   const payload = event.data as { type?: string }
   if (payload?.type !== 'cargo-ai-rule-approved') return
   ElMessage.success('新规则已同步，正在重新检查本轮面单')
@@ -297,10 +316,10 @@ onBeforeUnmount(() => window.removeEventListener('message', handleConsoleMessage
         </p>
       </div>
       <div class="console-actions">
-        <el-tag :type="sessionError ? 'danger' : consoleUrl ? 'success' : 'info'">
+        <el-tag :type="sessionError ? 'danger' : recognitionSessionId ? 'success' : 'info'">
           {{ sessionStatusText }}
         </el-tag>
-        <el-button v-if="consoleUrl" tag="a" :href="consoleUrl" target="_blank">
+        <el-button v-if="consolePath" tag="a" :href="consolePath" target="_blank">
           在独立窗口打开
         </el-button>
       </div>
@@ -318,8 +337,8 @@ onBeforeUnmount(() => window.removeEventListener('message', handleConsoleMessage
       <p>正在创建会话并提交给本地模型，请稍候……</p>
     </div>
     <iframe
-      v-else-if="consoleUrl"
-      :src="consoleUrl"
+      v-else-if="consolePath"
+      :src="consolePath"
       title="本地 AI 面单识别会话"
     />
     <el-empty

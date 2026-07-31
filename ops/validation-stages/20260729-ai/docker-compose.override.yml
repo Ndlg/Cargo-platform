@@ -18,14 +18,11 @@ services:
     environment:
       AI_RECOGNITION_DB: /data/ai-recognition.db
       AI_RECOGNITION_INTERNAL_TOKEN: ${AI_RECOGNITION_INTERNAL_TOKEN:?set AI_RECOGNITION_INTERNAL_TOKEN}
-      AI_CONSOLE_BASE_URL: http://127.0.0.1:18111
       OLLAMA_MODEL: qwen3.5:4b-q4_K_M
       OLLAMA_URL: http://local-model:11434
       PLATFORM_INTERNAL_URL: http://backend:8000/api/v1
     volumes:
       - ai-session-data:/data
-    ports:
-      - "127.0.0.1:18111:8011"
     networks:
       validation:
         aliases:
@@ -36,6 +33,7 @@ services:
     depends_on:
       - ai-recognition
     environment:
+      AI_RECOGNITION_INTERNAL_TOKEN: ${AI_RECOGNITION_INTERNAL_TOKEN:?set AI_RECOGNITION_INTERNAL_TOKEN}
       AI_RECOGNITION_URL: http://ai-recognition:8011
 
   backend:

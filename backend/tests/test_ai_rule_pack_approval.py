@@ -1,7 +1,9 @@
 from copy import deepcopy
+from hashlib import sha256
 import json
 
 from fastapi import HTTPException
+from pydantic import ValidationError
 import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.exc import IntegrityError
@@ -68,8 +70,28 @@ def approval_request(
     raw_record_id: int = 100,
     document_sequence: int = 1,
     rows: list[dict] | None = None,
+    model_rows: list[dict] | None = None,
     validate_only: bool = False,
 ) -> AiRuleApprovalRequest:
+    administrator_rows = rows or [SHOE_ROW]
+    model_candidate = {
+        "parents": [
+            {
+                "rows": model_rows or administrator_rows,
+            }
+        ]
+    }
+
+    def canonical_hash(value: object) -> str:
+        return sha256(
+            json.dumps(
+                value,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+
     return AiRuleApprovalRequest(
         session_id=session_id,
         workspace_id=1,
@@ -78,7 +100,16 @@ def approval_request(
         document_sequence=document_sequence,
         format_fingerprint=FINGERPRINT,
         fingerprint_code="CN-PACKAGE-ITEMS",
-        candidate_output={"parents": [{"rows": rows or [SHOE_ROW]}]},
+        candidate_output={"parents": [{"rows": administrator_rows}]},
+        model_candidate=model_candidate,
+        administrator_rows=administrator_rows,
+        model_candidate_sha256=canonical_hash(model_candidate),
+        administrator_rows_sha256=canonical_hash(administrator_rows),
+        actor={
+            "id": 7,
+            "username": "admin",
+            "display_name": "管理员",
+        },
         validate_only=validate_only,
     )
 
@@ -315,11 +346,15 @@ def test_internal_approval_synthesizes_from_original_and_preserves_duplicates(
         )
         db.commit()
         response = ai_route.approve_ai_rule(
-            approval_request(rows=[SHOE_ROW, SHOE_ROW]),
+            approval_request(
+                rows=[SHOE_ROW, SHOE_ROW],
+                model_rows=[{**SHOE_ROW, "product": "model shoe"}],
+            ),
             db,
             "test-secret",
         )
         pack = db.scalar(select(RecognitionRulePack))
+        revision = db.scalar(select(RecognitionRulePackRevision))
 
     assert response["status"] == "approved"
     assert calls == [
@@ -341,8 +376,27 @@ def test_internal_approval_synthesizes_from_original_and_preserves_duplicates(
     assert learning[0]["replay_report"] == [{"kind": "current", "passed": True}]
     assert learning[0]["grammar_signature"] == "grammar-a"
     assert learning[0]["negative_replay"] == "not_available"
+    assert learning[0]["model_candidate"]["parents"][0]["rows"][0]["product"] == "model shoe"
+    assert learning[0]["administrator_rows"] == [SHOE_ROW, SHOE_ROW]
+    assert learning[0]["compiler_result"]["status"] == "compiled"
+    assert learning[0]["compiler_result"]["grammar_signature"] == "grammar-a"
+    assert learning[0]["approved_by"] == {
+        "id": 7,
+        "username": "admin",
+        "display_name": "管理员",
+    }
+    assert learning[0]["approved_at"].endswith("+00:00")
+    assert learning[0]["model_candidate_sha256"] == approval_request(
+        rows=[SHOE_ROW, SHOE_ROW],
+        model_rows=[{**SHOE_ROW, "product": "model shoe"}],
+    ).model_candidate_sha256
+    assert learning[0]["administrator_rows_sha256"] == approval_request(
+        rows=[SHOE_ROW, SHOE_ROW],
+    ).administrator_rows_sha256
     assert "sample_payload" not in learning[0]
     assert "rule_evidence" not in learning[0]
+    assert revision is not None
+    assert revision.payload["ai_learning_records"][0] == learning[0]
     assert response["negative_replay"] == "not_available"
 
 
@@ -747,6 +801,7 @@ def test_same_fingerprint_history_is_loaded_as_gold_from_original_record(
                 "document_sequence": 1,
                 "source_component": "test",
                 "confirmed_rows": [{**SHOE_ROW, "product": "old shoe"}],
+                "administrator_rows": [{**SHOE_ROW, "product": "administrator shoe"}],
             },
         )
         db.commit()
@@ -767,9 +822,33 @@ def test_same_fingerprint_history_is_loaded_as_gold_from_original_record(
                 "items": [{"name": "old shoe", "quantity": 1}],
             },
             "source_component": "test",
-            "rows": [{**SHOE_ROW, "product": "old shoe"}],
+            "rows": [{**SHOE_ROW, "product": "administrator shoe"}],
         }
     ]
+
+
+def test_internal_approval_rejects_noncanonical_stage_hashes(monkeypatch) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    enable_ai(monkeypatch)
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        ai_route,
+        "synthesize_rule_with_service",
+        lambda **kwargs: calls.append(kwargs) or compiled_result(),
+    )
+    request = approval_request()
+    request.model_candidate_sha256 = "0" * 64
+
+    with Session(engine) as db:
+        add_workspace(db)
+        add_record(db)
+        db.commit()
+        with pytest.raises(HTTPException) as exc:
+            ai_route.approve_ai_rule(request, db, "test-secret")
+
+    assert exc.value.status_code == 422
+    assert calls == []
 
 
 @pytest.mark.parametrize("corruption", ["deleted", "missing_sequence", "invalid_rows"])
@@ -837,18 +916,9 @@ def test_invalid_current_rows_do_not_call_synthesis(monkeypatch) -> None:
         lambda **kwargs: calls.append(kwargs) or compiled_result(),
     )
 
-    with Session(engine) as db:
-        add_workspace(db)
-        add_record(db)
-        db.commit()
-        with pytest.raises(HTTPException) as exc:
-            ai_route.approve_ai_rule(
-                approval_request(rows=[{**SHOE_ROW, "product": ""}]),
-                db,
-                "test-secret",
-            )
-        assert exc.value.status_code == 422
-        assert calls == []
+    with pytest.raises(ValidationError):
+        approval_request(rows=[{**SHOE_ROW, "product": ""}])
+    assert calls == []
 
 
 def test_no_pack_raw_records_do_not_reach_parser_from_business_flow(monkeypatch) -> None:

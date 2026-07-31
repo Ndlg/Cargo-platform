@@ -15,6 +15,7 @@ from sqlalchemy import select  # noqa: E402
 
 from app.core.database import SessionLocal  # noqa: E402
 from app.core.security import hash_password  # noqa: E402
+from app.api.routes import ai_recognition as ai_route  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import Role, Tenant, User, UserWorkspace, Workspace  # noqa: E402
 
@@ -206,6 +207,139 @@ def test_mismatched_role_membership_does_not_grant_permissions() -> None:
         assert me.json()["workspaces"] == []
         assert tenants.status_code == 403
         assert denied_create.status_code == 403
+
+
+def test_ai_session_proxy_enforces_auth_workspace_write_permission_and_actor(
+    monkeypatch,
+) -> None:
+    approvals: list[dict[str, object]] = []
+    session_workspaces: dict[str, int] = {}
+
+    def session_with_service(session_id: str) -> dict[str, object]:
+        return {
+            "session_id": session_id,
+            "workspace_id": session_workspaces[session_id],
+            "status": "ai_rule_pending",
+            "model_candidate": None,
+            "administrator_rows": None,
+            "compiler_result": None,
+        }
+
+    monkeypatch.setattr(
+        ai_route,
+        "get_ai_recognition_session_with_service",
+        session_with_service,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        ai_route,
+        "feedback_ai_recognition_session_with_service",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("read-only feedback must not reach the AI service")
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        ai_route,
+        "approve_ai_recognition_session_with_service",
+        lambda session_id, *, actor: approvals.append(actor)
+        or {**session_with_service(session_id), "status": "approved"},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        ai_route,
+        "reject_ai_recognition_session_with_service",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("read-only rejection must not reach the AI service")
+        ),
+        raising=False,
+    )
+
+    with TestClient(app) as client:
+        alice_username, alice_password, workspace_a_id, _role_id = _create_user_workspace_pair(
+            "proxy_alice",
+            "proxy_workspace_a",
+        )
+        readonly_username, readonly_password, readonly_workspace_id, readonly_role_id = (
+            _create_user_workspace_pair(
+                "proxy_readonly",
+                "proxy_workspace_readonly",
+            )
+        )
+        session_workspaces.update(
+            {
+                "workspace-a-session": workspace_a_id,
+                "workspace-b-session": readonly_workspace_id,
+            }
+        )
+        with SessionLocal() as db:
+            readonly_role = db.get(Role, readonly_role_id)
+            assert readonly_role is not None
+            readonly_role.name = "readonly"
+            alice_id = db.scalar(select(User.id).where(User.username == alice_username))
+            db.commit()
+
+        alice_headers = _login(client, alice_username, alice_password, workspace_a_id)
+        readonly_headers = _login(
+            client,
+            readonly_username,
+            readonly_password,
+            readonly_workspace_id,
+        )
+
+        missing_auth = client.get("/api/v1/ai-recognition/sessions/workspace-a-session")
+        allowed = client.get(
+            "/api/v1/ai-recognition/sessions/workspace-a-session",
+            headers=alice_headers,
+        )
+        cross_workspace = client.get(
+            "/api/v1/ai-recognition/sessions/workspace-b-session",
+            headers=alice_headers,
+        )
+        readonly_feedback = client.post(
+            "/api/v1/ai-recognition/sessions/workspace-a-session/feedback",
+            headers=readonly_headers,
+            json={
+                "corrected_rows": [
+                    {
+                        "product": "鞋",
+                        "sales_attr1": "",
+                        "sales_attr2": "",
+                        "quantity": 1,
+                        "remark": "",
+                    }
+                ]
+            },
+        )
+        readonly_approve = client.post(
+            "/api/v1/ai-recognition/sessions/workspace-a-session/approve",
+            headers=readonly_headers,
+        )
+        readonly_reject = client.post(
+            "/api/v1/ai-recognition/sessions/workspace-a-session/reject",
+            headers=readonly_headers,
+        )
+        approved = client.post(
+            "/api/v1/ai-recognition/sessions/workspace-a-session/approve",
+            headers=alice_headers,
+        )
+
+    assert missing_auth.status_code == 401
+    assert allowed.status_code == 200
+    assert cross_workspace.status_code == 403
+    assert {
+        readonly_feedback.status_code,
+        readonly_approve.status_code,
+        readonly_reject.status_code,
+    } == {403}
+    assert approved.status_code == 200
+    assert approvals == [
+        {
+            "id": alice_id,
+            "username": "proxy_alice",
+            "display_name": "Proxy_Alice",
+        }
+    ]
 
 
 def teardown_module() -> None:

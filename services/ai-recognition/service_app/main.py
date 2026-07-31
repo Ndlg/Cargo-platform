@@ -5,13 +5,19 @@ from hashlib import sha256
 import json
 import os
 from pathlib import Path
-from typing import Any, Callable
+import secrets
+from typing import Annotated, Any, Callable
 
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse
+from fastapi import Depends, FastAPI, Header, HTTPException, Path as ApiPath, Query, status
 import httpx
 
-from .contracts import AiOrderRow, FeedbackRequest, FingerprintInspectRequest, RecognizeRequest
+from .contracts import (
+    AiOrderRow,
+    ApprovalRequest,
+    FeedbackRequest,
+    FingerprintInspectRequest,
+    RecognizeRequest,
+)
 from .fingerprint import fingerprint_catalog, inspect_fingerprint
 from .model_client import OllamaModelClient, ollama_json_schema
 from .sanitizer import sanitize_evidence, validate_selection
@@ -19,6 +25,10 @@ from .store import SessionStore
 
 
 ApprovalSender = Callable[[dict[str, Any], str], dict[str, Any]]
+AiSessionId = Annotated[
+    str,
+    ApiPath(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$"),
+]
 
 
 class RuleValidationRejected(ValueError):
@@ -63,8 +73,10 @@ def default_approval_sender(platform_url: str) -> ApprovalSender:
 
 def platform_rule_payload(
     session: dict[str, Any],
-    candidate: dict[str, Any],
+    actor: dict[str, Any],
 ) -> dict[str, Any]:
+    model_candidate = session["model_candidate"]
+    administrator_rows = session["administrator_rows"]
     return {
         "session_id": session["session_id"],
         "workspace_id": session["workspace_id"],
@@ -73,20 +85,46 @@ def platform_rule_payload(
         "document_sequence": session["document_sequence"],
         "format_fingerprint": session["fingerprint"],
         "fingerprint_code": session["sanitized_payload"]["fingerprint_code"],
-        "candidate_output": candidate,
+        "candidate_output": {
+            "parents": [{"rows": administrator_rows}],
+        },
+        "model_candidate": model_candidate,
+        "administrator_rows": administrator_rows,
+        "model_candidate_sha256": canonical_sha256(model_candidate),
+        "administrator_rows_sha256": canonical_sha256(administrator_rows),
+        "actor": actor,
     }
+
+
+def canonical_sha256(value: Any) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return sha256(encoded).hexdigest()
+
+
+def business_rows(candidate: dict[str, Any] | None) -> list[dict[str, Any]]:
+    rows = [
+        row
+        for parent in (candidate or {}).get("parents") or []
+        if isinstance(parent, dict)
+        for row in parent.get("rows") or []
+        if isinstance(row, dict)
+    ]
+    return [AiOrderRow.model_validate(row).model_dump(mode="json") for row in rows]
 
 
 def create_app(
     *,
     model_client: Any | None = None,
     db_path: Path | None = None,
-    console_base_url: str | None = None,
     internal_token: str | None = None,
     approval_sender: ApprovalSender | None = None,
 ) -> FastAPI:
     database_path = db_path or Path(os.getenv("AI_RECOGNITION_DB", "/data/ai-recognition.db"))
-    console_base = (console_base_url or os.getenv("AI_CONSOLE_BASE_URL", "")).rstrip("/")
     token = internal_token if internal_token is not None else os.getenv("AI_RECOGNITION_INTERNAL_TOKEN", "")
     platform_url = os.getenv("PLATFORM_INTERNAL_URL", "")
     sender = approval_sender or (default_approval_sender(platform_url) if platform_url else None)
@@ -105,13 +143,21 @@ def create_app(
         lambda: model_executor.shutdown(wait=False, cancel_futures=True),
     )
 
+    def require_internal_token(
+        supplied_token: str = Header(default="", alias="X-AI-Recognition-Token"),
+    ) -> None:
+        if not token or not secrets.compare_digest(supplied_token, token):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid AI recognition token.",
+            )
+
     def response_payload(
         session: dict[str, Any],
         *,
         include_model_input: bool = False,
     ) -> dict[str, Any]:
         session_id = session["session_id"]
-        console_url = f"{console_base}/console?session={session_id}" if console_base else f"/console?session={session_id}"
         payload = {
             "session_id": session_id,
             "status": session["status"],
@@ -122,7 +168,14 @@ def create_app(
             "document_sequence": session["document_sequence"],
             "source_component": session["source_component"],
             "deterministic_failure_reason": session["deterministic_failure_reason"],
-            "candidate": session["candidate"],
+            "candidate": (
+                session["candidate"]
+                if session["status"] in {"ai_rule_pending", "approving", "approved"}
+                else None
+            ),
+            "model_candidate": session["model_candidate"],
+            "administrator_rows": session["administrator_rows"],
+            "compiler_result": session["compiler_result"],
             "feedback": session["feedback"],
             "platform_response": session["platform_response"],
             "error": session["error"],
@@ -130,7 +183,6 @@ def create_app(
             "model_calls": session["model_calls"],
             "created_at": session["created_at"],
             "updated_at": session["updated_at"],
-            "console_url": console_url,
         }
         if include_model_input:
             payload["model_input"] = {
@@ -139,7 +191,10 @@ def create_app(
         return payload
 
     def run_model(session: dict[str, Any]) -> dict[str, Any]:
-        corrected_rows = administrator_corrected_rows(session["feedback"])
+        corrected_rows = (
+            session["administrator_rows"]
+            or administrator_corrected_rows(session["feedback"])
+        )
         if corrected_rows:
             return response_payload(
                 store.set_candidate(
@@ -152,6 +207,7 @@ def create_app(
                     },
                     status="ai_rule_pending",
                     count_model_call=False,
+                    record_model_candidate=False,
                 )
             )
         try:
@@ -203,21 +259,24 @@ def create_app(
             "model": getattr(model, "model", "injected"),
         }
 
-    @app.get("/api/v1/fingerprints")
+    @app.get("/api/v1/fingerprints", dependencies=[Depends(require_internal_token)])
     def list_fingerprints() -> dict[str, Any]:
         return {
             "contract_version": "waybill_fingerprint_catalog_v1",
             "fingerprints": fingerprint_catalog(),
         }
 
-    @app.post("/api/v1/fingerprints/inspect")
+    @app.post(
+        "/api/v1/fingerprints/inspect",
+        dependencies=[Depends(require_internal_token)],
+    )
     def inspect_waybill_fingerprint(request: FingerprintInspectRequest) -> dict[str, Any]:
         result = inspect_fingerprint(request.payload, request.source_component)
         if result is None:
             raise HTTPException(status_code=422, detail="unsupported_fingerprint")
         return result
 
-    @app.post("/api/v1/recognize")
+    @app.post("/api/v1/recognize", dependencies=[Depends(require_internal_token)])
     def recognize(request: RecognizeRequest) -> dict[str, Any]:
         evidence_source = str(request.evidence.get("source_component") or "")
         fingerprint = str(request.evidence.get("structural_fingerprint") or "")
@@ -256,19 +315,25 @@ def create_app(
         model_executor.submit(run_model, session)
         return response_payload(session)
 
-    @app.get("/api/v1/sessions")
+    @app.get("/api/v1/sessions", dependencies=[Depends(require_internal_token)])
     def list_sessions(limit: int = Query(default=100, ge=1, le=100)) -> list[dict[str, Any]]:
         return [response_payload(session) for session in store.list(limit)]
 
-    @app.get("/api/v1/sessions/{session_id}")
-    def get_session(session_id: str) -> dict[str, Any]:
+    @app.get(
+        "/api/v1/sessions/{session_id}",
+        dependencies=[Depends(require_internal_token)],
+    )
+    def get_session(session_id: AiSessionId) -> dict[str, Any]:
         session = store.get(session_id)
         if session is None:
             raise HTTPException(status_code=404, detail="Recognition session not found.")
         return response_payload(session, include_model_input=True)
 
-    @app.post("/api/v1/sessions/{session_id}/feedback")
-    def add_feedback(session_id: str, request: FeedbackRequest) -> dict[str, Any]:
+    @app.post(
+        "/api/v1/sessions/{session_id}/feedback",
+        dependencies=[Depends(require_internal_token)],
+    )
+    def add_feedback(session_id: AiSessionId, request: FeedbackRequest) -> dict[str, Any]:
         session = store.get(session_id)
         if session is None:
             raise HTTPException(status_code=404, detail="Recognition session not found.")
@@ -278,16 +343,19 @@ def create_app(
             raise HTTPException(status_code=409, detail="Recognition session is closed.")
         message = request.message.strip() or request.note.strip()
         if request.corrected_rows:
+            administrator_rows = [
+                row.model_dump(mode="json")
+                for row in request.corrected_rows
+            ]
             message = json.dumps(
                 {
-                    "corrected_rows": [
-                        row.model_dump(mode="json")
-                        for row in request.corrected_rows
-                    ],
+                    "corrected_rows": administrator_rows,
                     "note": request.note.strip() or request.message.strip(),
                 },
                 ensure_ascii=False,
             )
+        else:
+            administrator_rows = None
         if (
             session["status"] == "model_running"
             and session["feedback"]
@@ -295,14 +363,21 @@ def create_app(
         ):
             return response_payload(session)
         try:
-            updated = store.append_feedback(session_id, message)
+            updated = store.append_feedback(
+                session_id,
+                message,
+                administrator_rows,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         model_executor.submit(run_model, updated)
         return response_payload(updated)
 
-    @app.post("/api/v1/sessions/{session_id}/approve")
-    def approve(session_id: str) -> dict[str, Any]:
+    @app.post(
+        "/api/v1/sessions/{session_id}/approve",
+        dependencies=[Depends(require_internal_token)],
+    )
+    def approve(session_id: AiSessionId, request: ApprovalRequest) -> dict[str, Any]:
         session = store.get(session_id)
         if session is None:
             raise HTTPException(status_code=404, detail="Recognition session not found.")
@@ -312,12 +387,24 @@ def create_app(
             raise HTTPException(status_code=409, detail="Recognition session has no approvable candidate.")
         if sender is None or not token:
             raise HTTPException(status_code=503, detail="Platform rule approval is not configured.")
-        claimed = store.claim_approval(session_id, session["generation"])
+        administrator_rows = session["administrator_rows"] or business_rows(session["candidate"])
+        if not administrator_rows:
+            raise HTTPException(status_code=409, detail="Recognition session has no administrator result.")
+        claimed = store.claim_approval(
+            session_id,
+            session["generation"],
+            administrator_rows,
+        )
         if claimed is None:
             raise HTTPException(status_code=409, detail="Recognition session changed before approval.")
-        candidate = claimed["candidate"]
         try:
-            platform_response = sender(platform_rule_payload(claimed, candidate), token)
+            platform_response = sender(
+                platform_rule_payload(
+                    claimed,
+                    request.actor.model_dump(mode="json"),
+                ),
+                token,
+            )
         except (ValueError, httpx.HTTPError) as exc:
             store.set_status(
                 session_id,
@@ -332,13 +419,21 @@ def create_app(
                 session_id,
                 "approved",
                 platform_response=platform_response,
+                compiler_result=(
+                    platform_response["compiler_result"]
+                    if isinstance(platform_response.get("compiler_result"), dict)
+                    else platform_response
+                ),
                 generation=claimed["generation"],
                 expected_status="approving",
             )
         )
 
-    @app.post("/api/v1/sessions/{session_id}/reject")
-    def reject(session_id: str) -> dict[str, Any]:
+    @app.post(
+        "/api/v1/sessions/{session_id}/reject",
+        dependencies=[Depends(require_internal_token)],
+    )
+    def reject(session_id: AiSessionId) -> dict[str, Any]:
         session = store.get(session_id)
         if session is None:
             raise HTTPException(status_code=404, detail="Recognition session not found.")
@@ -362,11 +457,6 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return response_payload(rejected)
-
-    @app.get("/console", response_class=HTMLResponse)
-    def console() -> HTMLResponse:
-        html = (Path(__file__).parent / "static" / "console.html").read_text(encoding="utf-8")
-        return HTMLResponse(html)
 
     return app
 
