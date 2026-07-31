@@ -17,6 +17,10 @@ import {
   type RecognitionRulePackSummary,
 } from '../../services/api'
 import { useSessionStore } from '../../stores/session'
+import {
+  learningRecordForProfile,
+  withoutProfileLearningRecords,
+} from './recognitionProfileLearning'
 
 const session = useSessionStore()
 const loading = ref(false)
@@ -106,14 +110,7 @@ function profileDisplayName(profile: RecognitionFormatProfile): string {
 }
 
 function learningRecordFor(profile: RecognitionFormatProfile): RecognitionLearningRecord | undefined {
-  const sessionId = profile.provenance?.learning_session_id
-  return [...learningRecords.value].reverse().find((record) => (
-    (sessionId && record.session_id === sessionId)
-    || (
-      record.fingerprint === profile.fingerprint
-      && (record.grammar_signature ?? '') === (profile.grammar_signature ?? '')
-    )
-  ))
+  return learningRecordForProfile(profile, learningRecords.value)
 }
 
 function recordValue(value: unknown): Record<string, unknown> {
@@ -335,6 +332,14 @@ async function deleteSelectedProfile() {
     ElMessage.warning('这是最后一条子规则。如需清空，请关闭编辑窗口后删除整个规则包。')
     return
   }
+  const nextLearningRecords = withoutProfileLearningRecords(
+    selectedProfile.value,
+    learningRecords.value,
+  )
+  if (!nextLearningRecords) {
+    ElMessage.error('这条子规则缺少学习会话标识，无法安全删除。请删除整个规则包后重新学习。')
+    return
+  }
   try {
     await ElMessageBox.confirm(
       `删除后，这种面单格式将不再被识别：${selectedProfile.value.name || '未命名规则'}`,
@@ -350,7 +355,7 @@ async function deleteSelectedProfile() {
   }
   const key = profileKey(selectedProfile.value)
   formatProfiles.value = formatProfiles.value.filter((profile) => profileKey(profile) !== key)
-  learningRecords.value = learningRecords.value.filter((record) => profileKey(record) !== key)
+  learningRecords.value = nextLearningRecords
   selectedProfileKey.value = formatProfiles.value[0] ? profileKey(formatProfiles.value[0]) : ''
 }
 
