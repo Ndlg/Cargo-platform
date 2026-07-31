@@ -668,7 +668,7 @@ def apply_text_step(state: dict[str, Any], step: dict[str, Any]) -> None:
         state[target] = value[len(literal) :].strip() if value.startswith(literal) else ""
     elif op == "strip_suffix":
         literal = step["literal"]
-        state[target] = value[: -len(literal)].strip() if value.endswith(literal) else value
+        state[target] = value[: -len(literal)].strip() if value.endswith(literal) else ""
     elif op == "collapse_whitespace":
         state[target] = " ".join(value.split())
     elif op == "to_positive_int":

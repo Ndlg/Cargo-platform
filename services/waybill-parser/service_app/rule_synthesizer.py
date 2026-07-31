@@ -42,6 +42,10 @@ QUANTITY_SUFFIX_UNITS = {"件", "个", "双", "套", "份", "盒", "包", "组"}
 QUANTITY_SUFFIX_WITH_CLOSER = re.compile(
     rf"^(?:{'|'.join(sorted(QUANTITY_SUFFIX_UNITS))})\s*[\]\)】）]+$"
 )
+BRACKETED_PRODUCT_WITH_TRAILING_FIELDS = re.compile(
+    r"^【(?P<product>[^【】]+)】.+,(?P<sales_attr1>[^,]+),"
+    r"(?P<sales_attr2>[^,]+),【(?P<quantity>\d+)】(?P<terminator>[;；])$"
+)
 FIELD_LABEL_PREFIX = re.compile(
     r"^\s*(?:商品(?:名称)?|产品(?:名称)?|销售属性\s*[12]|数量|备注)"
     r"\s*(?:是|为|[:：=])"
@@ -332,6 +336,42 @@ def _compile_source_order_text_rule(
     row: dict[str, Any],
     text_selector: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
+    bracketed = BRACKETED_PRODUCT_WITH_TRAILING_FIELDS.fullmatch(text)
+    if bracketed and all(
+        str(row[field]).strip() == bracketed.group(field).strip()
+        for field in ("product", "sales_attr1", "sales_attr2")
+    ) and row["quantity"] == int(bracketed.group("quantity")):
+        rule: dict[str, Any] = {
+            "strategy": "text_pipeline_v1",
+            "text_path": text_path,
+            "steps": [
+                {"op": "strip_prefix", "target": "text", "literal": "【"},
+                {
+                    "op": "split",
+                    "source": "text",
+                    "delimiter": "】",
+                    "targets": ["product", "text"],
+                },
+                {
+                    "op": "rsplit",
+                    "source": "text",
+                    "delimiter": ",",
+                    "targets": ["text", "sales_attr1", "sales_attr2", "quantity"],
+                },
+                {
+                    "op": "strip_suffix",
+                    "target": "quantity",
+                    "literal": f"】{bracketed.group('terminator')}",
+                },
+                {"op": "strip_prefix", "target": "quantity", "literal": "【"},
+                {"op": "to_positive_int", "target": "quantity"},
+            ],
+            "defaults": {"remark": ""},
+        }
+        if text_selector is not None:
+            rule["text_selector"] = text_selector
+        return rule
+
     segments: list[tuple[int, int, str, str]] = []
     for field in ("product", "sales_attr1", "sales_attr2", "quantity"):
         field_value = str(row[field]).strip()
@@ -449,12 +489,47 @@ def _compile_text_rule(
                     **rules[0],
                     **({"item_split": "\n"} if same_scalar else {}),
                 }
-    for text_path, text, selector, _concrete_path in text_sources:
+    for text_path, text, selector, concrete_path in text_sources:
         if len(corrected_rows) == 1:
             rule = _compile_source_order_text_rule(
                 text_path, text, corrected_rows[0], selector
             )
             if rule:
+                scalar_sources = [
+                    source for source in text_sources if source[3] == concrete_path
+                ]
+                if len(scalar_sources) > 1:
+                    rule["field_roles"] = {}
+                    source_index = scalar_sources.index(
+                        (text_path, text, selector, concrete_path)
+                    )
+                    trailing_texts = [
+                        source[1] for source in scalar_sources[source_index + 1 :]
+                    ]
+                    suffix_index = next(
+                        (
+                            index
+                            for index, step in enumerate(rule["steps"])
+                            if step.get("op") == "strip_suffix"
+                            and step.get("target") == "quantity"
+                        ),
+                        None,
+                    )
+                    if suffix_index is not None:
+                        trailing_chunks = [
+                            chunk
+                            for trailing_text in trailing_texts
+                            for start in range(0, len(trailing_text), 64)
+                            if (chunk := trailing_text[start : start + 64].strip())
+                        ]
+                        rule["steps"][suffix_index:suffix_index] = [
+                            {
+                                "op": "strip_suffix",
+                                "target": "quantity",
+                                "literal": chunk,
+                            }
+                            for chunk in reversed(trailing_chunks)
+                        ]
                 return rule
             continue
         separators = {
@@ -1063,7 +1138,7 @@ def synthesize_rule(
             rule["selected_fields"] = list(selected_fields)
     elif rule["strategy"] == "text_pipeline_v1":
         rule["grammar_signature"] = text_profile_grammar_signature(payload, rule)
-        field_roles = _field_roles(expected)
+        field_roles = rule.get("field_roles", _field_roles(expected))
         if field_roles is None:
             return {
                 "status": "compiler_capability_missing",

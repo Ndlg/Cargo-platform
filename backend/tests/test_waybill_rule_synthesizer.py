@@ -92,6 +92,10 @@ def item_info(text: str) -> dict[str, object]:
     return {"contents": [{"data": {"ITEM_INFO": text}}]}
 
 
+def custom_content(text: str) -> dict[str, object]:
+    return {"contents": [{"data": {"customContent": text}}]}
+
+
 def structured_items(*items: dict[str, object]) -> dict[str, object]:
     return {
         "contents": [
@@ -754,6 +758,63 @@ def test_text_rule_compiles_a_guarded_business_prefix() -> None:
         gold_samples=[],
         negative_samples=[],
     )["status"] == "compiler_capability_missing"
+
+
+def test_text_rule_compiles_a_bracketed_product_with_trailing_fields() -> None:
+    result = synthesize_rule(
+        payload=custom_content(
+            "【流放】男鞋针织跑步鞋全掌气垫女鞋白黑舒适休闲鞋运动鞋健身鞋,全黑,38,【1】；"
+        ),
+        source_component="cainiao-cnprint",
+        corrected_rows=[row("流放", "全黑", "38", 1)],
+        gold_samples=[],
+        negative_samples=[],
+    )
+
+    assert result["status"] == "compiled"
+    assert replay_rule(
+        result["rule"],
+        custom_content("【HK】任意变化的商品说明,白灰,40.5,【2】；"),
+    ) == [row("HK", "白灰", "40.5", 2)]
+    for malformed in (
+        "HK】说明,白灰,40.5,【2】；",
+        "【HK说明,白灰,40.5,【2】；",
+        "【HK】说明|白灰|40.5|【2】；",
+        "【HK】说明,白灰,40.5,2；",
+        "【HK】说明,白灰,40.5,【2】危险文本",
+    ):
+        assert replay_rule(result["rule"], custom_content(malformed)) == []
+
+
+def test_bracketed_product_rule_accepts_only_the_learned_notice_shape() -> None:
+    notice = (
+        "此单为官方转运订单；不同订单不可合包发货，快递单号需上传正确。"
+        "发货规则https://p.tb.cn/_4QpZE71GxG2 官方客服: "
+        "https://p.tb.cn/_24PctxHDO9N；"
+    )
+    result = synthesize_rule(
+        payload=custom_content(
+            "【流放】商品说明,黑灰,42.5,【1】；\n" + notice
+        ),
+        source_component="cainiao-cnprint",
+        corrected_rows=[row("流放", "黑灰", "42.5", 1)],
+        gold_samples=[],
+        negative_samples=[],
+    )
+
+    assert result["status"] == "compiled"
+    assert result["rule"]["field_roles"] == {}
+    assert replay_rule(
+        result["rule"],
+        custom_content("【HK】另一商品说明,白灰,40.5,【2】；\n" + notice),
+    ) == [row("HK", "白灰", "40.5", 2)]
+    assert replay_rule(
+        result["rule"],
+        custom_content(
+            "【HK】另一商品说明,白灰,40,【2】；\n"
+            "【新增商品】商品说明,黑色,41,【1】；\n" + notice
+        ),
+    ) == []
 
 
 def test_structured_synthesis_never_uses_excluded_raw_leaves() -> None:
