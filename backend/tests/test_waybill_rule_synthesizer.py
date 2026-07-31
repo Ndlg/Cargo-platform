@@ -793,11 +793,11 @@ def test_projection_rule_compiles_prefixed_space_fields_with_separate_quantity()
     assert result["rule"]["strategy"] == "source_projection_v1"
     assert replay_rule(
         result["rule"],
-        payload("微信--ASICS 蓝白 先拍照 40", 2),
-    ) == [row("ASICS", "蓝白", "40", 2, "先拍照")]
+        payload("微信--ASICS 蓝白 先拍照 40.5", 2),
+    ) == [row("ASICS", "蓝白", "40.5", 2, "先拍照")]
     assert replay_rule(
         result["rule"],
-        payload("ASICS 蓝白 先拍照 40", 2),
+        payload("ASICS 蓝白 先拍照 40.5", 2),
     ) == []
 
 
