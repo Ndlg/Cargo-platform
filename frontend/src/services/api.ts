@@ -270,6 +270,8 @@ export interface WaybillReadingSample extends ApiRecord {
   source_component?: string | null
   source_index?: string | null
   payload_format?: string | null
+  parse_status?: 'readable' | 'empty'
+  empty_reason?: string | null
   sample_text?: string | null
   text_blocks: WaybillTextBlock[]
 }

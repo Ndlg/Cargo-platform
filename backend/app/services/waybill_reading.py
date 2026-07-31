@@ -644,6 +644,30 @@ def waybill_sample_from_source_texts(
     }
 
 
+def empty_waybill_document_sample(
+    record: RawCaptureRecord,
+    *,
+    sample_index: int,
+    document_sequence: int,
+    document_id: str | None,
+    hidden_raw_fields: list[HiddenRawField],
+) -> dict[str, Any]:
+    sample = waybill_sample_from_source_texts(
+        record,
+        [],
+        sample_index=sample_index,
+        hidden_raw_fields=hidden_raw_fields,
+        document_sequence=document_sequence,
+        document_id=document_id,
+    )
+    sample.update(
+        parse_status="empty",
+        empty_reason="task_document_has_no_readable_text",
+        warnings=["task_document_has_no_readable_text"],
+    )
+    return sample
+
+
 def read_waybill_samples(record: RawCaptureRecord) -> list[dict[str, Any]]:
     payload = load_json_payload(record.raw_payload)
     record_source_texts, record_hidden_fields = source_texts_from_record(record)
@@ -653,16 +677,27 @@ def read_waybill_samples(record: RawCaptureRecord) -> list[dict[str, Any]]:
         for document_sequence, document in enumerate(task_documents(payload), start=1):
             document_source_texts, document_hidden_fields = source_texts_from_document(document, document_sequence)
             source_texts = [*record_source_texts, *document_source_texts]
+            hidden_raw_fields = [*record_hidden_fields, *document_hidden_fields]
+            document_id = normalize_text(document.get("documentID")) or record.document_id
             if not source_texts:
+                samples.append(
+                    empty_waybill_document_sample(
+                        record,
+                        sample_index=document_sequence,
+                        document_sequence=document_sequence,
+                        document_id=document_id,
+                        hidden_raw_fields=hidden_raw_fields,
+                    )
+                )
                 continue
             samples.append(
                 waybill_sample_from_source_texts(
                     record,
                     source_texts,
-                    sample_index=len(samples) + 1,
-                    hidden_raw_fields=[*record_hidden_fields, *document_hidden_fields],
+                    sample_index=document_sequence,
+                    hidden_raw_fields=hidden_raw_fields,
                     document_sequence=document_sequence,
-                    document_id=normalize_text(document.get("documentID")) or record.document_id,
+                    document_id=document_id,
                 )
             )
 

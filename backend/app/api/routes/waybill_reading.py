@@ -64,7 +64,8 @@ class WaybillReadingSampleResponse(BaseModel):
     source_component: str | None = None
     source_index: str | None = None
     payload_format: str | None = None
-    parse_status: Literal["readable"]
+    parse_status: Literal["readable", "empty"]
+    empty_reason: str | None = None
     warnings: list[str]
     sample_text: str
     text_blocks: list[WaybillTextBlockResponse]

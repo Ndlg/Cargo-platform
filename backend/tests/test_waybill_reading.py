@@ -133,6 +133,116 @@ def test_capture_task_list_exposes_waybill_count_not_raw_record_count() -> None:
         assert "waybill_count" not in lightweight_task
 
 
+def test_waybill_reading_keeps_unreadable_documents_as_stable_parent_samples() -> None:
+    payload = {
+        "task": {
+            "documents": [
+                {
+                    "documentID": "DOC-PARTIAL-1",
+                    "contents": [{"data": {"productInfo": "商品A 黑色 40 1件"}}],
+                },
+                {
+                    "documentID": "DOC-PARTIAL-2",
+                    "contents": [{"data": {"shopName": "只有被过滤的技术字段"}}],
+                },
+                {
+                    "documentID": "DOC-PARTIAL-3",
+                    "contents": [{"printXML": "<text><![CDATA[商品C 白色 42 1件]]></text>"}],
+                },
+            ]
+        }
+    }
+
+    with TestClient(app) as client:
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin123"})
+        assert login.status_code == 200
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}", "X-Workspace-Id": "1"}
+
+        with SessionLocal() as db:
+            record = RawCaptureRecord(
+                tenant_id=1,
+                workspace_id=1,
+                task_id=8110,
+                document_id="DOC-PARTIAL-PARENT",
+                source_component="cainiao-cnprint",
+                source_index="partial-documents",
+                payload_format="json",
+                raw_payload=json.dumps(payload, ensure_ascii=False),
+                status="pending",
+            )
+            db.add(record)
+            db.commit()
+            db.refresh(record)
+            raw_record_id = record.id
+
+        response = client.get(
+            f"/api/v1/waybill-reading/samples?raw_record_id={raw_record_id}",
+            headers=headers,
+        )
+
+    assert response.status_code == 200
+    samples = response.json()["samples"]
+    assert [sample["sample_id"] for sample in samples] == [
+        f"raw-{raw_record_id}-sample-1",
+        f"raw-{raw_record_id}-sample-2",
+        f"raw-{raw_record_id}-sample-3",
+    ]
+    assert [sample["document_sequence"] for sample in samples] == [1, 2, 3]
+    assert [sample["document_id"] for sample in samples] == [
+        "DOC-PARTIAL-1",
+        "DOC-PARTIAL-2",
+        "DOC-PARTIAL-3",
+    ]
+    assert [sample["parse_status"] for sample in samples] == ["readable", "empty", "readable"]
+    assert samples[1]["empty_reason"] == "task_document_has_no_readable_text"
+    assert samples[1]["sample_text"] == ""
+    assert samples[1]["text_blocks"] == []
+
+
+def test_waybill_reading_keeps_every_all_unreadable_document() -> None:
+    payload = {
+        "task": {
+            "documents": [
+                {"documentID": "DOC-EMPTY-A", "contents": [{"data": {"shopName": "店铺甲"}}]},
+                {"documentID": "DOC-EMPTY-B", "contents": [{"data": {"BUYER_NICK": "买家乙"}}]},
+            ]
+        }
+    }
+
+    with TestClient(app) as client:
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin123"})
+        assert login.status_code == 200
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}", "X-Workspace-Id": "1"}
+        with SessionLocal() as db:
+            record = RawCaptureRecord(
+                tenant_id=1,
+                workspace_id=1,
+                task_id=8111,
+                document_id="DOC-EMPTY-PARENT",
+                source_component="cainiao-cnprint",
+                source_index="empty-documents",
+                payload_format="json",
+                raw_payload=json.dumps(payload, ensure_ascii=False),
+                status="pending",
+            )
+            db.add(record)
+            db.commit()
+            db.refresh(record)
+            raw_record_id = record.id
+
+        response = client.get(
+            f"/api/v1/waybill-reading/samples?raw_record_id={raw_record_id}",
+            headers=headers,
+        )
+
+    assert response.status_code == 200
+    samples = response.json()["samples"]
+    assert len(samples) == 2
+    assert [sample["sample_order"] for sample in samples] == [0, 1]
+    assert [sample["document_sequence"] for sample in samples] == [1, 2]
+    assert all(sample["parse_status"] == "empty" for sample in samples)
+
+
 def test_capture_task_list_returns_latest_tasks_first() -> None:
     with TestClient(app) as client:
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin123"})

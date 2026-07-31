@@ -1079,7 +1079,7 @@ def test_recognition_export_covers_parent_without_generated_order_row(monkeypatc
                             "task": {
                                 "documents": [
                                     {"contents": [{"data": {"productInfo": "范74 5代白金 45 1件"}}]},
-                                    {"contents": [{"data": {"productInfo": "陌生格式商品 42 1件"}}]},
+                                    {"contents": [{"data": {"shopName": "只有被过滤的技术字段"}}]},
                                 ]
                             }
                         },
