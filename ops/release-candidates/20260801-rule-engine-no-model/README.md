@@ -1,4 +1,4 @@
-# Deterministic Rule Engine Closeout
+# Cargo Platform V1 Candidate Closeout
 
 This source closeout removes the optional model runtime and keeps the
 business path on the independent waybill parser plus declarative rule packs.
@@ -13,11 +13,12 @@ business path on the independent waybill parser plus declarative rule packs.
 
 ## Verified result
 
-The release gate passed on `2026-08-01`:
+The release gate passed on `2026-08-02` for candidate
+`1.0.0-rc.2-e8b88f7`:
 
 1. The validation group contains only backend, tenant UI, admin UI, and parser.
-2. Backend tests: `306 passed`; frontend tests, typecheck, tenant build, and
-   server-admin build passed.
+2. Backend tests: `377 passed`; four frontend contract tests, typecheck,
+   tenant build, and server-admin build passed.
 3. Starting from zero rules, 25 prior administrator confirmations were replayed
    through the public learning API with zero failures. They produced 24 unique
    immutable learning records and 21 active grammar slots.
@@ -25,21 +26,28 @@ The release gate passed on `2026-08-01`:
    explicit exception. The normal/export and exception counts equal the
    previous accepted 6173 baseline.
 5. The three supplier workbooks download successfully.
+6. Collector protocol v2 now uses task windows, persistent source epochs,
+   atomic lease takeover, and an explicit stale-upload rejection. Cross-protocol
+   similarity is never used to discard a print; uncertain reprints are retained.
+7. Three independent P0/P1 reviews passed, and the live rollback round trip
+   `rc.2 -> rc.1 -> rc.2` completed without changing business rows.
 
 Exact image digests, container IDs, data hashes, task coverage, and the frozen
 5173 evidence are recorded in `manifest.json`.
 
+## Release scope
+
+This candidate is verified for the packaged Docker/SQLite runtime used by the
+isolated 6173 environment. It does not claim an upgrade path for an existing
+MySQL database.
+
 ## Rollback
 
-The pre-closeout source point is tag `rollback/ai-enabled-20260801`. Its data
-volume `cargo-platform-validation-zero-platform-20260731-172907` remains
-untouched. The previous 6173 manifest remains available in Git history:
+The immediate rollback tag is `1.0.0-rc.1`, using the same validation volume.
+The rc.1 image archive and the consistent predeploy SQLite snapshot are stored
+under `.worktrees/cargo-platform-validation-backups` and their hashes are in
+`manifest.json`. The rollback was executed once and the candidate was restored.
 
-```powershell
-git show 8c8427d:ops/release-candidates/20260731-adaptive-engine-final/manifest.json
-```
-
-Keep the recorded rollback images and volume until the user accepts 6173. If
-validation fails, replace only the `cargo-platform-validation` group with those
-recorded assets. Never use this rollback procedure against port 5173 or
-`cargo-platform-data`.
+Keep those assets until the user accepts 6173. If validation fails, replace
+only the `cargo-platform-validation` group. Never use this rollback procedure
+against port 5173 or `cargo-platform-data`.

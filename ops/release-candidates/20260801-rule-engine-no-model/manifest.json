@@ -1,62 +1,73 @@
 {
-  "release": "6173-rule-engine-no-model",
-  "date": "2026-08-01",
-  "source_commit": "00a58e20",
+  "release": "6173-rule-engine-v1-candidate",
+  "release_tag": "1.0.0-rc.2-e8b88f7",
+  "date": "2026-08-02",
+  "source_commit": "e8b88f7584d594bac986d6f10e4281ee3d9c1ff4",
   "branch": "codex/local-ai-waybill-recognition",
+  "scope": {
+    "runtime": "packaged Docker with SQLite",
+    "ports": [6173, 6174, 18001, 18010],
+    "mysql_upgrade_claimed": false,
+    "field_5173_modified": false
+  },
   "runtime": {
     "backend": {
-      "container_id": "1d11969590413e58f74d4d0d6fdf8a2257969bbc4ddc0b3b1e1bb666514c7963",
-      "image": "cargo-platform-validation-backend:no-model-00a58e20",
-      "image_digest": "sha256:9cf468c2e7e1dbeceaff0acb70b712f48054057437f63eec84f643036bcda3e1",
-      "restart_count": 0
+      "container_id": "3e553ec6e2a84c09b1375318ace99e7ae1644b29ac0b2ee491e7efa2ed4337d6",
+      "image": "cargo-platform-validation-backend:1.0.0-rc.2-e8b88f7",
+      "image_id": "sha256:4a61fe619150e78990e64fed89c55cdb47a6671fa5fd49785e41d989213a3442",
+      "restart_count": 0,
+      "health": "healthy"
     },
     "parser": {
-      "container_id": "32b525298035b75381e7403c2ab290a0c9992150fc4600452a8e59b57b496f5c",
-      "image": "cargo-platform-validation-parser:no-model-00a58e20",
-      "image_digest": "sha256:f0c5ec997675deb2c18166db168d2e397185a89e3a98855f3292ad8b5627183f",
-      "restart_count": 0
+      "container_id": "0560c432edc3de4243c87398b5b02cc007d6706af4f80ed6cbc7173feea7a871",
+      "image": "cargo-platform-validation-parser:1.0.0-rc.2-e8b88f7",
+      "image_id": "sha256:54b520a1a27bd89570decc7b87ec5dc9733671a783ecb2817b3a85ecc17a53ae",
+      "restart_count": 0,
+      "health": "healthy"
     },
     "tenant_ui": {
-      "container_id": "41caf24999befe185676b06c7a08ede95531a75988b3e17620ebb53d7ca92246",
-      "image": "cargo-platform-validation-ui:no-model-00a58e20",
-      "image_digest": "sha256:94a59a8eb203a7b89b879982342e50fa7713e30aab16688096ebd17a03badf15",
-      "restart_count": 0
+      "container_id": "6c7b1f589ea913b6abad272b0b61a656ac17053f75f990244c8c3ea7090fe398",
+      "image": "cargo-platform-validation-ui:1.0.0-rc.2-e8b88f7",
+      "image_id": "sha256:559063d6a213a50e115c82f5b5855cd6d91033aab2931965fedc835721701341",
+      "restart_count": 0,
+      "health": "healthy"
     },
     "admin_ui": {
-      "container_id": "29f344e58bc56afbf8151ffad4c52a4c4ac6888a011b06f4dfde39f8aeb5bb40",
-      "image": "cargo-platform-validation-admin-ui:no-model-00a58e20",
-      "image_digest": "sha256:88b014ee162174dddab0322c9e4309a76036960c39d942bafd662e9c61111dbc",
-      "restart_count": 0
+      "container_id": "d0a52dc40f71102e78357f462a3d72506a14f65f4bd8e7835165e14bd31df054",
+      "image": "cargo-platform-validation-admin-ui:1.0.0-rc.2-e8b88f7",
+      "image_id": "sha256:903f54771d082c613179e1286035013385b849978c7bd9f2ee1da10eafda4a32",
+      "restart_count": 0,
+      "health": "healthy"
     }
   },
-  "removed_runtime_services": [
-    "ai-recognition",
-    "local-model",
-    "redis"
-  ],
+  "collector_release": {
+    "artifact": "Cargo Platform 采集器.exe",
+    "client_version": "1.0.0-rc.2-e8b88f7+e8b88f7584d5",
+    "git_sha": "e8b88f7584d594bac986d6f10e4281ee3d9c1ff4",
+    "size": 9034602,
+    "sha256": "d0e360decb1da23699aabb92d4840b34775356d8ae5094cf0e30cf0933f3d51b",
+    "smoke_check": "passed"
+  },
   "database": {
     "volume": "cargo-platform-validation-no-model-20260801-153819",
-    "pre_learning_sha256": "af70b2221ba8c0d6367950fc15c4154377239a08af0efc72ad972bc293408a1a",
-    "post_learning_snapshot_sha256": "00f7ae1c5765d37b2f2b33daf35d76ca5fa58d557f25b7b5fa805effcd24311d",
+    "predeploy_snapshot": "cargo-platform-validation-no-model-20260801-153819-pre-e8b88f7-20260802-065215732.db",
+    "predeploy_snapshot_sha256": "26a3039df8536225ef2c139e62953244a032112483068a2980feb2cffdd3de1b",
+    "final_snapshot": "cargo-platform-validation-no-model-20260801-153819-final-e8b88f7-20260802-070001880.db",
+    "final_snapshot_sha256": "89be1c02ec0da016591ae71befcefccf11acfa23318ea4b2054bd4f68de3c815",
     "integrity_check": "ok",
     "capture_tasks": 3,
     "raw_capture_records": 102,
     "recognition_rule_packs": 1,
-    "recognition_rule_pack_revisions": 24,
-    "learning_records": 24,
-    "active_format_profiles": 21,
-    "legacy_ai_learning_records": 0
-  },
-  "zero_rule_learning_trial": {
-    "initial_rule_packs": 0,
-    "administrator_confirmations_replayed": 25,
-    "learn_requests_succeeded": 25,
-    "learn_requests_failed": 0,
-    "unique_learning_records": 24,
-    "explicit_missing_order_row_parents": 5,
-    "silent_drops": 0,
-    "normal_export_rows": 266,
-    "exception_status_rows": 27
+    "business_rows_added": 0,
+    "business_rows_removed": 0,
+    "business_fields_changed": 0,
+    "schema_additions": [
+      "collectors.protocol_revision",
+      "collectors.assignment_protocol_version",
+      "collectors.assignment_protocol_lease_expires_at",
+      "raw_capture_records.capture_event_key",
+      "ux_raw_capture_records_workspace_event"
+    ]
   },
   "task_coverage": [
     {
@@ -64,48 +75,49 @@
       "collected_parents": 94,
       "covered_parents": 94,
       "normal_rows": 88,
-      "exception_status_rows": 9,
-      "workbook_bytes": 1073460
+      "exception_rows": 9,
+      "workbook_bytes": 1073461
     },
     {
       "task_id": 65,
       "collected_parents": 96,
       "covered_parents": 96,
       "normal_rows": 94,
-      "exception_status_rows": 5,
-      "workbook_bytes": 1161612
+      "exception_rows": 5,
+      "workbook_bytes": 1161616
     },
     {
       "task_id": 66,
       "collected_parents": 93,
       "covered_parents": 93,
       "normal_rows": 84,
-      "exception_status_rows": 13,
-      "workbook_bytes": 1060830
+      "exception_rows": 13,
+      "workbook_bytes": 1060831
     }
   ],
   "verification": {
-    "backend_tests": "306 passed",
-    "frontend_tests": "2 passed",
-    "frontend_typecheck": "passed",
+    "backend_tests": "377 passed",
+    "frontend_contract_tests": "4 passed",
     "frontend_tenant_build": "passed",
-    "frontend_server_admin_build": "passed",
-    "compose_services": 4,
+    "frontend_admin_build": "passed",
+    "independent_p0_p1_reviews": "3 passed",
     "ui_6173_http_status": 200,
     "admin_ui_6174_http_status": 200,
-    "backend_health": "ok",
-    "parser_health": "ok",
-    "supplier_workbooks": "3/3 downloaded"
+    "backend_ready_http_status": 200,
+    "parser_health_http_status": 200,
+    "supplier_workbooks": "3/3 generated and reopened",
+    "parent_coverage": "283/283",
+    "silent_drops": 0,
+    "rollback_roundtrip": "rc.2 -> rc.1 -> rc.2 passed"
   },
   "rollback": {
-    "source_tag": "rollback/ai-enabled-20260801",
-    "source_commit": "8c8427d060f87a9ff287d715d84ea1c978bc621d",
-    "platform_volume": "cargo-platform-validation-zero-platform-20260731-172907",
-    "platform_volume_sha256": "4067f244c0da4d462a0767f99de905c73fdfc3f7dc0a1355483d5831808eb367",
-    "backend_image": "cargo-platform-validation-backend:release-a44af95",
-    "parser_image": "cargo-platform-validation-parser:release-a44af95",
-    "ui_image": "cargo-platform-validation-ui:release-74c58c6",
-    "ai_image": "cargo-platform-ai-recognition:release-a44af95"
+    "release_tag": "1.0.0-rc.1",
+    "compose_file": "docker-compose.validation.yml",
+    "image_archive": "6173-runtime-1.0.0-rc.1-20260802-063526415.tar",
+    "image_archive_sha256": "be2b9f77092a0b6267f0899aa87598f3ac36ae054c814f2049337aa61d3da727",
+    "database_snapshot": "cargo-platform-validation-no-model-20260801-153819-pre-e8b88f7-20260802-065215732.db",
+    "database_snapshot_sha256": "26a3039df8536225ef2c139e62953244a032112483068a2980feb2cffdd3de1b",
+    "rehearsal": "passed"
   },
   "field_5173_frozen": {
     "backend": "eb42223185ae60de5c9b24c1752e23f2e5e63f12db1b48b9e9ba5591fe64b05c",
@@ -114,6 +126,6 @@
     "admin_ui": "ea7b3ad8827d28f363e03ff0bc169c942b09eeb68b92e8ab16c1a18ea4f533ed",
     "redis": "d702409461c6c1a1991a5af843330ce4cb0a53f1a51f77cd29e78dd52ea12905",
     "restart_count": 0,
-    "health": "ok"
+    "changed": false
   }
 }
