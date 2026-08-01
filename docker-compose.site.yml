@@ -9,9 +9,6 @@
     volumes: !override
       - cargo-platform-data:/data
 
-  redis:
-    container_name: cargo-platform-redis
-
   tenant-ui:
     container_name: cargo-platform-tenant-ui
     image: cargo-platform-tenant-ui:latest

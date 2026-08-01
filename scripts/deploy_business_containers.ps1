@@ -29,9 +29,6 @@ Write-Host ""
 
 & docker compose @composeFiles config --quiet
 
-Write-Host "Ensuring Redis is running..."
-& docker compose @composeFiles up -d redis
-
 if (-not $NoBuild) {
     Write-Host "Building business images..."
     & docker compose @composeFiles build @services
