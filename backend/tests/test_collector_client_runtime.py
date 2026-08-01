@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import http.client
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
+import json
 import os
 from pathlib import Path
 import re
@@ -87,6 +89,31 @@ def register_collector(client: TestClient, headers: dict[str, str], identity: st
     )
     assert response.status_code == 201
     return response.json()
+
+
+def write_test_collector_release(
+    source_dir: Path,
+    *,
+    exe_content: bytes = b"MZcollector exe stub",
+    sha256: str | None = None,
+) -> dict[str, object]:
+    exe_path = source_dir / collector_runtime_route.COLLECTOR_CLIENT_RELEASE_EXE
+    exe_path.parent.mkdir(parents=True, exist_ok=True)
+    exe_path.write_bytes(exe_content)
+    manifest = {
+        "schema_version": 1,
+        "artifact": "Cargo Platform 采集器.exe",
+        "release_version": "0.2.0-rc.1",
+        "client_version": "0.2.0-rc.1+aaaaaaaaaaaa",
+        "git_sha": "a" * 40,
+        "python_version": "3.12.13",
+        "pyinstaller_version": "6.21.0",
+        "size": len(exe_content),
+        "sha256": sha256 or hashlib.sha256(exe_content).hexdigest(),
+    }
+    manifest_path = source_dir / collector_runtime_route.COLLECTOR_CLIENT_RELEASE_MANIFEST
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    return manifest
 
 
 def test_collector_client_default_name_uses_windows_machine_name(monkeypatch) -> None:
@@ -320,24 +347,47 @@ def test_collector_status_reports_client_package_availability(tmp_path, monkeypa
         assert missing_package["status"] == "missing"
         assert "collector-client/dist" in missing_package["message"]
 
-        exe_path = source_dir / collector_runtime_route.COLLECTOR_CLIENT_RELEASE_EXE
-        exe_path.parent.mkdir(parents=True, exist_ok=True)
-        exe_path.write_bytes(b"collector exe stub")
+        manifest = write_test_collector_release(source_dir)
 
         ready_status = client.get("/api/v1/collector-control/status", headers=headers)
         assert ready_status.status_code == 200
         ready_package = ready_status.json()["collector_client"]
         assert ready_package["release_available"] is True
         assert ready_package["status"] == "ready"
-        assert ready_package["package_version"] == collector_runtime_route.COLLECTOR_CLIENT_PACKAGE_VERSION
+        assert ready_package["package_version"] == manifest["client_version"]
+        assert ready_package["sha256"] == manifest["sha256"]
         assert ready_package["release_exe"] == "dist/Cargo Platform 采集器.exe"
+
+
+def test_collector_status_rejects_invalid_release_manifest(tmp_path, monkeypatch) -> None:
+    source_dir = tmp_path / "collector-client"
+    write_test_collector_release(source_dir, sha256="0" * 64)
+    monkeypatch.setattr(collector_runtime_route, "collector_client_source_dir", lambda: source_dir)
+
+    status_payload = collector_runtime_route.collector_client_release_status()
+
+    assert status_payload["release_available"] is False
+    assert status_payload["status"] == "invalid"
+    assert "SHA-256" in status_payload["message"]
+
+
+def test_collector_status_requires_release_manifest(tmp_path, monkeypatch) -> None:
+    source_dir = tmp_path / "collector-client"
+    exe_path = source_dir / collector_runtime_route.COLLECTOR_CLIENT_RELEASE_EXE
+    exe_path.parent.mkdir(parents=True, exist_ok=True)
+    exe_path.write_bytes(b"MZcollector exe stub")
+    monkeypatch.setattr(collector_runtime_route, "collector_client_source_dir", lambda: source_dir)
+
+    status_payload = collector_runtime_route.collector_client_release_status()
+
+    assert status_payload["release_available"] is False
+    assert status_payload["status"] == "missing"
 
 
 def test_collector_client_download_contains_single_exe_package(tmp_path, monkeypatch) -> None:
     source_dir = tmp_path / "collector-client"
-    exe_path = source_dir / collector_runtime_route.COLLECTOR_CLIENT_RELEASE_EXE
-    exe_path.parent.mkdir(parents=True, exist_ok=True)
-    exe_path.write_bytes(b"collector exe stub")
+    exe_content = b"MZcollector exe stub"
+    manifest = write_test_collector_release(source_dir, exe_content=exe_content)
     monkeypatch.setattr(collector_runtime_route, "collector_client_source_dir", lambda: source_dir)
 
     with TestClient(app) as client:
@@ -352,11 +402,18 @@ def test_collector_client_download_contains_single_exe_package(tmp_path, monkeyp
             assert "Cargo Platform 采集器/Cargo Platform 采集器.exe" in names
             assert "Cargo Platform 采集器/VERSION.txt" in names
             assert "Cargo Platform 采集器/参数说明.txt" in names
-            assert not any(name.endswith((".bat", ".vbs", ".json", ".py")) for name in names)
-            assert archive.read("Cargo Platform 采集器/Cargo Platform 采集器.exe") == b"collector exe stub"
+            assert "Cargo Platform 采集器/collector-manifest.json" in names
+            assert not any(name.endswith((".bat", ".vbs", ".py")) for name in names)
+            assert archive.read("Cargo Platform 采集器/Cargo Platform 采集器.exe") == exe_content
+
+            archived_manifest = json.loads(
+                archive.read("Cargo Platform 采集器/collector-manifest.json").decode("utf-8")
+            )
+            assert archived_manifest == manifest
 
             version_text = archive.read("Cargo Platform 采集器/VERSION.txt").decode("utf-8")
-            assert collector_runtime_route.COLLECTOR_CLIENT_PACKAGE_VERSION in version_text
+            assert str(manifest["client_version"]) in version_text
+            assert str(manifest["sha256"]) in version_text
             assert "single-exe" in version_text
             assert "token-only" in version_text
 
@@ -365,6 +422,19 @@ def test_collector_client_download_contains_single_exe_package(tmp_path, monkeyp
             assert '--collector-name "%COMPUTERNAME%"' in guide_text
             assert "业务机不再输入系统账号密码" in guide_text
             assert "不要填写 8000 端口" in guide_text
+
+
+def test_collector_client_download_rejects_hash_mismatch(tmp_path, monkeypatch) -> None:
+    source_dir = tmp_path / "collector-client"
+    write_test_collector_release(source_dir, sha256="0" * 64)
+    monkeypatch.setattr(collector_runtime_route, "collector_client_source_dir", lambda: source_dir)
+
+    with TestClient(app) as client:
+        headers = login_headers(client)
+        response = client.get("/api/v1/collector-client/download", headers=headers)
+
+    assert response.status_code == 503
+    assert "SHA-256" in response.json()["detail"]
 
 
 def test_collector_client_builds_raw_record_without_parser_fields(tmp_path) -> None:

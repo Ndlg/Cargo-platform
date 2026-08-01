@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import hashlib
 from io import BytesIO
 import json
 from pathlib import Path
@@ -74,7 +75,8 @@ COLLECTOR_CLEANUP_TIMEOUT = timedelta(hours=24)
 
 COLLECTOR_CLIENT_ARCHIVE_ROOT = "Cargo Platform 采集器"
 COLLECTOR_CLIENT_RELEASE_EXE = Path("dist") / "Cargo Platform 采集器.exe"
-COLLECTOR_CLIENT_PACKAGE_VERSION = "single-exe-token-collector-20260614"
+COLLECTOR_CLIENT_RELEASE_MANIFEST = Path("dist") / "collector-manifest.json"
+COLLECTOR_CLIENT_MANIFEST_SCHEMA_VERSION = 1
 RAW_CAPTURE_BATCH_MAX_RECORDS = 100
 RAW_CAPTURE_PAYLOAD_MAX_CHARS = 2_000_000
 RAW_CAPTURE_SOURCE_COLUMNS_MAX_CHARS = 20_000
@@ -230,11 +232,78 @@ def collector_client_archive_path(name: str) -> str:
     return str(Path(COLLECTOR_CLIENT_ARCHIVE_ROOT) / name)
 
 
-def write_collector_client_version(zip_file: ZipFile, *, mode: str) -> None:
+def collector_client_file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def validated_collector_client_release(source_dir: Path) -> tuple[Path, Path, dict[str, Any]]:
+    exe_path = source_dir / COLLECTOR_CLIENT_RELEASE_EXE
+    manifest_path = source_dir / COLLECTOR_CLIENT_RELEASE_MANIFEST
+    if not exe_path.is_file() or not manifest_path.is_file():
+        raise FileNotFoundError(
+            "采集器发布包缺失，需要同时构建 collector-client/dist/Cargo Platform 采集器.exe "
+            "和 collector-manifest.json。"
+        )
+
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("采集器发布清单不是有效 JSON。") from exc
+    if not isinstance(manifest, dict):
+        raise ValueError("采集器发布清单格式无效。")
+
+    required_text_fields = (
+        "release_version",
+        "client_version",
+        "git_sha",
+        "python_version",
+        "pyinstaller_version",
+        "sha256",
+    )
+    if manifest.get("schema_version") != COLLECTOR_CLIENT_MANIFEST_SCHEMA_VERSION:
+        raise ValueError("采集器发布清单版本不受支持。")
+    if manifest.get("artifact") != COLLECTOR_CLIENT_RELEASE_EXE.name:
+        raise ValueError("采集器发布清单中的文件名不匹配。")
+    if any(not isinstance(manifest.get(field), str) or not manifest[field].strip() for field in required_text_fields):
+        raise ValueError("采集器发布清单缺少必填字段。")
+    if not re.fullmatch(r"[0-9a-fA-F]{40}", manifest["git_sha"]):
+        raise ValueError("采集器发布清单中的 Git SHA 无效。")
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", manifest["sha256"]):
+        raise ValueError("采集器发布清单中的 SHA-256 无效。")
+
+    file_size = exe_path.stat().st_size
+    if not isinstance(manifest.get("size"), int) or manifest["size"] != file_size:
+        raise ValueError("采集器 EXE 文件大小与发布清单不一致。")
+    with exe_path.open("rb") as handle:
+        if handle.read(2) != b"MZ":
+            raise ValueError("采集器发布文件不是有效的 Windows EXE。")
+    if collector_client_file_sha256(exe_path) != manifest["sha256"].lower():
+        raise ValueError("采集器 EXE 的 SHA-256 与发布清单不一致。")
+
+    return exe_path, manifest_path, manifest
+
+
+def require_collector_client_release(source_dir: Path) -> tuple[Path, Path, dict[str, Any]]:
+    try:
+        return validated_collector_client_release(source_dir)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+
+def write_collector_client_version(zip_file: ZipFile, manifest: dict[str, Any], *, mode: str) -> None:
     zip_file.writestr(
         collector_client_archive_path("VERSION.txt"),
         (
-            f"version={COLLECTOR_CLIENT_PACKAGE_VERSION}\n"
+            f"version={manifest['client_version']}\n"
+            f"release_version={manifest['release_version']}\n"
+            f"git_sha={manifest['git_sha']}\n"
+            f"sha256={manifest['sha256']}\n"
             f"mode={mode}\n"
             "package=single-exe-token-collector\n"
             "features=single-exe,no-console-window,token-only,no-password-on-business-machine,server-reconnect-wait,remote-disconnect-guard\n"
@@ -298,14 +367,10 @@ def collector_client_parameter_guide() -> str:
 
 
 def write_collector_client_release(zip_file: ZipFile, source_dir: Path, *, mode: str) -> None:
-    exe_path = source_dir / COLLECTOR_CLIENT_RELEASE_EXE
-    if not exe_path.is_file():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Cargo Platform 采集器.exe not found. Build the collector client first.",
-        )
-    write_collector_client_version(zip_file, mode=mode)
+    exe_path, manifest_path, manifest = require_collector_client_release(source_dir)
+    write_collector_client_version(zip_file, manifest, mode=mode)
     zip_file.write(exe_path, collector_client_archive_path("Cargo Platform 采集器.exe"))
+    zip_file.write(manifest_path, collector_client_archive_path("collector-manifest.json"))
     zip_file.writestr(
         collector_client_archive_path("参数说明.txt"),
         collector_client_parameter_guide(),
@@ -326,19 +391,28 @@ def build_collector_client_archive(mode: str = "cli") -> BytesIO:
 
 def collector_client_release_status() -> dict[str, Any]:
     source_dir = collector_client_source_dir()
-    exe_path = source_dir / COLLECTOR_CLIENT_RELEASE_EXE
-    release_available = exe_path.is_file()
-    return {
-        "package_version": COLLECTOR_CLIENT_PACKAGE_VERSION,
-        "release_available": release_available,
-        "status": "ready" if release_available else "missing",
+    base_status: dict[str, Any] = {
+        "package_version": "",
+        "release_version": "",
+        "sha256": "",
+        "release_available": False,
         "archive_name": "订单整理系统采集器.zip",
         "release_exe": str(COLLECTOR_CLIENT_RELEASE_EXE).replace("\\", "/"),
-        "message": (
-            "采集器发布包已就绪。"
-            if release_available
-            else "采集器 exe 发布包缺失，需要先构建 collector-client/dist/Cargo Platform 采集器.exe。"
-        ),
+    }
+    try:
+        _, _, manifest = validated_collector_client_release(source_dir)
+    except FileNotFoundError as exc:
+        return {**base_status, "status": "missing", "message": str(exc)}
+    except ValueError as exc:
+        return {**base_status, "status": "invalid", "message": str(exc)}
+    return {
+        **base_status,
+        "package_version": manifest["client_version"],
+        "release_version": manifest["release_version"],
+        "sha256": manifest["sha256"],
+        "release_available": True,
+        "status": "ready",
+        "message": "采集器发布包已校验并就绪。",
     }
 
 

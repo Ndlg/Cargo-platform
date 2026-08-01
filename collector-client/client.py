@@ -18,8 +18,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+try:
+    from collector_build_info import CLIENT_VERSION
+except ModuleNotFoundError:
+    CLIENT_VERSION = "development"
 
-CLIENT_VERSION = "single-exe-token-collector-20260614"
 DEFAULT_BASE_URL = "http://127.0.0.1:5173/api/v1"
 DEFAULT_WEB_PORT = 5173
 DEFAULT_COLLECTOR_NAME = ""

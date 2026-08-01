@@ -35,8 +35,36 @@ jobs:
           fi
           echo "value=$VERSION" >> "$GITHUB_OUTPUT"
 
-  build:
+  collector:
     needs: version
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.13"
+          cache: pip
+          cache-dependency-path: collector-client/requirements-build.lock
+
+      - name: Build and verify collector release
+        shell: pwsh
+        run: >-
+          ./scripts/build_collector_release.ps1
+          -Version "${{ needs.version.outputs.value }}"
+          -GitSha "${{ github.sha }}"
+          -PythonExe (Get-Command python.exe).Source
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: collector-release-${{ needs.version.outputs.value }}
+          if-no-files-found: error
+          path: |
+            collector-client/dist/Cargo Platform 采集器.exe
+            collector-client/dist/collector-manifest.json
+
+  build:
+    needs: [version, collector]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -64,6 +92,11 @@ jobs:
             build_args: ""
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: collector-release-${{ needs.version.outputs.value }}
+          path: collector-client/dist
 
       - uses: docker/setup-buildx-action@v3
 
