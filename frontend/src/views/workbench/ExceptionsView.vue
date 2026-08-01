@@ -29,7 +29,7 @@ type ExceptionStatus =
   | 'unmatched'
   | 'special'
 
-type RepairTarget = 'product-matching' | 'product-assets' | 'ai-recognition' | null
+type RepairTarget = 'product-matching' | 'product-assets' | 'format-learning' | null
 
 type ExceptionDefinition = {
   label: string
@@ -71,9 +71,9 @@ const exceptionDefinitions: Record<ExceptionStatus, ExceptionDefinition> = {
   },
   pending: {
     label: '解析待处理',
-    advice: '在 AI 面单解析中确认或修复当前格式',
-    actionLabel: '查看 AI 解析',
-    target: 'ai-recognition',
+    advice: '在面单格式学习中确认或修复当前格式',
+    actionLabel: '学习面单格式',
+    target: 'format-learning',
   },
   unmatched: {
     label: '未匹配',
@@ -114,12 +114,6 @@ const previewLoading = ref(false)
 const error = ref('')
 const statusFilter = ref<'all' | ExceptionStatus>('all')
 const parserStatus = computed(() => orderDrafts.value?.status ?? '')
-const aiSessionUrl = computed(() => {
-  const sessionId = orderDrafts.value?.ai_sessions?.find((item) => item.session_id)?.session_id ?? ''
-  return /^[A-Za-z0-9_-]{1,128}$/.test(sessionId)
-    ? `/ai-recognition-console.html?session=${encodeURIComponent(sessionId)}`
-    : ''
-})
 
 const sortedTasks = computed(() => [...captureTasks.value].sort((a, b) => b.id - a.id))
 const selectedTask = computed(
@@ -311,9 +305,9 @@ function repairRoute(row: RecognitionPreviewRow) {
   const definition = exceptionDefinition(row.status)
   if (!definition?.target) return null
 
-  if (definition.target === 'ai-recognition') {
+  if (definition.target === 'format-learning') {
     return {
-      path: '/admin/ai-recognition',
+      path: '/admin/format-learning',
       query: selectedTaskId.value ? { task_id: String(selectedTaskId.value) } : {},
     }
   }
@@ -458,16 +452,7 @@ onMounted(load)
   >
     <template #default>
       当前面单保留为明确异常，不会进入正常导出。
-      <el-link
-        v-if="aiSessionUrl && parseIssue.action === 'ai-recognition'"
-        :href="aiSessionUrl"
-        target="_blank"
-        rel="noopener noreferrer"
-        type="primary"
-      >
-        查看 AI 识别会话
-      </el-link>
-      <el-link v-else type="primary" @click="handleParseIssueAction">
+      <el-link type="primary" @click="handleParseIssueAction">
         {{ parseIssue.actionLabel }}
       </el-link>
     </template>
@@ -547,16 +532,7 @@ onMounted(load)
     >
       <template #default>
         解析未生成订单行，已保留为异常，不会进入正常导出。
-        <el-link
-          v-if="aiSessionUrl && parseIssue?.action === 'ai-recognition'"
-          :href="aiSessionUrl"
-          target="_blank"
-          rel="noopener noreferrer"
-          type="primary"
-        >
-          查看 AI 识别会话
-        </el-link>
-        <el-link v-else-if="parseIssue" type="primary" @click="handleParseIssueAction">
+        <el-link v-if="parseIssue" type="primary" @click="handleParseIssueAction">
           {{ parseIssue.actionLabel }}
         </el-link>
       </template>

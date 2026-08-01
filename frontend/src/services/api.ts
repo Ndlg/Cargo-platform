@@ -323,14 +323,13 @@ export interface OrderRowDraftRecord extends ApiRecord {
 }
 
 export interface CompiledRuleTrace extends ApiRecord {
-  source: 'confirmed_ai_rule' | 'declarative_rule' | string
-  learning_session_id?: string
+  source: 'confirmed_learning_rule' | 'declarative_rule' | string
+  learning_record_id?: string
   rule_pack_code: string
   rule_pack_version: string
   fingerprint: string
   grammar_signature: string
   strategy: string
-  ai_call_count: number
 }
 
 export interface ParentWaybillDraftRecord extends ApiRecord {
@@ -350,22 +349,12 @@ export interface OrderRowDraftsResponse extends ApiRecord {
   rule_pack_required?: boolean
   message?: string
   recognition_rule_pack?: RecognitionRulePackSummary | null
-  ai_sessions?: Array<{
-    session_id: string
-    status: string
-    console_url?: string
-    fingerprint?: string
-    deterministic_failure_reason?: string
-    error?: string
-  }>
   diagnostics?: Array<{
     raw_record_id: number
     parent_label?: string
     fingerprint?: string
     reason: string
     deterministic_reason?: string
-    session_id?: string
-    console_url?: string
     error?: string
     compiled_rule?: CompiledRuleTrace
   }>
@@ -435,15 +424,15 @@ export interface RecognitionFormatProfile extends ApiRecord {
   selected_fields?: string[]
   rows?: Array<Partial<Record<RecognitionBusinessField, ApiRecord[]>>>
   provenance?: {
-    source: 'confirmed_ai_rule'
-    learning_session_id: string
+    source: 'confirmed_learning_rule'
+    learning_record_id: string
   }
 }
 
 export interface RecognitionLearningRecord extends ApiRecord {
   fingerprint: string
   grammar_signature?: string
-  session_id?: string
+  learning_record_id?: string
   task_id?: number
   raw_record_id?: number
   source_component?: string
@@ -470,7 +459,89 @@ export interface RecognitionRulePackPayload extends ApiRecord {
     format_profiles?: RecognitionFormatProfile[]
     [key: string]: unknown
   }
-  ai_learning_records?: RecognitionLearningRecord[]
+  learning_records?: RecognitionLearningRecord[]
+}
+
+export interface FormatLearningBusinessRow {
+  product: string
+  sales_attr1: string
+  sales_attr2: string
+  quantity: number
+  remark: string
+}
+
+export interface FormatLearningFingerprint {
+  code: string
+  name: string
+  structural_fingerprint: string
+  grammar_signature: string
+}
+
+export interface FormatLearningSelectedField {
+  key: string
+  label: string
+  path: string
+  values: unknown[]
+}
+
+export interface FormatLearningLocator {
+  raw_record_id: number
+  document_sequence: number
+  parent_sequence: number
+}
+
+export interface FormatLearningQueueItem extends FormatLearningLocator {
+  parent_label: string
+  source_component: string
+  source_index: string
+  reason: string
+  fingerprint?: FormatLearningFingerprint | null
+  selected_fields: FormatLearningSelectedField[]
+  rows: FormatLearningBusinessRow[]
+}
+
+export interface FormatLearningQueueResponse extends ApiRecord {
+  contract_version: 'format_learning_queue_v1' | string
+  task_id: number
+  include_all: boolean
+  summary: {
+    total_count: number
+    learning_required_count: number
+  }
+  items: FormatLearningQueueItem[]
+}
+
+export interface FormatLearningPrepareResponse extends FormatLearningLocator, ApiRecord {
+  contract_version: 'format_learning_prepare_v1' | string
+  task_id: number
+  evidence_sha256: string
+  parent_label: string
+  source_component: string
+  source_index: string
+  reason: string
+  fingerprint: FormatLearningFingerprint
+  selected_fields: FormatLearningSelectedField[]
+  rows: FormatLearningBusinessRow[]
+}
+
+export interface FormatLearningResultResponse extends ApiRecord {
+  contract_version: 'format_learning_result_v1' | string
+  status: 'learned' | string
+  message: string
+  rule_pack?: RecognitionRulePackSummary | null
+  format_fingerprint?: string
+  compiler_result?: {
+    status?: string
+    fingerprint?: string
+    grammar_signature?: string
+    replay_report?: Array<{ kind?: string; passed?: boolean; message?: string }>
+  }
+  replay_summary?: {
+    passed: number
+    total: number
+  }
+  reruns?: ApiRecord[]
+  warnings?: string[]
 }
 
 export interface RecognitionRulePacksResponse extends ApiRecord {
@@ -743,16 +814,37 @@ export function getOrderRowDrafts(taskId: number, query: { limit?: number; offse
   return request<OrderRowDraftsResponse>(withCurrentWorkspace(`/order-row-drafts/tasks/${taskId}${suffix}`))
 }
 
-export function startManualAiRecognition(
+export function getFormatLearningQueue(
   taskId: number,
-  payload: {
-    raw_record_id: number
-    document_sequence: number
-    parent_sequence: number
+  includeAll = false,
+): Promise<FormatLearningQueueResponse> {
+  return request<FormatLearningQueueResponse>(
+    withCurrentWorkspace(`/format-learning/tasks/${taskId}?include_all=${includeAll ? 'true' : 'false'}`),
+  )
+}
+
+export function prepareFormatLearning(
+  taskId: number,
+  payload: FormatLearningLocator,
+): Promise<FormatLearningPrepareResponse> {
+  return request<FormatLearningPrepareResponse>(
+    withCurrentWorkspace(`/format-learning/tasks/${taskId}/prepare`),
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  )
+}
+
+export function learnFormat(
+  taskId: number,
+  payload: FormatLearningLocator & {
+    expected_evidence_sha256: string
+    rows: FormatLearningBusinessRow[]
   },
-): Promise<OrderRowDraftsResponse> {
-  return request<OrderRowDraftsResponse>(
-    withCurrentWorkspace(`/order-row-drafts/tasks/${taskId}/manual-ai`),
+): Promise<FormatLearningResultResponse> {
+  return request<FormatLearningResultResponse>(
+    withCurrentWorkspace(`/format-learning/tasks/${taskId}/learn`),
     {
       method: 'POST',
       body: JSON.stringify(payload),

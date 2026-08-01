@@ -3,7 +3,6 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { Download, Refresh, UploadFilled } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
-import RecognitionProfileEditor from '../../components/recognition/RecognitionProfileEditor.vue'
 import {
   activateRecognitionRulePack,
   deactivateRecognitionRulePack,
@@ -17,17 +16,12 @@ import {
   type RecognitionRulePackSummary,
 } from '../../services/api'
 import { useSessionStore } from '../../stores/session'
-import {
-  learningRecordForProfile,
-  withoutProfileLearningRecords,
-} from './recognitionProfileLearning'
 
 const session = useSessionStore()
 const loading = ref(false)
 const importing = ref(false)
 const exportingId = ref<number | null>(null)
-const editingId = ref<number | null>(null)
-const savingRules = ref(false)
+const inspectingId = ref<number | null>(null)
 const activatingId = ref<number | null>(null)
 const deactivatingId = ref<number | null>(null)
 const deletingId = ref<number | null>(null)
@@ -37,20 +31,10 @@ const packs = ref<RecognitionRulePackSummary[]>([])
 const importText = ref('')
 const importDescription = ref('')
 const ruleEditorVisible = ref(false)
-const editingPack = ref<RecognitionRulePackSummary | null>(null)
-const editingPayload = ref<RecognitionRulePackPayload | null>(null)
 const formatProfiles = ref<RecognitionFormatProfile[]>([])
 const learningRecords = ref<RecognitionLearningRecord[]>([])
-const selectedProfileKey = ref('')
-const editorError = ref('')
 
 const hasImportPayload = computed(() => importText.value.trim().length > 0)
-const selectedProfile = computed(() => (
-  formatProfiles.value.find((profile) => profileKey(profile) === selectedProfileKey.value) ?? null
-))
-const selectedLearningRecord = computed(() => (
-  selectedProfile.value ? learningRecordFor(selectedProfile.value) : undefined
-))
 const capabilityCounts = computed(() => [
   { label: '结构化字段读取', count: formatProfiles.value.filter((item) => item.strategy === 'structured_items_v1').length },
   { label: '文本拆分', count: formatProfiles.value.filter((item) => item.strategy === 'text_pipeline_v1').length },
@@ -82,18 +66,8 @@ function profileValidationLabel(profile: RecognitionFormatProfile): string {
   return '规则需要重新校验'
 }
 
-function profileKey(value: {
-  fingerprint: string
-  grammar_signature?: string
-  strategy?: string
-  selected_fields?: string[]
-}): string {
-  return JSON.stringify([
-    value.fingerprint,
-    value.strategy ?? '',
-    value.selected_fields ?? [],
-    value.grammar_signature ?? '',
-  ])
+function profileKey(profile: RecognitionFormatProfile): string {
+  return [profile.fingerprint, profile.grammar_signature ?? '', profile.strategy].join('|')
 }
 
 function profileDisplayName(profile: RecognitionFormatProfile): string {
@@ -110,17 +84,15 @@ function profileDisplayName(profile: RecognitionFormatProfile): string {
 }
 
 function learningRecordFor(profile: RecognitionFormatProfile): RecognitionLearningRecord | undefined {
-  return learningRecordForProfile(profile, learningRecords.value)
+  const learningRecordId = profile.provenance?.learning_record_id
+  if (!learningRecordId) return undefined
+  return learningRecords.value.find((record) => record.learning_record_id === learningRecordId)
 }
 
 function recordValue(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {}
-}
-
-function jsonCopy<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value)) as T
 }
 
 async function loadPacks() {
@@ -289,8 +261,8 @@ async function exportPack(pack: RecognitionRulePackSummary) {
   }
 }
 
-async function editPackRules(pack: RecognitionRulePackSummary) {
-  editingId.value = pack.id
+async function inspectPack(pack: RecognitionRulePackSummary) {
+  inspectingId.value = pack.id
   error.value = ''
   try {
     const result = await exportRecognitionRulePack(pack.id)
@@ -303,99 +275,15 @@ async function editPackRules(pack: RecognitionRulePackSummary) {
           && typeof (profile as RecognitionFormatProfile).fingerprint === 'string'
         ))
       : []
-    editingPack.value = pack
-    editingPayload.value = jsonCopy(payload)
-    formatProfiles.value = jsonCopy(profiles)
-    learningRecords.value = Array.isArray(payload.ai_learning_records)
-      ? jsonCopy(payload.ai_learning_records)
+    formatProfiles.value = profiles
+    learningRecords.value = Array.isArray(payload.learning_records)
+      ? payload.learning_records
       : []
-    selectedProfileKey.value = formatProfiles.value[0] ? profileKey(formatProfiles.value[0]) : ''
-    editorError.value = ''
     ruleEditorVisible.value = true
   } catch (err) {
     error.value = err instanceof Error ? err.message : '规则包读取失败'
   } finally {
-    editingId.value = null
-  }
-}
-
-function updateSelectedProfile(profile: RecognitionFormatProfile) {
-  const index = formatProfiles.value.findIndex((item) => profileKey(item) === selectedProfileKey.value)
-  if (index < 0) return
-  formatProfiles.value[index] = profile
-  selectedProfileKey.value = profileKey(profile)
-}
-
-async function deleteSelectedProfile() {
-  if (!selectedProfile.value) return
-  if (formatProfiles.value.length === 1) {
-    ElMessage.warning('这是最后一条子规则。如需清空，请关闭编辑窗口后删除整个规则包。')
-    return
-  }
-  const nextLearningRecords = withoutProfileLearningRecords(
-    selectedProfile.value,
-    learningRecords.value,
-  )
-  if (!nextLearningRecords) {
-    ElMessage.error('这条子规则缺少学习会话标识，无法安全删除。请删除整个规则包后重新学习。')
-    return
-  }
-  try {
-    await ElMessageBox.confirm(
-      `删除后，这种面单格式将不再被识别：${selectedProfile.value.name || '未命名规则'}`,
-      '删除子规则',
-      {
-        confirmButtonText: '删除',
-        cancelButtonText: '取消',
-        type: 'warning',
-      },
-    )
-  } catch {
-    return
-  }
-  const key = profileKey(selectedProfile.value)
-  formatProfiles.value = formatProfiles.value.filter((profile) => profileKey(profile) !== key)
-  learningRecords.value = nextLearningRecords
-  selectedProfileKey.value = formatProfiles.value[0] ? profileKey(formatProfiles.value[0]) : ''
-}
-
-async function savePackRules() {
-  if (!editingPack.value || !editingPayload.value) return
-  if (!formatProfiles.value.length) {
-    ElMessage.warning('规则包至少需要保留一条子规则。')
-    return
-  }
-
-  const currentPolicy = recordValue(editingPayload.value.parser_policy)
-  const nextPayload: RecognitionRulePackPayload = {
-    ...editingPayload.value,
-    parser_policy: {
-      ...currentPolicy,
-      order_row_parser: 'declarative_v1',
-      format_profiles: jsonCopy(formatProfiles.value),
-    },
-    ai_learning_records: jsonCopy(learningRecords.value),
-  }
-
-  savingRules.value = true
-  error.value = ''
-  editorError.value = ''
-  try {
-    await importRecognitionRulePack({
-      payload: nextPayload,
-      activate: activePack.value?.id === editingPack.value.id,
-      description: editingPack.value.description ?? null,
-    })
-    ruleEditorVisible.value = false
-    await loadPacks()
-    ElMessage.success(`已保存 ${formatProfiles.value.length} 条子规则。`)
-  } catch (err) {
-    const message = err instanceof Error ? err.message : '子规则保存失败'
-    error.value = message
-    editorError.value = message
-    ElMessage.error(message)
-  } finally {
-    savingRules.value = false
+    inspectingId.value = null
   }
 }
 
@@ -468,7 +356,7 @@ onMounted(loadPacks)
       <div class="panel-heading">
         <div>
           <h2><el-icon><Download /></el-icon> 已保存规则包</h2>
-          <p>AI 每确认一种新格式，就会追加到同一个“AI识别规则包”中；导出可用于备份。</p>
+          <p>每确认一种新格式，系统就会追加到同一个识别规则包中；导出可用于备份。</p>
         </div>
       </div>
 
@@ -514,7 +402,7 @@ onMounted(loadPacks)
             <el-button size="small" plain :loading="exportingId === row.id" @click="exportPack(row)">
               导出
             </el-button>
-            <el-button size="small" plain :loading="editingId === row.id" @click="editPackRules(row)">
+            <el-button size="small" plain :loading="inspectingId === row.id" @click="inspectPack(row)">
               查看识别能力
             </el-button>
             <el-button
@@ -532,12 +420,12 @@ onMounted(loadPacks)
     </article>
   </section>
 
-  <el-dialog v-model="ruleEditorVisible" title="AI识别规则包能力" width="min(1280px, 96vw)" top="4vh">
+  <el-dialog v-model="ruleEditorVisible" title="规则包识别能力" width="min(1180px, 96vw)" top="4vh">
     <el-alert
       v-if="!formatProfiles.length"
       :closable="false"
       title="这个规则包还没有学习结果"
-      description="请先到“AI 面单解析”页面手动确认一种新格式。"
+      description="请先到“面单格式学习”页面确认一种新格式。"
       type="warning"
       show-icon
     />
@@ -551,53 +439,42 @@ onMounted(loadPacks)
           {{ item.label }} {{ item.count }}
         </el-tag>
       </div>
-      <el-collapse>
-        <el-collapse-item title="高级：查看或修正技术规则">
-          <div class="rule-editor-layout">
-            <aside class="profile-list">
-              <div class="profile-list__heading">
-                <strong>技术规则</strong>
-                <small>通常无需逐条维护</small>
-              </div>
-              <button
-                v-for="profile in formatProfiles"
-                :key="profileKey(profile)"
-                type="button"
-                class="profile-list__item"
-                :class="{ active: selectedProfileKey === profileKey(profile) }"
-                @click="selectedProfileKey = profileKey(profile)"
-              >
-                <strong>{{ profileDisplayName(profile) }}</strong>
-                <span>{{ profileStrategyLabel(profile) }}</span>
-                <small>{{ profileValidationLabel(profile) }}</small>
-              </button>
-            </aside>
-            <RecognitionProfileEditor
-              v-if="selectedProfile"
-              :model-value="selectedProfile"
-              :learning-record="selectedLearningRecord"
-              @update:model-value="updateSelectedProfile"
-              @delete="deleteSelectedProfile"
-            />
-          </div>
-        </el-collapse-item>
-      </el-collapse>
+      <el-alert
+        :closable="false"
+        title="学习记录只读"
+        description="识别有误时请回到“面单格式学习”修正样本并生成新规则版本，不在这里编辑技术步骤。"
+        type="info"
+        show-icon
+      />
+      <el-table :data="formatProfiles" :row-key="profileKey" border class="capability-table">
+        <el-table-column type="expand">
+          <template #default="{ row }">
+            <el-table
+              :data="learningRecordFor(row)?.confirmed_rows ?? []"
+              border
+              empty-text="这条导入规则没有管理员学习记录"
+            >
+              <el-table-column prop="product" label="商品" min-width="180" />
+              <el-table-column prop="sales_attr1" label="销售属性1" min-width="130" />
+              <el-table-column prop="sales_attr2" label="销售属性2" min-width="110" />
+              <el-table-column prop="quantity" label="数量" width="80" />
+              <el-table-column prop="remark" label="备注" min-width="140" />
+            </el-table>
+          </template>
+        </el-table-column>
+        <el-table-column label="已学习格式" min-width="260">
+          <template #default="{ row }">{{ profileDisplayName(row) }}</template>
+        </el-table-column>
+        <el-table-column label="能力" width="150">
+          <template #default="{ row }">{{ profileStrategyLabel(row) }}</template>
+        </el-table-column>
+        <el-table-column label="校验" min-width="220">
+          <template #default="{ row }">{{ profileValidationLabel(row) }}</template>
+        </el-table-column>
+      </el-table>
     </template>
     <template #footer>
-      <div class="rule-editor-footer">
-        <el-alert v-if="editorError" :closable="false" :title="editorError" type="error" show-icon />
-        <div class="rule-editor-footer__actions">
-          <el-button @click="ruleEditorVisible = false">取消</el-button>
-          <el-button
-            type="primary"
-            :loading="savingRules"
-            :disabled="!formatProfiles.length"
-            @click="savePackRules"
-          >
-            保存技术规则
-          </el-button>
-        </div>
-      </div>
+      <el-button type="primary" @click="ruleEditorVisible = false">关闭</el-button>
     </template>
   </el-dialog>
 </template>
@@ -683,98 +560,13 @@ onMounted(loadPacks)
   color: var(--el-text-color-secondary);
 }
 
-.rule-editor-layout {
-  display: grid;
-  grid-template-columns: 250px minmax(0, 1fr);
-  gap: 20px;
-  min-height: 560px;
-}
-
-.profile-list {
-  padding-right: 14px;
-  overflow: auto;
-  border-right: 1px solid var(--el-border-color-lighter);
-}
-
-.profile-list__heading {
-  padding: 4px 8px 12px;
-}
-
-.profile-list__heading small,
-.profile-list__item span,
-.profile-list__item small {
-  display: block;
-  margin-top: 5px;
-  color: var(--el-text-color-secondary);
-}
-
-.profile-list__item {
-  display: block;
-  width: 100%;
-  padding: 12px;
-  margin-bottom: 8px;
-  text-align: left;
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 8px;
-  background: var(--el-fill-color-blank);
-  cursor: pointer;
-}
-
-.profile-list__item.active {
-  border-color: var(--el-color-primary);
-  background: var(--el-color-primary-light-9);
-}
-
-.rule-editor-footer {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 14px;
-}
-
-.rule-editor-footer .el-alert {
-  flex: 1;
-  text-align: left;
-}
-
-.rule-editor-footer__actions {
-  display: flex;
-  flex: none;
-  gap: 10px;
+.capability-table {
+  margin-top: 12px;
 }
 
 @media (max-width: 1100px) {
   .rule-pack-grid {
     grid-template-columns: 1fr;
-  }
-
-  .rule-editor-layout {
-    grid-template-columns: 1fr;
-  }
-
-  .profile-list {
-    display: flex;
-    gap: 8px;
-    padding: 0 0 12px;
-    border-right: 0;
-    border-bottom: 1px solid var(--el-border-color-lighter);
-  }
-
-  .profile-list__heading {
-    min-width: 160px;
-  }
-
-  .profile-list__item {
-    min-width: 190px;
-  }
-
-  .rule-editor-footer {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .rule-editor-footer__actions {
-    justify-content: flex-end;
   }
 }
 </style>

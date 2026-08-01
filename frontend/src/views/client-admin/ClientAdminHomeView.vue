@@ -35,6 +35,12 @@ const configCards = [
     icon: Guide,
   },
   {
+    label: '面单格式学习',
+    description: '核对陌生面单的五个业务字段，由系统生成规则并完成历史样本回放。',
+    path: '/admin/format-learning',
+    icon: Guide,
+  },
+  {
     label: '商品匹配',
     description: '基于面单解析后的订单行，维护商品、SKU 和图片的匹配学习记录。',
     path: '/admin/product-matching',

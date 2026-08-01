@@ -33,7 +33,7 @@ async function loadConfigs() {
 
 async function saveConfig(item: TenantFingerprintConfig) {
   if (!item.selected_fields.length) {
-    ElMessage.warning('至少保留一个提供给 AI 的字段。')
+    ElMessage.warning('至少保留一个用于生成规则的字段。')
     return
   }
   savingCode.value = item.code
@@ -64,7 +64,7 @@ onMounted(loadConfigs)
     </header>
 
     <el-alert
-      title="只有勾选且有值的字段会传给 AI；未勾选字段不会展示、传输或参与学习。保存不会修改已经生成的识别规则。"
+      title="只有勾选且有值的字段会用于陌生格式学习和规则生成；未勾选字段不会展示或参与学习。保存不会修改已经生成的识别规则。"
       type="info"
       :closable="false"
       show-icon

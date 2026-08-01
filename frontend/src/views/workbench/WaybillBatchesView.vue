@@ -42,12 +42,6 @@ const selectedTask = computed(() => sortedTasks.value.find((task) => task.id ===
 const allRows = computed(() => drafts.value?.rows ?? [])
 const reviewRows = computed(() => allRows.value.filter((row) => row.status === 'needs_review'))
 const parserStatus = computed(() => drafts.value?.status ?? '')
-const aiSessionUrl = computed(() => {
-  const sessionId = drafts.value?.ai_sessions?.find((item) => item.session_id)?.session_id ?? ''
-  return /^[A-Za-z0-9_-]{1,128}$/.test(sessionId)
-    ? `/ai-recognition-console.html?session=${encodeURIComponent(sessionId)}`
-    : ''
-})
 const parserIssue = computed<ParserIssueDefinition | null>(() => {
   return parserIssueFor(parserStatus.value, drafts.value?.message)
 })
@@ -193,10 +187,8 @@ function diagnosticsSourceText(row: OrderRowDraftRecord): string {
 
 function recognitionSourceLabel(row: OrderRowDraftRecord): string {
   const compiledRule = row.source_trace?.compiled_rule
-  if (compiledRule?.source === 'confirmed_ai_rule') {
-    return `已确认规则自动复用（AI 调用 ${compiledRule.ai_call_count}）`
-  }
-  if (compiledRule) return `规则包自动解析（AI 调用 ${compiledRule.ai_call_count}）`
+  if (compiledRule?.source === 'confirmed_learning_rule') return '管理员确认规则自动复用'
+  if (compiledRule) return '规则包自动解析'
   return '识别来源未记录'
 }
 
@@ -357,16 +349,7 @@ onMounted(load)
   >
     <template #default>
       当前结果不会进入商品匹配或正常导出。
-      <el-link
-        v-if="aiSessionUrl && parserIssue.action === 'ai-recognition'"
-        :href="aiSessionUrl"
-        target="_blank"
-        rel="noopener noreferrer"
-        type="primary"
-      >
-        查看 AI 识别会话
-      </el-link>
-      <el-link v-else type="primary" @click="handleParserIssueAction">
+      <el-link type="primary" @click="handleParserIssueAction">
         {{ parserIssue.actionLabel }}
       </el-link>
     </template>

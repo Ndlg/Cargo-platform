@@ -2,10 +2,10 @@ import type { RouteRecordRaw } from 'vue-router'
 
 import ClientAdminLayout from '../layouts/ClientAdminLayout.vue'
 import ClientAdminHomeView from '../views/client-admin/ClientAdminHomeView.vue'
-import AiRecognitionView from '../views/workbench/AiRecognitionView.vue'
 import CollectorConnectionsView from '../views/workbench/CollectorConnectionsView.vue'
 import ExportHeaderDefinitionView from '../views/workbench/ExportHeaderDefinitionView.vue'
 import FingerprintSettingsView from '../views/workbench/FingerprintSettingsView.vue'
+import FormatLearningView from '../views/workbench/FormatLearningView.vue'
 import ProductCatalogView from '../views/workbench/ProductCatalogView.vue'
 import ProductMatchingView from '../views/workbench/ProductMatchingView.vue'
 import RecognitionRulePacksView from '../views/workbench/RecognitionRulePacksView.vue'
@@ -26,7 +26,7 @@ export const clientAdminRoutes: RouteRecordRaw = {
     { path: 'stalls', component: StallCatalogView, meta: { title: '档口库' } },
     { path: 'products', component: ProductCatalogView, meta: { title: '商品/SKU' } },
     { path: 'product-matching', component: ProductMatchingView, meta: { title: '商品匹配' } },
-    { path: 'ai-recognition', component: AiRecognitionView, meta: { title: 'AI 面单解析' } },
+    { path: 'format-learning', component: FormatLearningView, meta: { title: '面单格式学习' } },
     { path: 'fingerprint-settings', component: FingerprintSettingsView, meta: { title: '面单指纹配置' } },
     { path: 'recognition-rule-packs', component: RecognitionRulePacksView, meta: { title: '识别规则包' } },
     { path: 'system-settings', component: SystemSettingsView, meta: { title: '系统设置' } },

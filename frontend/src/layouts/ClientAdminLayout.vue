@@ -7,7 +7,7 @@ const clientAdminNavItems = [
   { label: '档口库', path: '/admin/stalls' },
   { label: '商品/SKU', path: '/admin/products' },
   { label: '商品匹配', path: '/admin/product-matching' },
-  { label: 'AI 面单解析', path: '/admin/ai-recognition' },
+  { label: '面单格式学习', path: '/admin/format-learning' },
   { label: '面单指纹配置', path: '/admin/fingerprint-settings' },
   { label: '识别规则包', path: '/admin/recognition-rule-packs' },
   { label: '导出表头', path: '/admin/export-headers' },
