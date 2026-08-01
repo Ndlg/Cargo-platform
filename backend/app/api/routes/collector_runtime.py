@@ -1904,9 +1904,6 @@ def standard_details_for_task(
 def get_collector_from_token(
     db: Session,
     x_collector_token: str | None,
-    *,
-    identity_hint: str | None = None,
-    allow_identity_rebind: bool = False,
 ) -> Collector:
     if not x_collector_token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing collector token.")
@@ -1920,25 +1917,6 @@ def get_collector_from_token(
         )
     ).first()
     if collector is None:
-        identity = str(identity_hint or "").strip()
-        if allow_identity_rebind and identity:
-            identity_matches = db.scalars(
-                select(Collector).where(
-                    Collector.is_enabled.is_(True),
-                    Collector.is_deleted.is_(False),
-                    (Collector.collector_id == identity) | (Collector.source_machine == identity),
-                )
-            ).all()
-            if len(identity_matches) == 1:
-                collector = identity_matches[0]
-                collector.token_hash = token_hash
-                status_payload = collector.status_payload if isinstance(collector.status_payload, dict) else {}
-                collector.status_payload = {
-                    **status_payload,
-                    "token_rebound_at": utc_now(),
-                    "token_rebound_reason": "collector_identity_match",
-                }
-                return collector
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid collector token.")
     return collector
 
@@ -2572,12 +2550,7 @@ def collector_heartbeat(
     db: Session = Depends(get_db),
     x_collector_token: Annotated[str | None, Header(alias="X-Collector-Token")] = None,
 ) -> dict[str, Any]:
-    collector = get_collector_from_token(
-        db,
-        x_collector_token,
-        identity_hint=payload.collector_id or payload.source_machine,
-        allow_identity_rebind=True,
-    )
+    collector = get_collector_from_token(db, x_collector_token)
     collector.online_status = "online"
     collector.last_heartbeat_at = utc_now()
     collector.status_payload = {

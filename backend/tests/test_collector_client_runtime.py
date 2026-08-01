@@ -226,28 +226,51 @@ def test_parse_records_legacy_entry_is_disabled_when_rule_pack_active() -> None:
     assert "旧面单解析入口已停用" in response.json()["detail"]
 
 
-def test_collector_token_rebind_keeps_three_heartbeats_accepted() -> None:
+def test_collector_token_rotation_requires_admin_authorization() -> None:
     with TestClient(app) as client:
         headers = login_headers(client)
-        identities = ["runtime-machine-a", "runtime-machine-b", "runtime-machine-c"]
-        for identity in identities:
-            register_collector(client, headers, identity)
+        identity = "runtime-machine-a"
+        registration = register_collector(client, headers, identity)
+        original_token = str(registration["collector_token"])
+        heartbeat_payload = {
+            "collector_id": identity,
+            "source_machine": identity,
+            "runtime_status": "listening",
+            "adapter_status": {"simulator": {"status": "ready"}},
+            "queue_size": 0,
+        }
 
-        for index, identity in enumerate(identities, start=1):
-            heartbeat = client.post(
-                "/api/v1/collector-runtime/heartbeat",
-                headers={"X-Collector-Token": f"rebound-token-{index}"},
-                json={
-                    "collector_id": identity,
-                    "source_machine": identity,
-                    "runtime_status": "listening",
-                    "adapter_status": {"simulator": {"status": "ready"}},
-                    "queue_size": 0,
-                },
-            )
-            assert heartbeat.status_code == 200
-            assert heartbeat.json()["collector"]["online_status"] == "online"
-            assert heartbeat.json()["collector"]["collector_id"] == identity
+        takeover = client.post(
+            "/api/v1/collector-runtime/heartbeat",
+            headers={"X-Collector-Token": "attacker-selected-token"},
+            json=heartbeat_payload,
+        )
+        assert takeover.status_code == 401
+
+        original_heartbeat = client.post(
+            "/api/v1/collector-runtime/heartbeat",
+            headers={"X-Collector-Token": original_token},
+            json=heartbeat_payload,
+        )
+        assert original_heartbeat.status_code == 200
+
+        rotated = register_collector(client, headers, identity)
+        rotated_token = str(rotated["collector_token"])
+        assert rotated_token != original_token
+
+        old_token_heartbeat = client.post(
+            "/api/v1/collector-runtime/heartbeat",
+            headers={"X-Collector-Token": original_token},
+            json=heartbeat_payload,
+        )
+        assert old_token_heartbeat.status_code == 401
+
+        rotated_heartbeat = client.post(
+            "/api/v1/collector-runtime/heartbeat",
+            headers={"X-Collector-Token": rotated_token},
+            json=heartbeat_payload,
+        )
+        assert rotated_heartbeat.status_code == 200
 
 
 def test_collector_status_reports_client_package_availability(tmp_path, monkeypatch) -> None:
