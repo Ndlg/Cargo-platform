@@ -18,6 +18,8 @@ import {
 import { useSessionStore } from '../../stores/session'
 import { selectCaptureRoundId } from './captureRoundSelection'
 import {
+  isFingerprintFieldsMissingError,
+  learningResultWarnings,
   prepareLearningRows,
   type EditableLearningRow,
 } from './formatLearning'
@@ -37,8 +39,22 @@ const loading = ref(false)
 const preparingKey = ref('')
 const saving = ref(false)
 const error = ref('')
+const fingerprintConfigRequired = ref(false)
+let queueRequestId = 0
+let prepareRequestId = 0
 
 const items = computed(() => queue.value?.items ?? [])
+const lastResultWarnings = computed(() => learningResultWarnings(lastResult.value ?? {}))
+const lastResultDescription = computed(() => {
+  const descriptions: string[] = []
+  if (lastResult.value?.replay_summary) {
+    descriptions.push(
+      `回放通过 ${lastResult.value.replay_summary.passed}/${lastResult.value.replay_summary.total}`,
+    )
+  }
+  descriptions.push(...lastResultWarnings.value)
+  return descriptions.join('；')
+})
 const taskOptions = computed(() =>
   [...tasks.value]
     .sort((a, b) => b.id - a.id)
@@ -108,45 +124,62 @@ async function loadTasks() {
 }
 
 async function loadQueue() {
+  queue.value = null
+  const requestId = ++queueRequestId
+  ++prepareRequestId
   prepared.value = null
   editableRows.value = []
   lastResult.value = null
-  if (!selectedTaskId.value) {
-    queue.value = null
+  preparingKey.value = ''
+  fingerprintConfigRequired.value = false
+  const taskId = selectedTaskId.value
+  const showAll = includeAll.value
+  if (!taskId) {
+    loading.value = false
     return
   }
   loading.value = true
   error.value = ''
   try {
-    queue.value = await getFormatLearningQueue(selectedTaskId.value, includeAll.value)
+    const response = await getFormatLearningQueue(taskId, showAll)
+    if (requestId !== queueRequestId) return
+    queue.value = response
   } catch (err) {
+    if (requestId !== queueRequestId) return
     error.value = err instanceof Error ? err.message : '面单格式学习清单加载失败'
   } finally {
-    loading.value = false
+    if (requestId === queueRequestId) loading.value = false
   }
 }
 
 async function selectItem(item: FormatLearningQueueItem) {
-  if (!selectedTaskId.value || preparingKey.value) return
+  if (!selectedTaskId.value || preparingKey.value || saving.value) return
+  const taskId = selectedTaskId.value
+  const requestId = ++prepareRequestId
   preparingKey.value = itemKey(item)
   error.value = ''
+  fingerprintConfigRequired.value = false
   lastResult.value = null
   try {
-    prepared.value = await prepareFormatLearning(selectedTaskId.value, {
+    const response = await prepareFormatLearning(taskId, {
       raw_record_id: item.raw_record_id,
       document_sequence: item.document_sequence,
       parent_sequence: item.parent_sequence,
     })
-    const initialRows = item.rows.length ? item.rows : prepared.value.rows
+    if (requestId !== prepareRequestId) return
+    prepared.value = response
+    const initialRows = item.rows.length ? item.rows : response.rows
     editableRows.value = initialRows.length
       ? initialRows.map((row) => ({ ...row }))
       : [emptyRow()]
   } catch (err) {
+    if (requestId !== prepareRequestId) return
     prepared.value = null
     editableRows.value = []
+    fingerprintConfigRequired.value = isFingerprintFieldsMissingError(err)
     error.value = err instanceof Error ? err.message : '面单学习字段读取失败'
   } finally {
-    preparingKey.value = ''
+    if (requestId === prepareRequestId) preparingKey.value = ''
   }
 }
 
@@ -177,7 +210,12 @@ async function saveLearning() {
       expected_evidence_sha256: prepared.value.evidence_sha256,
       rows: result.rows,
     })
-    ElMessage.success(learned.message || '规则已保存并完成回放校验')
+    const warnings = learningResultWarnings(learned)
+    if (warnings.length) {
+      ElMessage.warning('规则已保存，但后续处理存在警告')
+    } else {
+      ElMessage.success(learned.message || '规则已保存并完成回放校验')
+    }
     prepared.value = null
     editableRows.value = []
     await loadQueue()
@@ -209,24 +247,40 @@ onMounted(async () => {
       <h1>面单格式学习</h1>
       <p>管理员只核对五个业务字段；系统负责生成规则、回放校验并重新解析受影响的采集轮次。</p>
     </div>
-    <el-button :loading="loading" @click="loadQueue">刷新清单</el-button>
+    <el-button
+      :disabled="Boolean(preparingKey) || saving"
+      :loading="loading"
+      @click="loadQueue"
+    >
+      刷新清单
+    </el-button>
   </section>
 
-  <el-alert v-if="error" :closable="false" :title="error" show-icon type="error" />
+  <div v-if="error" class="error-panel">
+    <el-alert :closable="false" :title="error" show-icon type="error" />
+    <el-button
+      v-if="fingerprintConfigRequired"
+      plain
+      type="primary"
+      @click="router.push('/admin/fingerprint-settings')"
+    >
+      前往面单指纹配置
+    </el-button>
+  </div>
   <el-alert
     v-else-if="lastResult"
     :closable="false"
-    :title="lastResult.message"
-    :description="lastResult.replay_summary ? `回放通过 ${lastResult.replay_summary.passed}/${lastResult.replay_summary.total}` : ''"
+    :title="lastResultWarnings.length ? '规则已保存，但后续处理存在警告' : lastResult.message"
+    :description="lastResultDescription"
     show-icon
-    type="success"
+    :type="lastResultWarnings.length ? 'warning' : 'success'"
   />
 
   <section class="work-surface toolbar">
     <span>采集轮次</span>
     <el-select
       v-model="selectedTaskId"
-      :disabled="loading"
+      :disabled="loading || Boolean(preparingKey) || saving"
       placeholder="选择采集轮次"
       @change="loadQueue"
     >
@@ -240,6 +294,7 @@ onMounted(async () => {
     <el-switch
       v-model="includeAll"
       active-text="显示全部面单，可修正已识别规则"
+      :disabled="loading || Boolean(preparingKey) || saving"
       @change="loadQueue"
     />
     <el-tag type="warning">{{ queue?.summary.learning_required_count ?? 0 }} 张待学习</el-tag>
@@ -263,6 +318,7 @@ onMounted(async () => {
           class="queue-card"
           :class="{ active: prepared && itemKey(item) === `${prepared.raw_record_id}:${prepared.document_sequence}:${prepared.parent_sequence}` }"
           :aria-pressed="Boolean(prepared && itemKey(item) === `${prepared.raw_record_id}:${prepared.document_sequence}:${prepared.parent_sequence}`)"
+          :disabled="Boolean(preparingKey) || saving"
           type="button"
           @click="selectItem(item)"
         >
@@ -371,6 +427,17 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+.error-panel {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.error-panel .el-alert {
+  flex: 1;
+}
+
 .toolbar,
 .section-heading,
 .row-heading,

@@ -540,7 +540,11 @@ export interface FormatLearningResultResponse extends ApiRecord {
     passed: number
     total: number
   }
-  reruns?: ApiRecord[]
+  reruns?: Array<ApiRecord & {
+    task_id?: number
+    status?: string
+    error?: string
+  }>
   warnings?: string[]
 }
 

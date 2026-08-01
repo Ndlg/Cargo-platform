@@ -79,6 +79,31 @@ assert.deepEqual(learning.prepareLearningRows([
   message: '第 1 行数量必须是大于 0 的整数',
 })
 
+assert.deepEqual(
+  learning.learningResultWarnings({
+    warnings: [
+      '规则已保存，但有一项提醒',
+      '采集轮次 62 重算失败：解析服务超时',
+    ],
+    reruns: [
+      { task_id: 61, status: 'completed' },
+      { task_id: 62, status: 'failed', error: '解析服务超时' },
+    ],
+  }),
+  [
+    '规则已保存，但有一项提醒',
+    '采集轮次 62 重算失败：解析服务超时',
+  ],
+  'warnings and failed reruns must remain visible instead of being reported as unconditional success',
+)
+assert.equal(
+  learning.isFingerprintFieldsMissingError(
+    new Error('提交内容校验未通过：当前租户尚未配置该面单指纹的学习字段。'),
+  ),
+  true,
+)
+assert.equal(learning.isFingerprintFieldsMissingError(new Error('服务器处理失败')), false)
+
 const apiSource = await readFile(new URL('../src/services/api.ts', import.meta.url), 'utf8')
 const viewSource = await readFile(
   new URL('../src/views/workbench/FormatLearningView.vue', import.meta.url),
@@ -98,6 +123,25 @@ assert.match(
   viewSource,
   /expected_evidence_sha256:\s*prepared\.value\.evidence_sha256/,
   'saving must return the exact digest received during prepare',
+)
+assert.match(
+  viewSource,
+  /v-if="fingerprintConfigRequired"[\s\S]*?前往面单指纹配置/,
+  'a prepare failure caused by missing fingerprint fields must expose the configuration action outside the editor',
+)
+assert.ok(
+  [...viewSource.matchAll(/:disabled="loading \|\| Boolean\(preparingKey\) \|\| saving"/g)].length >= 2,
+  'capture round and include-all controls must both be disabled while preparing or saving',
+)
+assert.match(
+  viewSource,
+  /queue\.value = null[\s\S]*?const requestId = \+\+queueRequestId[\s\S]*?requestId !== queueRequestId/,
+  'queue loading must clear stale data and discard superseded responses',
+)
+assert.match(
+  viewSource,
+  /const requestId = \+\+prepareRequestId[\s\S]*?requestId !== prepareRequestId/,
+  'prepare loading must discard superseded responses',
 )
 
 console.log('format learning flow contracts passed')

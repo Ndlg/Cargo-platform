@@ -12,6 +12,11 @@ export type PreparedLearningRows =
   | { ok: true; rows: LearningRow[] }
   | { ok: false; message: string }
 
+type LearningResultLike = {
+  warnings?: unknown
+  reruns?: unknown
+}
+
 export function prepareLearningRows(rows: EditableLearningRow[]): PreparedLearningRows {
   if (!rows.length) return { ok: false, message: '至少保留一条商品行' }
 
@@ -34,4 +39,33 @@ export function prepareLearningRows(rows: EditableLearningRow[]): PreparedLearni
     })
   }
   return { ok: true, rows: prepared }
+}
+
+export function learningResultWarnings(result: LearningResultLike): string[] {
+  const messages = new Set<string>()
+  if (Array.isArray(result.warnings)) {
+    for (const warning of result.warnings) {
+      if (typeof warning === 'string' && warning.trim()) messages.add(warning.trim())
+    }
+  }
+
+  if (Array.isArray(result.reruns)) {
+    for (const rerun of result.reruns) {
+      if (!rerun || typeof rerun !== 'object') continue
+      const record = rerun as Record<string, unknown>
+      if (record.status !== 'failed') continue
+      const taskId = typeof record.task_id === 'number' ? String(record.task_id) : '未知'
+      const error = typeof record.error === 'string' && record.error.trim()
+        ? `：${record.error.trim()}`
+        : ''
+      messages.add(`采集轮次 ${taskId} 重算失败${error}`)
+    }
+  }
+
+  return [...messages]
+}
+
+export function isFingerprintFieldsMissingError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '')
+  return /尚未配置该面单指纹的学习字段|未配置.*面单指纹.*字段/.test(message)
 }
