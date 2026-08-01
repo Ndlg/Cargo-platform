@@ -1,0 +1,15 @@
+services:
+  backend:
+    image: sha256:9cf468c2e7e1dbeceaff0acb70b712f48054057437f63eec84f643036bcda3e1
+    environment:
+      APP_VERSION: no-model-00a58e20
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=3)"]
+  ui:
+    image: sha256:94a59a8eb203a7b89b879982342e50fa7713e30aab16688096ebd17a03badf15
+  waybill-parser:
+    image: sha256:f0c5ec997675deb2c18166db168d2e397185a89e3a98855f3292ad8b5627183f
+    environment:
+      APP_VERSION: no-model-00a58e20
+  platform-admin-ui:
+    image: sha256:88b014ee162174dddab0322c9e4309a76036960c39d942bafd662e9c61111dbc

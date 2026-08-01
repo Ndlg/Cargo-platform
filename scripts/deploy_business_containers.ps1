@@ -104,8 +104,10 @@ foreach ($service in $previousImages.Keys) {
     $escapedImage = ([string]$previousImages[$service]).Replace("'", "''")
     $rollbackLines += "  ${service}:"
     $rollbackLines += "    image: '$escapedImage'"
-    $rollbackLines += "    healthcheck:"
-    $rollbackLines += "      disable: true"
+    if ($service -eq "backend") {
+        $rollbackLines += "    healthcheck:"
+        $rollbackLines += '      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen(''http://127.0.0.1:8000/api/v1/health'', timeout=3)"]'
+    }
     if ($previousAppVersions.Contains($service)) {
         $escapedVersion = ([string]$previousAppVersions[$service]).Replace("'", "''")
         $rollbackLines += "    environment:"

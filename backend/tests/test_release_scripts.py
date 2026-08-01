@@ -43,6 +43,8 @@ def test_business_deploy_takes_verified_snapshot_before_recreate() -> None:
     assert "target_image_ids" in source
     assert "Existing release is incomplete" in source
     assert "rollback verification failed" in source
+    assert "disable: true" not in source
+    assert "http://127.0.0.1:8000/api/v1/health" in source
 
 
 def test_release_compose_requires_one_version_and_runtime_guards() -> None:
