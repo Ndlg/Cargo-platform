@@ -152,10 +152,10 @@ def validate_profile_provenance(value: object, prefix: str) -> list[str]:
         return []
     if (
         not isinstance(value, dict)
-        or set(value) != {"source", "learning_session_id"}
-        or value.get("source") != "confirmed_ai_rule"
-        or not isinstance(value.get("learning_session_id"), str)
-        or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value["learning_session_id"])
+        or set(value) != {"source", "learning_record_id"}
+        or value.get("source") != "confirmed_learning_rule"
+        or not isinstance(value.get("learning_record_id"), str)
+        or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value["learning_record_id"])
     ):
         return [f"{prefix}.provenance"]
     return []
@@ -1088,8 +1088,8 @@ def parse_declarative_payload(
     compiled_rule = {
         "source": text_value(provenance.get("source")) or "declarative_rule",
         **(
-            {"learning_session_id": text_value(provenance.get("learning_session_id"))}
-            if text_value(provenance.get("learning_session_id"))
+            {"learning_record_id": text_value(provenance.get("learning_record_id"))}
+            if text_value(provenance.get("learning_record_id"))
             else {}
         ),
         "rule_pack_code": text_value(rule_pack_code),
@@ -1097,7 +1097,6 @@ def parse_declarative_payload(
         "fingerprint": fingerprint,
         "grammar_signature": text_value(profile.get("grammar_signature")),
         "strategy": text_value(profile.get("strategy")),
-        "ai_call_count": 0,
     }
     parent = replace(
         parent,

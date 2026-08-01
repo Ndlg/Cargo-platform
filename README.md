@@ -38,25 +38,13 @@ See:
 
 ## Release deployment
 
-Copy `deploy.env.example` to `.env`, replace both secrets, then start the core
+Copy `deploy.env.example` to `.env`, replace the secret, then start the core
 platform:
 
 ```powershell
 docker compose --env-file .env -f docker-compose.release.yml up -d
 ```
 
-To enable the isolated local-AI rule-learning workflow, include the optional AI
-file:
-
-```powershell
-docker compose --env-file .env -f docker-compose.release.yml -f docker-compose.ai.yml up -d
-docker exec cargo-platform-local-model ollama pull qwen3.5:4b-q4_K_M
-```
-
-AI sessions are opened from the platform's `AI 面单解析` page; the AI service
-has no browser-facing port. If only that internal service is unavailable,
-already confirmed declarative rules continue to parse known formats; unfamiliar
-formats remain reviewable exceptions.
-
-Release `0.2.0-rc.1` publishes five version-matched images: backend, tenant UI,
-admin UI, waybill parser, and AI recognition. See `CHANGELOG.md`.
+The release publishes four version-matched images: backend, tenant UI,
+admin UI, and waybill parser. Recognition is performed by declarative rules;
+unsupported formats remain reviewable exceptions. See `CHANGELOG.md`.

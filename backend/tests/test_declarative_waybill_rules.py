@@ -78,7 +78,7 @@ def structured_profile(rules: Any, payload: dict[str, Any]) -> dict[str, Any]:
 def declarative_pack(profiles: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "contract_version": "recognition_rule_pack_v1",
-        "pack": {"code": "ai-cold-start-r0001", "name": "AI 冷启动规则", "version": "1.0.0"},
+        "pack": {"code": "adaptive-recognition-main", "name": "自适应识别规则包", "version": "1.0.0"},
         "parser_policy": {
             "requires_active_rule_pack": True,
             "order_row_parser": "declarative_v1",
@@ -190,7 +190,7 @@ def test_same_structure_new_values_reuses_profile() -> None:
     assert response.json()["rows"][0]["product"] == "范30/联名"
 
 
-def test_confirmed_ai_rule_reports_compiled_rule_provenance_without_ai_call() -> None:
+def test_confirmed_learning_rule_reports_compiled_rule_provenance() -> None:
     app, rules = load_parser()
     document = one_document()
     profile = structured_profile(rules, document)
@@ -200,8 +200,8 @@ def test_confirmed_ai_rule_reports_compiled_rule_provenance_without_ai_call() ->
         None,
     )["grammar_signature"]
     profile["provenance"] = {
-        "source": "confirmed_ai_rule",
-        "learning_session_id": "session-provenance",
+        "source": "confirmed_learning_rule",
+        "learning_record_id": "sample-provenance",
     }
 
     with TestClient(app) as client:
@@ -215,14 +215,13 @@ def test_confirmed_ai_rule_reports_compiled_rule_provenance_without_ai_call() ->
         )
 
     expected = {
-        "source": "confirmed_ai_rule",
-        "learning_session_id": "session-provenance",
-        "rule_pack_code": "ai-cold-start-r0001",
+        "source": "confirmed_learning_rule",
+        "learning_record_id": "sample-provenance",
+        "rule_pack_code": "adaptive-recognition-main",
         "rule_pack_version": "1.0.0",
         "fingerprint": profile["fingerprint"],
         "grammar_signature": profile["grammar_signature"],
         "strategy": "structured_items_v1",
-        "ai_call_count": 0,
     }
     body = response.json()
     assert body["status"] == "parsed"
@@ -237,7 +236,7 @@ def test_declarative_profile_rejects_untrusted_provenance() -> None:
         **structured_profile(rules, document),
         "provenance": {
             "source": "hidden_builtin",
-            "learning_session_id": "session-provenance",
+            "learning_record_id": "sample-provenance",
         },
     }
 

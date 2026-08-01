@@ -62,10 +62,6 @@ jobs:
             context: .
             dockerfile: services/waybill-parser/Dockerfile
             build_args: ""
-          - image: cargo-platform-ai-recognition
-            context: .
-            dockerfile: services/ai-recognition/Dockerfile
-            build_args: ""
     steps:
       - uses: actions/checkout@v4
 

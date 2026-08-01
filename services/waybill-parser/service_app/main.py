@@ -8,10 +8,6 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from service_app.ai_client import (
-    AiRecognitionUnavailable,
-    recognize_with_ai,
-)
 from service_app.declarative_rules import (
     parse_declarative_payload,
     validate_format_profiles,
@@ -27,7 +23,7 @@ from service_app.order_row_engine import (
     order_row_draft_summary,
 )
 from service_app.rule_synthesizer import synthesize_rule as synthesize_waybill_rule
-from services.shared.waybill_fingerprint import inspect_fingerprint
+from services.shared.waybill_fingerprint import fingerprint_catalog, inspect_fingerprint
 
 
 app = FastAPI(
@@ -60,28 +56,6 @@ REQUIRED_MULTI_ITEM_FIELDS = (
     "pair_product_lines_with_labeled_attr_lines",
     "output_item_rows",
 )
-PENDING_AI_SESSION_STATUSES = {
-    "model_running",
-    "approving",
-    "ai_rule_pending",
-    "candidate_invalid",
-    "ai_rule_invalid",
-    "ai_result_invalid",
-}
-AI_STATUS_MESSAGES = {
-    "model_running": "AI 正在识别当前面单，请稍后刷新。",
-    "approving": "管理员确认正在生成识别规则，请稍后刷新。",
-    "ai_rule_pending": "AI 已生成候选结果，请管理员确认后生成识别规则。",
-    "candidate_invalid": "AI 候选结果不完整，请管理员修正五个业务字段后确认。",
-    "ai_rule_invalid": "管理员确认未生成有效识别规则，请修正业务字段后重试。",
-    "ai_result_invalid": "AI 返回结果不符合五字段要求，请管理员修正后确认。",
-    "ai_unavailable": "AI 识别服务不可用，请检查服务配置或稍后重试。",
-    "ai_parse_failed": "AI 识别结果处理失败，请检查当前面单字段后重试。",
-    "fingerprint_adapter_required": "当前面单格式尚未接入字段适配器，请先维护该格式的字段适配后重试。",
-    "fingerprint_field_selection_required": "当前面单格式尚未选择提供给 AI 的字段，请先在指纹配置中选择至少一个非空字段后重试。",
-}
-
-
 class StandardDetailParseInput(BaseModel):
     standard_detail_id: int
     parent_sequence: int
@@ -96,7 +70,6 @@ class RawRecordParseInput(BaseModel):
     source_component: str | None = None
     source_index: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
-    ai_field_selections: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class WaybillSampleParseInput(BaseModel):
@@ -113,13 +86,11 @@ class WaybillSampleParseInput(BaseModel):
 
 
 class BatchParseRequest(BaseModel):
-    workspace_id: int | None = None
     task_id: int | None = None
     standard_details: list[StandardDetailParseInput] = Field(default_factory=list)
     raw_records: list[RawRecordParseInput] = Field(default_factory=list)
     waybill_samples: list[WaybillSampleParseInput] = Field(default_factory=list)
     rule_pack: dict[str, Any] | None = None
-    allow_ai: bool = False
 
 
 class RulePackRequest(BaseModel):
@@ -419,169 +390,6 @@ def empty_parent(
     )
 
 
-def safe_ai_session(result: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "session_id": str(result.get("session_id") or ""),
-        "status": str(result.get("status") or ""),
-        "fingerprint": str(result.get("fingerprint") or ""),
-        "console_url": str(result.get("console_url") or ""),
-        "error": str(result.get("error") or ""),
-    }
-
-
-def ai_diagnostic(
-    *,
-    workspace_id: int,
-    task_id: int,
-    record: RawRecordParseInput,
-    document_payload: dict[str, Any],
-    document_sequence: int,
-    parent: ParentWaybillDraft,
-    deterministic_reason: str,
-) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    try:
-        source_component = str(record.source_component or "unknown")
-        inspection = inspect_fingerprint(document_payload, source_component)
-        fingerprint_code = inspection["fingerprint_code"] if inspection else "UNKNOWN"
-        selected_fields = record.ai_field_selections.get(fingerprint_code)
-        if fingerprint_code == "UNKNOWN" or not selected_fields:
-            reason = (
-                "fingerprint_adapter_required"
-                if fingerprint_code == "UNKNOWN"
-                else "fingerprint_field_selection_required"
-            )
-            return {
-                "raw_record_id": record.raw_record_id,
-                "parent_label": parent.parent_label,
-                "fingerprint": fingerprint_code,
-                "reason": reason,
-                "deterministic_reason": deterministic_reason,
-            }, None
-        evidence = build_evidence(document_payload, source_component, selected_fields)
-        if not evidence["spans"]:
-            return {
-                "raw_record_id": record.raw_record_id,
-                "parent_label": parent.parent_label,
-                "fingerprint": evidence["fingerprint_code"],
-                "reason": "fingerprint_adapter_required",
-                "deterministic_reason": deterministic_reason,
-            }, None
-        result = recognize_with_ai(
-            workspace_id=workspace_id,
-            task_id=task_id,
-            raw_record_id=record.raw_record_id,
-            document_sequence=document_sequence,
-            source_component=source_component,
-            deterministic_failure_reason=deterministic_reason,
-            evidence=evidence,
-        )
-        session = safe_ai_session(result)
-        return {
-            "raw_record_id": record.raw_record_id,
-            "parent_label": parent.parent_label,
-            "fingerprint": session["fingerprint"],
-            "reason": session["status"],
-            "deterministic_reason": deterministic_reason,
-            "session_id": session["session_id"],
-            "console_url": session["console_url"],
-            "error": session["error"],
-        }, session
-    except AiRecognitionUnavailable as exc:
-        return {
-            "raw_record_id": record.raw_record_id,
-            "parent_label": parent.parent_label,
-            "fingerprint": "",
-            "reason": "ai_unavailable",
-            "deterministic_reason": deterministic_reason,
-            "error": str(exc)[:2000],
-        }, None
-    except (ValueError, TypeError, KeyError) as exc:
-        return {
-            "raw_record_id": record.raw_record_id,
-            "parent_label": parent.parent_label,
-            "fingerprint": "",
-            "reason": "ai_parse_failed",
-            "deterministic_reason": deterministic_reason,
-            "error": str(exc)[:2000],
-        }, None
-
-
-def overall_ai_status(diagnostics: list[dict[str, Any]]) -> str:
-    reasons = {str(diagnostic.get("reason") or "") for diagnostic in diagnostics}
-    if "fingerprint_adapter_required" in reasons:
-        return "fingerprint_adapter_required"
-    if "fingerprint_field_selection_required" in reasons:
-        return "fingerprint_field_selection_required"
-    if "ai_unavailable" in reasons:
-        return "ai_unavailable"
-    if "ai_parse_failed" in reasons:
-        return "ai_parse_failed"
-    if "model_running" in reasons:
-        return "model_running"
-    if "approving" in reasons:
-        return "approving"
-    if "candidate_invalid" in reasons:
-        return "candidate_invalid"
-    if "ai_result_invalid" in reasons:
-        return "ai_result_invalid"
-    if "ai_rule_invalid" in reasons:
-        return "ai_rule_invalid"
-    return "ai_rule_pending"
-
-
-def ai_fallback_response(payload: BatchParseRequest, deterministic_reason: str) -> dict[str, Any]:
-    parents: list[ParentWaybillDraft] = []
-    diagnostics: list[dict[str, Any]] = []
-    sessions: list[dict[str, Any]] = []
-    next_parent_sequence = 1
-    for record in payload.raw_records:
-        document_payloads = raw_record_document_payloads(record)
-        first_parent_sequence = record.parent_sequence or next_parent_sequence
-        for document_offset, document_payload in enumerate(document_payloads):
-            parent = empty_parent(
-                raw_record_id=record.raw_record_id,
-                task_id=record.task_id,
-                source_component=record.source_component,
-                source_index=record.source_index,
-                parent_sequence=first_parent_sequence + document_offset,
-            )
-            diagnostic, session = ai_diagnostic(
-                workspace_id=int(payload.workspace_id),
-                task_id=int(payload.task_id),
-                record=record,
-                document_payload=document_payload,
-                document_sequence=record.document_sequence + document_offset,
-                parent=parent,
-                deterministic_reason=deterministic_reason,
-            )
-            parents.append(parent)
-            diagnostics.append(diagnostic)
-            if session is not None:
-                sessions.append(session)
-        next_parent_sequence = first_parent_sequence + len(document_payloads)
-
-    summary = order_row_draft_summary(parents)
-    summary["needs_review_count"] = len(parents)
-    summary["pending_rule_pack_count"] = sum(
-        diagnostic["reason"] in PENDING_AI_SESSION_STATUSES
-        for diagnostic in diagnostics
-    )
-    status = overall_ai_status(diagnostics)
-    return {
-        "contract_version": ORDER_ROW_DRAFTS_CONTRACT_VERSION,
-        "task_id": payload.task_id,
-        "status": status,
-        "rule_pack_required": deterministic_reason == "rule_pack_missing",
-        "message": AI_STATUS_MESSAGES.get(status, "AI 识别需要管理员确认后才能生成订单行。"),
-        "summary": summary,
-        "recognition_rule_pack": None,
-        "diagnostics": diagnostics,
-        "ai_sessions": sessions,
-        "parents": [parent.as_dict() for parent in parents],
-        "rows": [],
-    }
-
-
 @app.get("/health")
 @app.get("/api/v1/health")
 def health() -> dict[str, str]:
@@ -589,6 +397,25 @@ def health() -> dict[str, str]:
         "status": "ok",
         "app": "Cargo Platform Waybill Parser",
         "contract_version": ORDER_ROW_DRAFTS_CONTRACT_VERSION,
+    }
+
+
+@app.get("/api/v1/fingerprints")
+def list_fingerprints() -> dict[str, Any]:
+    return {
+        "contract_version": "waybill_fingerprints_v1",
+        "fingerprints": fingerprint_catalog(),
+    }
+
+
+@app.post("/api/v1/fingerprints/inspect")
+def inspect_waybill_fingerprint(payload: AnalyzeRequest) -> dict[str, Any]:
+    return {
+        "contract_version": "waybill_fingerprints_v1",
+        "fingerprint": inspect_fingerprint(
+            payload.raw_payload,
+            payload.source_component,
+        ),
     }
 
 
@@ -687,21 +514,7 @@ def parse_preview(payload: BatchParseRequest) -> dict[str, Any]:
 @app.post("/api/v1/parse/batch")
 def parse_batch(payload: BatchParseRequest) -> dict[str, Any]:
     input_count = len(payload.standard_details) + len(payload.waybill_samples) + len(payload.raw_records)
-    if payload.allow_ai and (
-        payload.standard_details
-        or payload.waybill_samples
-        or len(payload.raw_records) != 1
-        or len(raw_record_document_payloads(payload.raw_records[0])) != 1
-    ):
-        raise HTTPException(status_code=422, detail="AI recognition accepts exactly one raw waybill.")
     if not payload.rule_pack:
-        if (
-            payload.allow_ai
-            and payload.workspace_id is not None
-            and payload.task_id is not None
-            and payload.raw_records
-        ):
-            return ai_fallback_response(payload, "rule_pack_missing")
         return {
             "contract_version": ORDER_ROW_DRAFTS_CONTRACT_VERSION,
             "task_id": payload.task_id,
@@ -786,7 +599,6 @@ def parse_batch(payload: BatchParseRequest) -> dict[str, Any]:
         next_parent_sequence = len(parents) + 1
         profiles = parser_policy["format_profiles"]
         pack_meta = payload.rule_pack["pack"]
-        ai_sessions: list[dict[str, Any]] = []
         unresolved_parent_count = 0
         for record in payload.raw_records:
             document_payloads = raw_record_document_payloads(record)
@@ -805,24 +617,9 @@ def parse_batch(payload: BatchParseRequest) -> dict[str, Any]:
                     rule_pack_code=str(pack_meta.get("code") or ""),
                     rule_pack_version=str(pack_meta.get("version") or ""),
                 )
+                diagnostic["document_sequence"] = record.document_sequence + document_offset
+                diagnostic["parent_sequence"] = first_parent_sequence + document_offset
                 if diagnostic["reason"]:
-                    deterministic_reason = str(diagnostic["reason"])
-                    if (
-                        payload.allow_ai
-                        and payload.workspace_id is not None
-                        and payload.task_id is not None
-                    ):
-                        diagnostic, session = ai_diagnostic(
-                            workspace_id=int(payload.workspace_id),
-                            task_id=int(payload.task_id),
-                            record=record,
-                            document_payload=document_payload,
-                            document_sequence=record.document_sequence + document_offset,
-                            parent=parent,
-                            deterministic_reason=deterministic_reason,
-                        )
-                        if session is not None:
-                            ai_sessions.append(session)
                     parent = empty_parent(
                         raw_record_id=record.raw_record_id,
                         task_id=record.task_id,
@@ -836,41 +633,21 @@ def parse_batch(payload: BatchParseRequest) -> dict[str, Any]:
             next_parent_sequence = first_parent_sequence + len(document_payloads)
 
         reasons = {diagnostic["reason"] for diagnostic in diagnostics if diagnostic["reason"]}
-        ai_reasons = reasons & {
-            *PENDING_AI_SESSION_STATUSES,
-            "ai_unavailable",
-            "ai_parse_failed",
-            "fingerprint_adapter_required",
-            "fingerprint_field_selection_required",
-        }
-        if ai_reasons:
-            parse_status = overall_ai_status(diagnostics)
-        else:
-            parse_status = (
-                "format_profile_missing"
-                if "format_profile_missing" in reasons
-                else "format_profile_incomplete"
-                if reasons
-                else "parsed"
-            )
+        parse_status = (
+            "format_profile_missing"
+            if "format_profile_missing" in reasons
+            else "format_profile_incomplete"
+            if reasons
+            else "parsed"
+        )
         summary = order_row_draft_summary(parents)
         summary["needs_review_count"] += unresolved_parent_count
-        summary["pending_rule_pack_count"] = sum(
-            diagnostic["reason"] in PENDING_AI_SESSION_STATUSES
-            for diagnostic in diagnostics
-        )
         return {
             "contract_version": ORDER_ROW_DRAFTS_CONTRACT_VERSION,
             "task_id": payload.task_id,
             "status": parse_status,
-            **(
-                {"message": AI_STATUS_MESSAGES[parse_status]}
-                if parse_status in AI_STATUS_MESSAGES
-                else {}
-            ),
             "summary": summary,
             "diagnostics": diagnostics,
-            "ai_sessions": ai_sessions,
             "parents": [parent.as_dict() for parent in parents],
             "rows": [row.as_dict() for parent in parents for row in parent.rows],
         }
