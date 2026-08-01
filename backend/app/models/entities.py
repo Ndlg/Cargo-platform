@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, JSON, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Index, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import BaseModel, WorkspaceModel
@@ -61,6 +61,14 @@ class Collector(WorkspaceModel):
     online_status: Mapped[str] = mapped_column(String(32), default="offline", nullable=False)
     last_heartbeat_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    protocol_revision: Mapped[int] = mapped_column(default=0, nullable=False)
+    assignment_protocol_version: Mapped[int] = mapped_column(default=1, nullable=False)
+    assignment_protocol_lease_expires_at: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    assignment_protocol_bridge_expires_at: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
     remark: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
@@ -88,6 +96,14 @@ class CaptureBatch(WorkspaceModel):
 
 class RawCaptureRecord(WorkspaceModel):
     __tablename__ = "raw_capture_records"
+    __table_args__ = (
+        Index(
+            "ux_raw_capture_records_workspace_event",
+            "workspace_id",
+            "capture_event_key",
+            unique=True,
+        ),
+    )
 
     capture_batch_id: Mapped[int | None] = mapped_column(nullable=True)
     task_id: Mapped[int | None] = mapped_column(nullable=True)
@@ -96,6 +112,7 @@ class RawCaptureRecord(WorkspaceModel):
     source_machine: Mapped[str | None] = mapped_column(String(128), nullable=True)
     source_component: Mapped[str | None] = mapped_column(String(128), nullable=True)
     source_index: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    capture_event_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
     dedupe_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
     captured_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
     waybill_mode: Mapped[str | None] = mapped_column(String(128), nullable=True)

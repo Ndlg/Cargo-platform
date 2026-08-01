@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+from types import SimpleNamespace
 from pathlib import Path
 
 
@@ -49,6 +50,44 @@ ACTIVE_RULE_PACK_PAYLOAD = {
         "quantity": {"default_if_missing": 1},
     },
 }
+
+
+def test_task_readers_do_not_truncate_after_ten_thousand_rows() -> None:
+    target_detail = SimpleNamespace(field_values={"capture_task_id": 8802})
+    details = [
+        SimpleNamespace(field_values={"capture_task_id": 1})
+        for _ in range(10_000)
+    ] + [target_detail]
+    raw_records = [object() for _ in range(10_001)]
+
+    class Result:
+        def __init__(self, values):
+            self.values = values
+
+        def all(self):
+            return self.values
+
+    class Session:
+        def __init__(self):
+            self.results = [details, raw_records]
+
+        def scalars(self, statement):
+            assert statement._limit_clause is None
+            return Result(self.results.pop(0))
+
+    db = Session()
+    assert order_row_reader_service.standard_details_for_task(
+        db,
+        workspace_id=1,
+        task_id=8802,
+    ) == [target_detail]
+    assert len(
+        order_row_reader_service.raw_records_for_task(
+            db,
+            workspace_id=1,
+            task_id=8802,
+        )
+    ) == 10_001
 
 
 def activate_test_rule_pack() -> None:
@@ -324,6 +363,7 @@ def test_raw_record_parser_inputs_preserve_complete_source_payload() -> None:
         task_id=42,
         source_component="cainiao-cnprint",
         source_index="2639",
+        source_columns={"capture_assignment": "timestamp_invalid_fallback"},
         payload_format="json",
         raw_payload=json.dumps(
             {
@@ -343,6 +383,7 @@ def test_raw_record_parser_inputs_preserve_complete_source_payload() -> None:
 
     assert len(inputs) == 1
     assert "parent_sequence" not in inputs[0]
+    assert inputs[0]["assignment_warning"] == "timestamp_invalid_fallback"
     assert [
         document["documentID"]
         for document in inputs[0]["payload"]["task"]["documents"]

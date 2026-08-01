@@ -34,7 +34,12 @@ type ExceptionStatus =
   | 'unmatched'
   | 'special'
 
-type RepairTarget = 'product-matching' | 'product-assets' | 'format-learning' | null
+type RepairTarget =
+  | 'product-matching'
+  | 'product-assets'
+  | 'format-learning'
+  | 'collector-connections'
+  | null
 
 type ExceptionDefinition = {
   label: string
@@ -91,6 +96,21 @@ const exceptionDefinitions: Record<ExceptionStatus, ExceptionDefinition> = {
     advice: '特殊单无需处理',
     actionLabel: '',
     target: null,
+  },
+}
+
+const collectorExceptionDefinitions: Record<string, ExceptionDefinition> = {
+  timestamp_invalid_fallback: {
+    label: '采集时间异常',
+    advice: '检查业务机时间和采集器状态',
+    actionLabel: '检查采集连接',
+    target: 'collector-connections',
+  },
+  source_history_ambiguous: {
+    label: '采集源历史异常',
+    advice: '检查业务机打印数据库和采集器状态',
+    actionLabel: '检查采集连接',
+    target: 'collector-connections',
   },
 }
 
@@ -201,9 +221,9 @@ function exceptionCountByStatus(status: ExceptionStatus): number {
   return status === 'pending' ? count + parseExceptionCount.value : count
 }
 
-function statusLabel(status: string): string {
-  if (status === 'matched') return '已匹配'
-  return (exceptionDefinition(status)?.label ?? status) || '-'
+function statusLabel(row: RecognitionPreviewRow): string {
+  if (row.status === 'matched') return '已匹配'
+  return (exceptionDefinitionFor(row)?.label ?? row.status) || '-'
 }
 
 function statusTag(status: string): 'success' | 'warning' | 'danger' | 'info' {
@@ -232,15 +252,22 @@ function valueText(value: unknown, fallback = '-'): string {
 }
 
 function exceptionAdvice(row: RecognitionPreviewRow): string {
-  return exceptionDefinition(row.status)?.advice ?? '暂无处理入口'
+  return exceptionDefinitionFor(row)?.advice ?? '暂无处理入口'
 }
 
 function repairTarget(row: RecognitionPreviewRow): string {
-  return exceptionDefinition(row.status)?.actionLabel ?? ''
+  return exceptionDefinitionFor(row)?.actionLabel ?? ''
 }
 
 function exceptionDefinition(status: string): ExceptionDefinition | null {
   return exceptionDefinitions[status as ExceptionStatus] ?? null
+}
+
+function exceptionDefinitionFor(row: RecognitionPreviewRow): ExceptionDefinition | null {
+  if (row.exception_code && collectorExceptionDefinitions[row.exception_code]) {
+    return collectorExceptionDefinitions[row.exception_code]
+  }
+  return exceptionDefinition(row.status)
 }
 
 function repairQuery(row: RecognitionPreviewRow): Record<string, string> {
@@ -260,13 +287,14 @@ function repairQuery(row: RecognitionPreviewRow): Record<string, string> {
   if (row.remark_text) query.remark = row.remark_text
   if (row.image_match_text) query.image_match_text = row.image_match_text
   if (row.reason) query.reason = row.reason
+  if (row.exception_code) query.exception_code = row.exception_code
   if (row.rule_id) query.rule_id = String(row.rule_id)
   if (row.status === 'sku_ambiguous') query.focus = 'sku'
   return query
 }
 
 function repairRoute(row: RecognitionPreviewRow) {
-  const definition = exceptionDefinition(row.status)
+  const definition = exceptionDefinitionFor(row)
   if (!definition?.target) return null
 
   if (definition.target === 'format-learning') {
@@ -281,6 +309,13 @@ function repairRoute(row: RecognitionPreviewRow) {
     return {
       path: '/admin/products',
       query: { product_id: String(row.product_id) },
+    }
+  }
+
+  if (definition.target === 'collector-connections') {
+    return {
+      path: '/admin/collector-connections',
+      query: repairQuery(row),
     }
   }
 
@@ -561,7 +596,7 @@ onMounted(load)
       </el-table-column>
       <el-table-column label="异常" width="132">
         <template #default="{ row }">
-          <el-tag :type="statusTag(row.status)">{{ statusLabel(row.status) }}</el-tag>
+          <el-tag :type="statusTag(row.status)">{{ statusLabel(row) }}</el-tag>
         </template>
       </el-table-column>
       <el-table-column label="订单行摘要" min-width="520">

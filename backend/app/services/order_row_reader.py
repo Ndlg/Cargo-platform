@@ -127,6 +127,11 @@ def parser_raw_record_inputs(records: list[RawCaptureRecord]) -> list[dict[str, 
                 "task_id": int(record.task_id) if record.task_id is not None else None,
                 "source_component": record.source_component,
                 "source_index": record.source_index,
+                "assignment_warning": text_value(
+                    (record.source_columns or {}).get("capture_assignment")
+                    if isinstance(record.source_columns, dict)
+                    else ""
+                ),
                 "payload": payload,
             }
         )
@@ -287,7 +292,6 @@ def standard_details_for_task(
             StandardDetail.archived_at.is_(None),
         )
         .order_by(StandardDetail.id.asc())
-        .limit(10000)
     ).all()
     matching: list[StandardDetail] = []
     for detail in details:
@@ -312,7 +316,6 @@ def raw_records_for_task(
             RawCaptureRecord.archived_at.is_(None),
         )
         .order_by(RawCaptureRecord.id.asc())
-        .limit(10000)
     ).all()
 
 

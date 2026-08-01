@@ -18,8 +18,9 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.utils.units import pixels_to_EMU
 from PIL import Image as PillowImage, UnidentifiedImageError
-from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import select
+from pydantic import BaseModel, Field, field_validator, model_validator
+from sqlalchemy import or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -72,6 +73,10 @@ router = APIRouter()
 
 COLLECTOR_HEARTBEAT_TIMEOUT = timedelta(seconds=60)
 COLLECTOR_CLEANUP_TIMEOUT = timedelta(hours=24)
+COLLECTOR_TASK_WINDOW_PROTOCOL = 2
+COLLECTOR_TASK_WINDOW_LEASE = timedelta(seconds=30)
+COLLECTOR_PROTOCOL_LEASE = timedelta(seconds=60)
+COLLECTOR_PROTOCOL_BRIDGE = timedelta(hours=1)
 
 COLLECTOR_CLIENT_ARCHIVE_ROOT = "Cargo Platform 采集器"
 COLLECTOR_CLIENT_RELEASE_EXE = Path("dist") / "Cargo Platform 采集器.exe"
@@ -447,6 +452,10 @@ class CollectorHeartbeatRequest(BaseModel):
     last_upload_at: str | None = Field(default=None, max_length=64)
     last_reconnect_reason: str | None = Field(default=None, max_length=32)
     tracked_task_ids: list[int] = Field(default_factory=list, max_length=32)
+    assignment_protocol_version: int = Field(default=1, ge=1, le=COLLECTOR_TASK_WINDOW_PROTOCOL)
+    pending_captured_at: str | None = Field(default=None, max_length=64)
+    pending_captured_until: str | None = Field(default=None, max_length=64)
+    pending_row_count: int = Field(default=0, ge=0, le=100_000)
 
 
 class RawCaptureRecordPayload(BaseModel):
@@ -482,10 +491,20 @@ class RawCaptureRecordPayload(BaseModel):
 
 class RawCaptureBatchRequest(BaseModel):
     task_id: int
+    assignment_protocol_version: int = Field(default=1, ge=1, le=COLLECTOR_TASK_WINDOW_PROTOCOL)
     records: list[RawCaptureRecordPayload] = Field(
         min_length=1,
         max_length=RAW_CAPTURE_BATCH_MAX_RECORDS,
     )
+
+    @model_validator(mode="after")
+    def v2_records_require_source_identity(self) -> "RawCaptureBatchRequest":
+        if self.assignment_protocol_version >= COLLECTOR_TASK_WINDOW_PROTOCOL and any(
+            not record.source_component or not record.source_index
+            for record in self.records
+        ):
+            raise ValueError("Protocol v2 records require source_component and source_index.")
+        return self
 
 
 class ParseRecordsRequest(BaseModel):
@@ -1431,7 +1450,11 @@ def pending_unmapped_waybill_product_sku_linking_row(
     detail_number: int,
 ) -> dict[str, Any]:
     sample_text = text_value(sample.get("sample_text"))
-    message = "这张面单还没有生成五字段结果，无法进入商品匹配。"
+    assignment = text_value(sample.get("capture_assignment"))
+    message = {
+        "timestamp_invalid_fallback": "这条打印记录的采集时间无效，已保留并隔离，请检查采集源时间。",
+        "source_history_ambiguous": "打印数据库历史发生变化，这条记录已保留并隔离，请检查采集源。",
+    }.get(assignment, "这张面单还没有生成五字段结果，无法进入商品匹配。")
     source_label = business_waybill_source_label(detail_number)
     return {
         "contract": EXPORT_PRODUCT_SKU_LINKING_CONTRACT,
@@ -1455,6 +1478,7 @@ def pending_unmapped_waybill_product_sku_linking_row(
         "sku_image_asset_id": None,
         "image_label": "",
         "status": EXPORT_PRODUCT_SKU_LINKING_PENDING_STATUS,
+        "exception_code": assignment or None,
         "reason": message,
         "match_type": "product_sku_linking_result",
         "match_field": "",
@@ -1498,7 +1522,18 @@ def unmapped_waybill_samples_for_task(
                 continue
             if len(samples) == 1 and int(raw_record.id) in mapped_raw_record_ids:
                 continue
-            unmapped_samples.append({**sample, "task_waybill_number": waybill_number})
+            source_columns = (
+                raw_record.source_columns
+                if isinstance(raw_record.source_columns, dict)
+                else {}
+            )
+            unmapped_samples.append(
+                {
+                    **sample,
+                    "task_waybill_number": waybill_number,
+                    "capture_assignment": source_columns.get("capture_assignment"),
+                }
+            )
     return unmapped_samples
 
 
@@ -2035,6 +2070,50 @@ def get_collector_from_token(
     return collector
 
 
+def lock_collector_runtime_request(
+    db: Session,
+    x_collector_token: str | None,
+    *,
+    reject_legacy_during_v2: bool,
+) -> Collector:
+    authenticated = get_collector_from_token(db, x_collector_token)
+    collector_id = authenticated.id
+    db.commit()
+
+    statement = update(Collector).where(
+        Collector.id == collector_id,
+        Collector.is_enabled.is_(True),
+        Collector.is_deleted.is_(False),
+    )
+    if reject_legacy_during_v2:
+        now = utc_now()
+        statement = statement.where(
+            or_(
+                Collector.assignment_protocol_version < COLLECTOR_TASK_WINDOW_PROTOCOL,
+                Collector.assignment_protocol_lease_expires_at.is_(None),
+                Collector.assignment_protocol_lease_expires_at < now,
+            )
+        )
+    result = db.execute(
+        statement.values(protocol_revision=Collector.protocol_revision + 1)
+    )
+    if result.rowcount != 1:
+        db.rollback()
+        current = get_collector_from_token(db, x_collector_token)
+        if reject_legacy_during_v2 and collector_v2_protocol_lease_active(current):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="新版采集器已接管，旧版采集器上传已停止。",
+            )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="采集器状态正在更新，请重试。",
+        )
+
+    db.expire_all()
+    return get_collector_from_token(db, x_collector_token)
+
+
 def active_task_statement(workspace_id: int, collector_db_id: int | None = None):
     statement = select(CaptureTask).where(
         CaptureTask.workspace_id == workspace_id,
@@ -2046,6 +2125,95 @@ def active_task_statement(workspace_id: int, collector_db_id: int | None = None)
             (CaptureTask.collector_id.is_(None)) | (CaptureTask.collector_id == collector_db_id)
         )
     return statement.order_by(CaptureTask.id.desc())
+
+
+def collector_task_windows(
+    db: Session,
+    *,
+    workspace_id: int,
+    collector_db_id: int,
+    pending_captured_at: str | None,
+    pending_captured_until: str | None,
+    pending_row_count: int,
+) -> tuple[list[CaptureTask], bool]:
+    active = db.scalars(active_task_statement(workspace_id, collector_db_id)).all()
+    if pending_row_count <= 0:
+        return active, True
+
+    statement = select(CaptureTask).where(
+        CaptureTask.workspace_id == workspace_id,
+        CaptureTask.status == "completed",
+        CaptureTask.is_deleted.is_(False),
+        (CaptureTask.collector_id.is_(None)) | (CaptureTask.collector_id == collector_db_id),
+    )
+    pending_from = parse_collector_datetime(pending_captured_at)
+    pending_until = parse_collector_datetime(pending_captured_until)
+    coverage_complete = pending_from is not None and pending_until is not None
+    if coverage_complete:
+        statement = statement.where(
+            CaptureTask.started_at <= (pending_until + timedelta(seconds=1)).isoformat(),
+            CaptureTask.ended_at >= pending_from.isoformat(),
+        ).order_by(
+            CaptureTask.id.asc(),
+        )
+    else:
+        statement = statement.order_by(CaptureTask.id.desc()).limit(1)
+    completed = db.scalars(statement).all()
+    by_id = {task.id: task for task in [*completed, *active]}
+    return [by_id[task_id] for task_id in sorted(by_id)], coverage_complete
+
+
+def collector_has_task_window_lease(collector: Collector, task_id: int) -> bool:
+    payload = collector.status_payload if isinstance(collector.status_payload, dict) else {}
+    lease = payload.get("task_window_lease")
+    if not isinstance(lease, dict) or task_id not in set(lease.get("task_ids") or []):
+        return False
+    expires_at = parse_utc_datetime(str(lease.get("expires_at") or ""))
+    return expires_at is not None and expires_at >= datetime.now(timezone.utc)
+
+
+def collector_v2_protocol_lease_active(collector: Collector) -> bool:
+    if collector.assignment_protocol_version < COLLECTOR_TASK_WINDOW_PROTOCOL:
+        return False
+    expires_at = parse_utc_datetime(collector.assignment_protocol_lease_expires_at)
+    return expires_at is not None and expires_at >= datetime.now(timezone.utc)
+
+
+def collector_protocol_bridge_active(collector: Collector) -> bool:
+    expires_at = parse_utc_datetime(collector.assignment_protocol_bridge_expires_at)
+    return expires_at is not None and expires_at >= datetime.now(timezone.utc)
+
+
+def cross_protocol_source_duplicate_exists(
+    db: Session,
+    *,
+    collector: Collector,
+    item: RawCaptureRecordPayload,
+    assignment_protocol_version: int,
+) -> bool:
+    if not collector_protocol_bridge_active(collector):
+        return False
+    source_index = str(item.source_index or "")
+    physical_rowid = source_index.rpartition(":")[2]
+    if not item.captured_at or not item.source_component or not physical_rowid.isdigit():
+        return False
+    if assignment_protocol_version >= COLLECTOR_TASK_WINDOW_PROTOCOL:
+        if ":" not in source_index:
+            return False
+        source_index_condition = RawCaptureRecord.source_index == physical_rowid
+    else:
+        source_index_condition = RawCaptureRecord.source_index.like(f"%:{physical_rowid}")
+    return db.scalar(
+        select(RawCaptureRecord.id).where(
+            RawCaptureRecord.workspace_id == collector.workspace_id,
+            RawCaptureRecord.collector_id == collector.id,
+            RawCaptureRecord.source_component == item.source_component,
+            source_index_condition,
+            RawCaptureRecord.captured_at == item.captured_at,
+            RawCaptureRecord.raw_payload == item.raw_payload,
+            RawCaptureRecord.is_deleted.is_(False),
+        )
+    ) is not None
 
 
 def upsert_collector(
@@ -2664,17 +2832,26 @@ def collector_heartbeat(
     db: Session = Depends(get_db),
     x_collector_token: Annotated[str | None, Header(alias="X-Collector-Token")] = None,
 ) -> dict[str, Any]:
-    collector = get_collector_from_token(db, x_collector_token)
+    collector = lock_collector_runtime_request(
+        db,
+        x_collector_token,
+        reject_legacy_during_v2=False,
+    )
+    received_datetime = datetime.now(timezone.utc)
+    received_at = received_datetime.isoformat()
     collector.online_status = "online"
-    collector.last_heartbeat_at = utc_now()
-    collector.status_payload = {
+    collector.last_heartbeat_at = received_at
+    previous_status_payload = (
+        collector.status_payload if isinstance(collector.status_payload, dict) else {}
+    )
+    status_payload = {
         "runtime_status": payload.runtime_status or "unknown",
         "adapter_status": payload.adapter_status or {},
         "queue_size": payload.queue_size,
         "last_error": payload.last_error,
         "last_upload_at": payload.last_upload_at,
         "last_reconnect_reason": payload.last_reconnect_reason,
-        "received_at": utc_now(),
+        "received_at": received_at,
     }
     if payload.source_machine:
         collector.source_machine = payload.source_machine
@@ -2699,24 +2876,77 @@ def collector_heartbeat(
         collector.client_version = payload.client_version
 
     tasks = db.scalars(active_task_statement(collector.workspace_id, collector.id)).all()
-    tracked_task_ids = {task_id for task_id in payload.tracked_task_ids if task_id > 0}
-    if tracked_task_ids:
-        completed_tasks = db.scalars(
-            select(CaptureTask).where(
-                CaptureTask.workspace_id == collector.workspace_id,
-                CaptureTask.id.in_(tracked_task_ids),
-                CaptureTask.status == "completed",
-                CaptureTask.archived_at.is_(None),
-                CaptureTask.is_deleted.is_(False),
-                (CaptureTask.collector_id.is_(None)) | (CaptureTask.collector_id == collector.id),
-            )
-        ).all()
-        active_ids = {task.id for task in tasks}
-        tasks.extend(task for task in completed_tasks if task.id not in active_ids)
+    if payload.assignment_protocol_version < COLLECTOR_TASK_WINDOW_PROTOCOL:
+        tracked_task_ids = {task_id for task_id in payload.tracked_task_ids if task_id > 0}
+        if tracked_task_ids:
+            completed_tasks = db.scalars(
+                select(CaptureTask).where(
+                    CaptureTask.workspace_id == collector.workspace_id,
+                    CaptureTask.id.in_(tracked_task_ids),
+                    CaptureTask.status == "completed",
+                    CaptureTask.archived_at.is_(None),
+                    CaptureTask.is_deleted.is_(False),
+                    (CaptureTask.collector_id.is_(None))
+                    | (CaptureTask.collector_id == collector.id),
+                )
+            ).all()
+            active_ids = {task.id for task in tasks}
+            tasks.extend(task for task in completed_tasks if task.id not in active_ids)
+    task_windows: list[CaptureTask] = []
+    window_coverage_complete = False
+    if payload.assignment_protocol_version >= COLLECTOR_TASK_WINDOW_PROTOCOL:
+        task_windows, window_coverage_complete = collector_task_windows(
+            db,
+            workspace_id=collector.workspace_id,
+            collector_db_id=collector.id,
+            pending_captured_at=payload.pending_captured_at,
+            pending_captured_until=payload.pending_captured_until,
+            pending_row_count=payload.pending_row_count,
+        )
+        status_payload["task_window_lease"] = {
+            "task_ids": [task.id for task in task_windows],
+            "expires_at": (received_datetime + COLLECTOR_TASK_WINDOW_LEASE).isoformat(),
+        }
+        bridge_expires_at = parse_utc_datetime(
+            collector.assignment_protocol_bridge_expires_at
+        )
+        if bridge_expires_at is None or bridge_expires_at < received_datetime:
+            bridge_expires_at = received_datetime + COLLECTOR_PROTOCOL_BRIDGE
+        collector.assignment_protocol_version = COLLECTOR_TASK_WINDOW_PROTOCOL
+        collector.assignment_protocol_lease_expires_at = (
+            received_datetime + COLLECTOR_PROTOCOL_LEASE
+        ).isoformat()
+        collector.assignment_protocol_bridge_expires_at = bridge_expires_at.isoformat()
+        status_payload["assignment_protocol_lease"] = {
+            "version": COLLECTOR_TASK_WINDOW_PROTOCOL,
+            "expires_at": collector.assignment_protocol_lease_expires_at,
+            "bridge_expires_at": collector.assignment_protocol_bridge_expires_at,
+        }
+    elif collector_v2_protocol_lease_active(collector):
+        status_payload["assignment_protocol_lease"] = {
+            "version": collector.assignment_protocol_version,
+            "expires_at": collector.assignment_protocol_lease_expires_at,
+            "bridge_expires_at": collector.assignment_protocol_bridge_expires_at,
+        }
+        if "task_window_lease" in previous_status_payload:
+            status_payload["task_window_lease"] = previous_status_payload["task_window_lease"]
+    elif collector_protocol_bridge_active(collector):
+        status_payload["assignment_protocol_lease"] = {
+            "version": collector.assignment_protocol_version,
+            "expires_at": collector.assignment_protocol_lease_expires_at,
+            "bridge_expires_at": collector.assignment_protocol_bridge_expires_at,
+        }
+    collector.status_payload = status_payload
     db.commit()
     return {
         "collector": public_collector(collector),
         "tasks": [public_task(task) for task in tasks],
+        "assignment_protocol_version": min(
+            payload.assignment_protocol_version,
+            COLLECTOR_TASK_WINDOW_PROTOCOL,
+        ),
+        "task_windows": [public_task(task) for task in task_windows],
+        "window_coverage_complete": window_coverage_complete,
     }
 
 
@@ -2731,40 +2961,69 @@ def upload_raw_records(
     Waybill reading/parsing is owned by the downstream module and is triggered
     explicitly through /collector-control/parse-records.
     """
-    collector = get_collector_from_token(db, x_collector_token)
+    collector = lock_collector_runtime_request(
+        db,
+        x_collector_token,
+        reject_legacy_during_v2=(
+            payload.assignment_protocol_version < COLLECTOR_TASK_WINDOW_PROTOCOL
+        ),
+    )
     task = db.get(CaptureTask, payload.task_id)
+    leased_archive = bool(
+        task is not None
+        and task.archived_at
+        and not task.is_deleted
+        and payload.assignment_protocol_version >= COLLECTOR_TASK_WINDOW_PROTOCOL
+        and collector_has_task_window_lease(collector, task.id)
+    )
     if (
         task is None
         or task.workspace_id != collector.workspace_id
         or task.is_deleted
-        or task.archived_at
+        or (task.archived_at and not leased_archive)
         or task.status not in {"collecting", "completed"}
         or (task.collector_id is not None and task.collector_id != collector.id)
     ):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Capture task access denied.")
 
     inserted = 0
-    skipped = 0
+    duplicates = 0
+    window_rejected = 0
     for item in payload.records:
         if not collector_record_is_inside_task_window(item, task):
-            skipped += 1
+            window_rejected += 1
             continue
+        capture_event_key = None
         if item.source_component and item.source_index:
-            # A source row is one print event. Equal payloads may be legitimate reprints.
-            existing = db.scalars(
-                select(RawCaptureRecord).where(
-                    RawCaptureRecord.workspace_id == collector.workspace_id,
-                    RawCaptureRecord.task_id == task.id,
-                    RawCaptureRecord.collector_id == collector.id,
-                    RawCaptureRecord.source_component == item.source_component,
-                    RawCaptureRecord.source_index == item.source_index,
-                    RawCaptureRecord.is_deleted.is_(False),
-                    RawCaptureRecord.archived_at.is_(None),
-                )
-            ).first()
-            if existing is not None:
-                skipped += 1
+            if cross_protocol_source_duplicate_exists(
+                db,
+                collector=collector,
+                item=item,
+                assignment_protocol_version=payload.assignment_protocol_version,
+            ):
+                duplicates += 1
                 continue
+            # A source row is one print event. Equal payloads may be legitimate reprints.
+            duplicate_conditions = [
+                RawCaptureRecord.workspace_id == collector.workspace_id,
+                RawCaptureRecord.collector_id == collector.id,
+                RawCaptureRecord.source_component == item.source_component,
+                RawCaptureRecord.source_index == item.source_index,
+                RawCaptureRecord.is_deleted.is_(False),
+            ]
+            if payload.assignment_protocol_version < COLLECTOR_TASK_WINDOW_PROTOCOL:
+                duplicate_conditions.append(RawCaptureRecord.task_id == task.id)
+            existing = db.scalars(select(RawCaptureRecord).where(*duplicate_conditions)).first()
+            if existing is not None:
+                duplicates += 1
+                continue
+            if payload.assignment_protocol_version >= COLLECTOR_TASK_WINDOW_PROTOCOL:
+                capture_event_key = hashlib.sha256(
+                    (
+                        f"{collector.workspace_id}\0{collector.id}\0"
+                        f"{item.source_component}\0{item.source_index}"
+                    ).encode("utf-8")
+                ).hexdigest()
 
         record = build_raw_capture_record(
             collector=collector,
@@ -2772,9 +3031,37 @@ def upload_raw_records(
             payload=item,
             captured_at=utc_now(),
         )
-        db.add(record)
-        db.flush()
+        if task.archived_at:
+            record.archived_at = task.archived_at
+            record.archived_by = task.archived_by
+        record.capture_event_key = capture_event_key
+        try:
+            with db.begin_nested():
+                db.add(record)
+                db.flush()
+        except IntegrityError:
+            existing_event = db.scalar(
+                select(RawCaptureRecord.id).where(
+                    RawCaptureRecord.workspace_id == collector.workspace_id,
+                    RawCaptureRecord.capture_event_key == capture_event_key,
+                )
+            )
+            if capture_event_key is None or existing_event is None:
+                raise
+            duplicates += 1
+            continue
         inserted += 1
 
     db.commit()
-    return {"inserted": inserted, "skipped": skipped}
+    result = {
+        "inserted": inserted,
+        "skipped": duplicates + window_rejected,
+    }
+    if payload.assignment_protocol_version >= COLLECTOR_TASK_WINDOW_PROTOCOL:
+        result.update(
+            {
+                "duplicates": duplicates,
+                "window_rejected": window_rejected,
+            }
+        )
+    return result

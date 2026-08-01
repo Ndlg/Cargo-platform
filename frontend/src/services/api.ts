@@ -622,6 +622,7 @@ export interface RecognitionPreviewRow extends ApiRecord {
   match_keyword: string
   status: string
   reason: string
+  exception_code?: string | null
 }
 
 export interface RecognitionPreviewResponse extends ApiRecord {

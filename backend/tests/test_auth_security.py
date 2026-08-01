@@ -60,6 +60,37 @@ def test_sqlite_upgrade_rejects_database_from_newer_release(tmp_path, monkeypatc
         database._run_sqlite_compat_migrations()
 
 
+def test_sqlite_upgrade_adds_collector_protocol_fence_columns(tmp_path, monkeypatch) -> None:
+    migration_engine = create_engine(f"sqlite:///{tmp_path / 'collector-protocol.db'}")
+    with migration_engine.begin() as connection:
+        connection.exec_driver_sql(
+            "CREATE TABLE workspaces (id INTEGER PRIMARY KEY, tenant_id INTEGER)"
+        )
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE collectors (
+                id INTEGER PRIMARY KEY,
+                workspace_id INTEGER NOT NULL,
+                tenant_id INTEGER,
+                collector_id VARCHAR(128) NOT NULL
+            )
+            """
+        )
+
+    monkeypatch.setattr(database, "engine", migration_engine)
+    database._run_sqlite_compat_migrations()
+
+    with migration_engine.connect() as connection:
+        columns = {
+            row[1]: (row[2], row[3], row[4])
+            for row in connection.exec_driver_sql("PRAGMA table_info(collectors)").all()
+        }
+    assert columns["protocol_revision"] == ("INTEGER", 1, "0")
+    assert columns["assignment_protocol_version"] == ("INTEGER", 1, "1")
+    assert columns["assignment_protocol_lease_expires_at"][0] == "VARCHAR(64)"
+    assert columns["assignment_protocol_bridge_expires_at"][0] == "VARCHAR(64)"
+
+
 def test_runtime_security_settings_reject_missing_or_placeholder_keys() -> None:
     with pytest.raises(ValueError):
         validate_security_settings(Settings(secret_key="", collector_token_hash_key="x" * 32))

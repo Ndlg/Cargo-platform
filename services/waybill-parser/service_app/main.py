@@ -69,6 +69,7 @@ class RawRecordParseInput(BaseModel):
     document_sequence: int = Field(default=1, ge=1)
     source_component: str | None = None
     source_index: str | None = None
+    assignment_warning: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -350,6 +351,15 @@ def empty_parse_summary(input_count: int) -> dict[str, int]:
     }
 
 
+def parse_status_from_diagnostics(diagnostics: list[dict[str, Any]]) -> str:
+    reasons = {diagnostic["reason"] for diagnostic in diagnostics if diagnostic["reason"]}
+    if "format_profile_missing" in reasons:
+        return "format_profile_missing"
+    if reasons and reasons <= {"timestamp_invalid_fallback", "source_history_ambiguous"}:
+        return "capture_source_exception"
+    return "format_profile_incomplete" if reasons else "parsed"
+
+
 def raw_record_document_payloads(record: RawRecordParseInput) -> list[dict[str, Any]]:
     task = record.payload.get("task") if isinstance(record.payload, dict) else None
     documents = task.get("documents") if isinstance(task, dict) else None
@@ -388,6 +398,42 @@ def empty_parent(
         child_count=0,
         rows=[],
     )
+
+
+def quarantined_parent(
+    record: RawRecordParseInput,
+    parent_sequence: int,
+) -> tuple[ParentWaybillDraft, dict[str, Any]]:
+    parent = empty_parent(
+        raw_record_id=record.raw_record_id,
+        task_id=record.task_id,
+        source_component=record.source_component,
+        source_index=record.source_index,
+        parent_sequence=parent_sequence,
+    )
+    return parent, {
+        "raw_record_id": record.raw_record_id,
+        "parent_label": parent.parent_label,
+        "fingerprint": "",
+        "reason": record.assignment_warning,
+        "document_sequence": record.document_sequence,
+        "parent_sequence": parent_sequence,
+    }
+
+
+def quarantined_parents(
+    record: RawRecordParseInput,
+    first_parent_sequence: int,
+) -> list[tuple[ParentWaybillDraft, dict[str, Any]]]:
+    quarantined = []
+    for document_offset, _ in enumerate(raw_record_document_payloads(record)):
+        parent, diagnostic = quarantined_parent(
+            record,
+            first_parent_sequence + document_offset,
+        )
+        diagnostic["document_sequence"] = record.document_sequence + document_offset
+        quarantined.append((parent, diagnostic))
+    return quarantined
 
 
 @app.get("/health")
@@ -602,6 +648,14 @@ def parse_batch(payload: BatchParseRequest) -> dict[str, Any]:
         pack_meta = payload.rule_pack["pack"]
         unresolved_parent_count = 0
         for record in payload.raw_records:
+            if record.assignment_warning:
+                first_parent_sequence = record.parent_sequence or next_parent_sequence
+                quarantined = quarantined_parents(record, first_parent_sequence)
+                parents.extend(parent for parent, _ in quarantined)
+                diagnostics.extend(diagnostic for _, diagnostic in quarantined)
+                unresolved_parent_count += len(quarantined)
+                next_parent_sequence = first_parent_sequence + len(quarantined)
+                continue
             document_payloads = raw_record_document_payloads(record)
 
             first_parent_sequence = record.parent_sequence or next_parent_sequence
@@ -633,20 +687,12 @@ def parse_batch(payload: BatchParseRequest) -> dict[str, Any]:
                 diagnostics.append(diagnostic)
             next_parent_sequence = first_parent_sequence + len(document_payloads)
 
-        reasons = {diagnostic["reason"] for diagnostic in diagnostics if diagnostic["reason"]}
-        parse_status = (
-            "format_profile_missing"
-            if "format_profile_missing" in reasons
-            else "format_profile_incomplete"
-            if reasons
-            else "parsed"
-        )
         summary = order_row_draft_summary(parents)
         summary["needs_review_count"] += unresolved_parent_count
         return {
             "contract_version": ORDER_ROW_DRAFTS_CONTRACT_VERSION,
             "task_id": payload.task_id,
-            "status": parse_status,
+            "status": parse_status_from_diagnostics(diagnostics),
             "summary": summary,
             "diagnostics": diagnostics,
             "parents": [parent.as_dict() for parent in parents],
@@ -671,7 +717,17 @@ def parse_batch(payload: BatchParseRequest) -> dict[str, Any]:
         for sample in payload.waybill_samples
     )
     next_parent_sequence = len(parents) + 1
+    diagnostics: list[dict[str, Any]] = []
+    unresolved_parent_count = 0
     for record in payload.raw_records:
+        if record.assignment_warning:
+            first_parent_sequence = record.parent_sequence or next_parent_sequence
+            quarantined = quarantined_parents(record, first_parent_sequence)
+            parents.extend(parent for parent, _ in quarantined)
+            diagnostics.extend(diagnostic for _, diagnostic in quarantined)
+            unresolved_parent_count += len(quarantined)
+            next_parent_sequence = first_parent_sequence + len(quarantined)
+            continue
         document_payloads = raw_record_document_payloads(record)
 
         first_parent_sequence = record.parent_sequence or next_parent_sequence
@@ -689,10 +745,14 @@ def parse_batch(payload: BatchParseRequest) -> dict[str, Any]:
             )
         next_parent_sequence = first_parent_sequence + len(document_payloads)
 
+    summary = order_row_draft_summary(parents)
+    summary["needs_review_count"] += unresolved_parent_count
     return {
         "contract_version": ORDER_ROW_DRAFTS_CONTRACT_VERSION,
         "task_id": payload.task_id,
-        "summary": order_row_draft_summary(parents),
+        "status": parse_status_from_diagnostics(diagnostics),
+        "summary": summary,
+        "diagnostics": diagnostics,
         "parents": [parent.as_dict() for parent in parents],
         "rows": [row.as_dict() for parent in parents for row in parent.rows],
     }

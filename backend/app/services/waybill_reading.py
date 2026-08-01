@@ -79,6 +79,8 @@ TECHNICAL_RAW_FIELD_NAMES = {
     "source_path",
     "source_component",
     "source_index",
+    "source_epoch",
+    "capture_assignment",
     "dedupe_key",
     "captured_at",
     "document_id",

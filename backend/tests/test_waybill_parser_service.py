@@ -992,6 +992,60 @@ def test_waybill_parser_service_raw_records_use_business_sequence_labels() -> No
     assert body["rows"][0]["child_label"] == "面单 8"
 
 
+def test_waybill_parser_service_keeps_each_document_with_invalid_capture_assignment_as_exception() -> None:
+    app = load_parser_service_app()
+    for assignment_warning in ("timestamp_invalid_fallback", "source_history_ambiguous"):
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/v1/parse/batch",
+                json={
+                    "task_id": 19,
+                    "rule_pack": {
+                        "contract_version": "recognition_rule_pack_v1",
+                        "pack": {"code": "test-shoes", "name": "测试鞋类规则包", "version": "1.0.0"},
+                        "parser_policy": {"requires_active_rule_pack": True, "order_row_parser": "shoe_waybill_v1"},
+                    },
+                    "raw_records": [
+                        {
+                            "raw_record_id": 7133,
+                            "task_id": 19,
+                            "source_component": "cainiao-cnprint",
+                            "source_index": "7133",
+                            "parent_sequence": 8,
+                            "document_sequence": 3,
+                            "assignment_warning": assignment_warning,
+                            "payload": {
+                                "task": {
+                                    "documents": [
+                                        {"documentID": "DOC-1", "contents": []},
+                                        {"documentID": "DOC-2", "contents": []},
+                                    ]
+                                }
+                            },
+                        }
+                    ],
+                },
+            )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "capture_source_exception"
+        assert body["rows"] == []
+        assert [parent["parent_label"] for parent in body["parents"]] == ["面单 8", "面单 9"]
+        assert [diagnostic["reason"] for diagnostic in body["diagnostics"]] == [
+            assignment_warning,
+            assignment_warning,
+        ]
+        assert [diagnostic["document_sequence"] for diagnostic in body["diagnostics"]] == [3, 4]
+        assert body["summary"] == {
+            "parent_waybill_count": 2,
+            "child_waybill_count": 0,
+            "draft_count": 0,
+            "needs_review_count": 2,
+            "special_count": 0,
+        }
+
+
 def test_waybill_parser_service_raw_records_parse_item_info_documents() -> None:
     item_texts = [
         "2026赤足跑步鞋 5.0黑白蓝;42 【1件】",

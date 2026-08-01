@@ -108,6 +108,22 @@ def _run_sqlite_compat_migrations() -> None:
                 )
             if "status_payload" not in table_columns["collectors"]:
                 connection.exec_driver_sql("ALTER TABLE collectors ADD COLUMN status_payload JSON")
+            if "protocol_revision" not in table_columns["collectors"]:
+                connection.exec_driver_sql(
+                    "ALTER TABLE collectors ADD COLUMN protocol_revision INTEGER DEFAULT 0 NOT NULL"
+                )
+            if "assignment_protocol_version" not in table_columns["collectors"]:
+                connection.exec_driver_sql(
+                    "ALTER TABLE collectors ADD COLUMN assignment_protocol_version INTEGER DEFAULT 1 NOT NULL"
+                )
+            if "assignment_protocol_lease_expires_at" not in table_columns["collectors"]:
+                connection.exec_driver_sql(
+                    "ALTER TABLE collectors ADD COLUMN assignment_protocol_lease_expires_at VARCHAR(64)"
+                )
+            if "assignment_protocol_bridge_expires_at" not in table_columns["collectors"]:
+                connection.exec_driver_sql(
+                    "ALTER TABLE collectors ADD COLUMN assignment_protocol_bridge_expires_at VARCHAR(64)"
+                )
 
         if "capture_tasks" in table_columns:
             if "started_at" not in table_columns["capture_tasks"]:
@@ -139,6 +155,16 @@ def _run_sqlite_compat_migrations() -> None:
                 )
             if "captured_at" not in table_columns["raw_capture_records"]:
                 connection.exec_driver_sql("ALTER TABLE raw_capture_records ADD COLUMN captured_at VARCHAR(64)")
+            if "capture_event_key" not in table_columns["raw_capture_records"]:
+                connection.exec_driver_sql(
+                    "ALTER TABLE raw_capture_records ADD COLUMN capture_event_key VARCHAR(64)"
+                )
+            connection.exec_driver_sql(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS ux_raw_capture_records_workspace_event
+                ON raw_capture_records (workspace_id, capture_event_key)
+                """
+            )
             if "archived_at" not in table_columns["raw_capture_records"]:
                 connection.exec_driver_sql("ALTER TABLE raw_capture_records ADD COLUMN archived_at VARCHAR(64)")
             if "archived_by" not in table_columns["raw_capture_records"]:

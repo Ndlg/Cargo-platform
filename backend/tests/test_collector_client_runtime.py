@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import http.client
 from datetime import datetime, timedelta, timezone
@@ -10,6 +11,7 @@ from pathlib import Path
 import re
 import shutil
 import sys
+import threading
 from urllib.parse import unquote
 import urllib.error
 import zipfile
@@ -38,7 +40,7 @@ from openpyxl import load_workbook  # noqa: E402
 from app.api.routes import collector_runtime as collector_runtime_route  # noqa: E402
 from app.main import app  # noqa: E402
 from app.core.database import SessionLocal  # noqa: E402
-from app.models import Collector, RecognitionRulePack  # noqa: E402
+from app.models import CaptureTask, Collector, RawCaptureRecord, RecognitionRulePack  # noqa: E402
 from app.api.routes.collector_runtime import (  # noqa: E402
     RAW_CAPTURE_BATCH_MAX_RECORDS,
     RAW_CAPTURE_PAYLOAD_MAX_CHARS,
@@ -125,6 +127,13 @@ def test_collector_client_default_name_uses_windows_machine_name(monkeypatch) ->
     assert collector_client.normalize_collector_name("采集器") == "WAREHOUSE-PC-08"
 
 
+def test_collector_client_clamps_batch_size_to_server_contract(tmp_path) -> None:
+    config_path = tmp_path / "collector-config.json"
+    collector_client.write_json(config_path, {"batch_size": 1000})
+
+    assert collector_client.CollectorConfig.load(config_path).batch_size == 100
+
+
 def test_register_collector_replaces_generic_name_with_source_machine() -> None:
     with TestClient(app) as client:
         headers = login_headers(client)
@@ -188,7 +197,7 @@ def test_heartbeat_replaces_existing_generic_name_with_source_machine() -> None:
     assert status_payload["last_reconnect_reason"] == "network"
 
 
-def test_heartbeat_returns_tracked_completed_task_until_collector_drains_it() -> None:
+def test_heartbeat_negotiates_task_windows_without_changing_legacy_tasks() -> None:
     with TestClient(app) as client:
         headers = login_headers(client)
         registration = register_collector(client, headers, "tracked-completed-machine")
@@ -211,13 +220,538 @@ def test_heartbeat_returns_tracked_completed_task_until_collector_drains_it() ->
         heartbeat = client.post(
             "/api/v1/collector-runtime/heartbeat",
             headers={"X-Collector-Token": token},
+            json={
+                "assignment_protocol_version": 2,
+                "pending_captured_at": stopped.json()["started_at"],
+                "pending_captured_until": stopped.json()["ended_at"],
+                "pending_row_count": 1,
+            },
+        )
+        legacy = client.post(
+            "/api/v1/collector-runtime/heartbeat",
+            headers={"X-Collector-Token": token},
             json={"tracked_task_ids": [task_id]},
         )
 
     assert heartbeat.status_code == 200
-    assert [(task["id"], task["status"]) for task in heartbeat.json()["tasks"]] == [
+    assert heartbeat.json()["tasks"] == []
+    assert [(task["id"], task["status"]) for task in heartbeat.json()["task_windows"]] == [
         (task_id, "completed")
     ]
+    assert [(task["id"], task["status"]) for task in legacy.json()["tasks"]] == [
+        (task_id, "completed")
+    ]
+    assert legacy.json()["task_windows"] == []
+
+
+def test_v2_heartbeat_keeps_pending_archived_window_retryable() -> None:
+    with TestClient(app) as client:
+        headers = login_headers(client)
+        registration = register_collector(client, headers, "archived-window-machine")
+        token = str(registration["collector_token"])
+        collector_id = int(registration["collector"]["id"])
+        started = client.post(
+            "/api/v1/collector-control/start",
+            headers=headers,
+            json={"collector_id": collector_id},
+        )
+        assert started.status_code == 201
+        task_id = int(started.json()["id"])
+        stopped = client.post(
+            "/api/v1/collector-control/stop",
+            headers=headers,
+            json={"task_id": task_id},
+        )
+        assert stopped.status_code == 200
+        pending_at = stopped.json()["started_at"]
+
+        with SessionLocal() as db:
+            task = db.get(CaptureTask, task_id)
+            assert task is not None
+            task.archived_at = datetime.now(timezone.utc).isoformat()
+            db.commit()
+
+        heartbeat = client.post(
+            "/api/v1/collector-runtime/heartbeat",
+            headers={"X-Collector-Token": token},
+            json={
+                "assignment_protocol_version": 2,
+                "pending_captured_at": pending_at,
+                "pending_captured_until": stopped.json()["ended_at"],
+                "pending_row_count": 1,
+            },
+        )
+        upload = client.post(
+            "/api/v1/collector-runtime/raw-records",
+            headers={"X-Collector-Token": token},
+            json={
+                "task_id": task_id,
+                "assignment_protocol_version": 2,
+                "records": [
+                    {
+                        "source_component": "cainiao-cnprint",
+                        "source_index": "generation-a:1",
+                        "captured_at": pending_at,
+                        "raw_payload": "{}",
+                    }
+                ],
+            },
+        )
+
+    assert heartbeat.status_code == 200
+    assert [task["id"] for task in heartbeat.json()["task_windows"]] == [task_id]
+    assert upload.status_code == 201
+    assert upload.json()["inserted"] == 1
+
+
+def test_v1_heartbeat_cannot_break_v2_archived_window_lease() -> None:
+    with TestClient(app) as client:
+        headers = login_headers(client)
+        registration = register_collector(client, headers, "protocol-takeover-machine")
+        token = str(registration["collector_token"])
+        collector_id = int(registration["collector"]["id"])
+        started = client.post(
+            "/api/v1/collector-control/start",
+            headers=headers,
+            json={"collector_id": collector_id},
+        ).json()
+        stopped = client.post(
+            "/api/v1/collector-control/stop",
+            headers=headers,
+            json={"task_id": int(started["id"])},
+        ).json()
+        with SessionLocal() as db:
+            task = db.get(CaptureTask, int(started["id"]))
+            assert task is not None
+            task.archived_at = datetime.now(timezone.utc).isoformat()
+            db.commit()
+
+        v2_heartbeat = client.post(
+            "/api/v1/collector-runtime/heartbeat",
+            headers={"X-Collector-Token": token},
+            json={
+                "assignment_protocol_version": 2,
+                "pending_captured_at": stopped["started_at"],
+                "pending_captured_until": stopped["ended_at"],
+                "pending_row_count": 1,
+            },
+        )
+        legacy_heartbeat = client.post(
+            "/api/v1/collector-runtime/heartbeat",
+            headers={"X-Collector-Token": token},
+            json={"tracked_task_ids": [int(started["id"])]},
+        )
+        legacy_upload = client.post(
+            "/api/v1/collector-runtime/raw-records",
+            headers={"X-Collector-Token": token},
+            json={
+                "task_id": int(started["id"]),
+                "records": [{"source_component": "cainiao-cnprint", "source_index": "1", "raw_payload": "{}"}],
+            },
+        )
+        v2_upload = client.post(
+            "/api/v1/collector-runtime/raw-records",
+            headers={"X-Collector-Token": token},
+            json={
+                "task_id": int(started["id"]),
+                "assignment_protocol_version": 2,
+                "records": [
+                    {
+                        "source_component": "cainiao-cnprint",
+                        "source_index": "generation-a:1",
+                        "captured_at": stopped["started_at"],
+                        "raw_payload": "{}",
+                    }
+                ],
+            },
+        )
+
+    assert v2_heartbeat.status_code == 200
+    assert "task_window_lease" in legacy_heartbeat.json()["collector"]["status_payload"]
+    assert legacy_upload.status_code == 409
+    assert v2_upload.status_code == 201
+    assert v2_upload.json()["inserted"] == 1
+
+
+def test_concurrent_legacy_heartbeat_cannot_erase_v2_takeover(monkeypatch) -> None:
+    with TestClient(app) as client, TestClient(app) as legacy_client:
+        headers = login_headers(client)
+        registration = register_collector(client, headers, "heartbeat-takeover-race-machine")
+        token = str(registration["collector_token"])
+
+        original_get_collector = collector_runtime_route.get_collector_from_token
+        legacy_authenticated = threading.Event()
+        release_legacy = threading.Event()
+        call_lock = threading.Lock()
+        call_count = 0
+
+        def delay_first_authenticated_request(db, collector_token):
+            nonlocal call_count
+            collector = original_get_collector(db, collector_token)
+            with call_lock:
+                call_count += 1
+                is_first = call_count == 1
+            if is_first:
+                legacy_authenticated.set()
+                assert release_legacy.wait(timeout=5)
+            return collector
+
+        monkeypatch.setattr(
+            collector_runtime_route,
+            "get_collector_from_token",
+            delay_first_authenticated_request,
+        )
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            legacy_future = pool.submit(
+                legacy_client.post,
+                "/api/v1/collector-runtime/heartbeat",
+                headers={"X-Collector-Token": token},
+                json={},
+            )
+            assert legacy_authenticated.wait(timeout=5)
+            v2_heartbeat = client.post(
+                "/api/v1/collector-runtime/heartbeat",
+                headers={"X-Collector-Token": token},
+                json={"assignment_protocol_version": 2},
+            )
+            release_legacy.set()
+            legacy_heartbeat = legacy_future.result(timeout=5)
+
+        assert v2_heartbeat.status_code == 200
+        assert legacy_heartbeat.status_code == 200
+        assert (
+            legacy_heartbeat.json()["collector"]["status_payload"][
+                "assignment_protocol_lease"
+            ]["version"]
+            == 2
+        )
+
+
+def test_v2_takeover_blocks_legacy_upload_authenticated_before_takeover(monkeypatch) -> None:
+    with TestClient(app) as client, TestClient(app) as legacy_client:
+        headers = login_headers(client)
+        registration = register_collector(client, headers, "upload-takeover-race-machine")
+        token = str(registration["collector_token"])
+        collector_id = int(registration["collector"]["id"])
+        task = client.post(
+            "/api/v1/collector-control/start",
+            headers=headers,
+            json={"collector_id": collector_id},
+        ).json()
+
+        original_get_collector = collector_runtime_route.get_collector_from_token
+        legacy_authenticated = threading.Event()
+        release_legacy = threading.Event()
+        call_lock = threading.Lock()
+        call_count = 0
+
+        def delay_first_authenticated_request(db, collector_token):
+            nonlocal call_count
+            collector = original_get_collector(db, collector_token)
+            with call_lock:
+                call_count += 1
+                is_first = call_count == 1
+            if is_first:
+                legacy_authenticated.set()
+                assert release_legacy.wait(timeout=5)
+            return collector
+
+        monkeypatch.setattr(
+            collector_runtime_route,
+            "get_collector_from_token",
+            delay_first_authenticated_request,
+        )
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            legacy_future = pool.submit(
+                legacy_client.post,
+                "/api/v1/collector-runtime/raw-records",
+                headers={"X-Collector-Token": token},
+                json={
+                    "task_id": int(task["id"]),
+                    "records": [
+                        {
+                            "source_component": "cainiao-cnprint",
+                            "source_index": "42",
+                            "captured_at": task["started_at"],
+                            "raw_payload": '{"task":"takeover race"}',
+                        }
+                    ],
+                },
+            )
+            assert legacy_authenticated.wait(timeout=5)
+            v2_heartbeat = client.post(
+                "/api/v1/collector-runtime/heartbeat",
+                headers={"X-Collector-Token": token},
+                json={"assignment_protocol_version": 2},
+            )
+            release_legacy.set()
+            legacy_upload = legacy_future.result(timeout=5)
+
+        assert v2_heartbeat.status_code == 200
+        assert legacy_upload.status_code == 409
+        stop = client.post(
+            "/api/v1/collector-control/stop",
+            headers=headers,
+            json={"task_id": int(task["id"])},
+        )
+        assert stop.status_code == 200
+        with SessionLocal() as db:
+            assert (
+                db.query(RawCaptureRecord)
+                .filter(
+                    RawCaptureRecord.collector_id == collector_id,
+                    RawCaptureRecord.source_index == "42",
+                )
+                .count()
+                == 0
+            )
+
+
+def test_protocol_bridge_deduplicates_exact_v1_v2_source_event_during_upgrade() -> None:
+    raw_payload = '{"task":"same physical print"}'
+    captured_at = "2026-07-27T10:00:00+00:00"
+    with TestClient(app) as client:
+        headers = login_headers(client)
+        registration = register_collector(client, headers, "protocol-bridge-machine")
+        token = str(registration["collector_token"])
+        collector_id = int(registration["collector"]["id"])
+        task = client.post(
+            "/api/v1/collector-control/start",
+            headers=headers,
+            json={"collector_id": collector_id},
+        ).json()
+        task_id = int(task["id"])
+        captured_at = str(task["started_at"])
+
+        legacy_first = client.post(
+            "/api/v1/collector-runtime/raw-records",
+            headers={"X-Collector-Token": token},
+            json={
+                "task_id": task_id,
+                "records": [
+                    {
+                        "source_component": "cainiao-cnprint",
+                        "source_index": "42",
+                        "captured_at": captured_at,
+                        "raw_payload": raw_payload,
+                    }
+                ],
+            },
+        )
+        client.post(
+            "/api/v1/collector-runtime/heartbeat",
+            headers={"X-Collector-Token": token},
+            json={"assignment_protocol_version": 2},
+        )
+        v2_replay = client.post(
+            "/api/v1/collector-runtime/raw-records",
+            headers={"X-Collector-Token": token},
+            json={
+                "task_id": task_id,
+                "assignment_protocol_version": 2,
+                "records": [
+                    {
+                        "source_component": "cainiao-cnprint",
+                        "source_index": "generation-a:42",
+                        "captured_at": captured_at,
+                        "raw_payload": raw_payload,
+                    }
+                ],
+            },
+        )
+        v2_new = client.post(
+            "/api/v1/collector-runtime/raw-records",
+            headers={"X-Collector-Token": token},
+            json={
+                "task_id": task_id,
+                "assignment_protocol_version": 2,
+                "records": [
+                    {
+                        "source_component": "cainiao-cnprint",
+                        "source_index": "generation-a:43",
+                        "captured_at": captured_at,
+                        "raw_payload": raw_payload,
+                    }
+                ],
+            },
+        )
+        with SessionLocal() as db:
+            collector = db.get(Collector, collector_id)
+            assert collector is not None
+            collector.assignment_protocol_lease_expires_at = (
+                datetime.now(timezone.utc) - timedelta(seconds=1)
+            ).isoformat()
+            db.commit()
+        rollback_heartbeat = client.post(
+            "/api/v1/collector-runtime/heartbeat",
+            headers={"X-Collector-Token": token},
+            json={"tracked_task_ids": [task_id]},
+        )
+        legacy_rollback = client.post(
+            "/api/v1/collector-runtime/raw-records",
+            headers={"X-Collector-Token": token},
+            json={
+                "task_id": task_id,
+                "records": [
+                    {
+                        "source_component": "cainiao-cnprint",
+                        "source_index": "43",
+                        "captured_at": captured_at,
+                        "raw_payload": raw_payload,
+                    }
+                ],
+            },
+        )
+        client.post(
+            "/api/v1/collector-control/stop",
+            headers=headers,
+            json={"task_id": task_id},
+        )
+
+    assert legacy_first.json()["inserted"] == 1
+    assert v2_replay.json() == {
+        "inserted": 0,
+        "skipped": 1,
+        "duplicates": 1,
+        "window_rejected": 0,
+    }
+    assert v2_new.json()["inserted"] == 1
+    assert rollback_heartbeat.status_code == 200
+    assert legacy_rollback.status_code == 201
+    assert legacy_rollback.json() == {"inserted": 0, "skipped": 1}
+
+
+def test_v2_source_row_is_duplicate_even_if_task_window_changes() -> None:
+    record = {
+        "source_component": "cainiao-cnprint",
+        "source_index": "generation-a:42",
+        "raw_payload": '{"task":"same local print"}',
+    }
+    with TestClient(app) as client:
+        headers = login_headers(client)
+        registration = register_collector(client, headers, "cross-window-dedupe-machine")
+        token = str(registration["collector_token"])
+        collector_id = int(registration["collector"]["id"])
+
+        first = client.post(
+            "/api/v1/collector-control/start",
+            headers=headers,
+            json={"collector_id": collector_id},
+        )
+        first_task_id = int(first.json()["id"])
+        client.post(
+            "/api/v1/collector-runtime/raw-records",
+            headers={"X-Collector-Token": token},
+            json={
+                "task_id": first_task_id,
+                "assignment_protocol_version": 2,
+                "records": [record],
+            },
+        )
+        client.post(
+            "/api/v1/collector-control/stop",
+            headers=headers,
+            json={"task_id": first_task_id},
+        )
+
+        second = client.post(
+            "/api/v1/collector-control/start",
+            headers=headers,
+            json={"collector_id": collector_id},
+        )
+        second_task_id = int(second.json()["id"])
+        duplicate = client.post(
+            "/api/v1/collector-runtime/raw-records",
+            headers={"X-Collector-Token": token},
+            json={
+                "task_id": second_task_id,
+                "assignment_protocol_version": 2,
+                "records": [record],
+            },
+        )
+        client.post(
+            "/api/v1/collector-control/stop",
+            headers=headers,
+            json={"task_id": second_task_id},
+        )
+
+    assert duplicate.status_code == 201
+    assert duplicate.json() == {
+        "inserted": 0,
+        "skipped": 1,
+        "duplicates": 1,
+        "window_rejected": 0,
+    }
+    with SessionLocal() as db:
+        stored = db.query(RawCaptureRecord).filter(
+            RawCaptureRecord.collector_id == collector_id,
+            RawCaptureRecord.source_component == record["source_component"],
+            RawCaptureRecord.source_index == record["source_index"],
+        ).one()
+        assert stored.capture_event_key
+
+
+def test_v2_unique_event_race_is_counted_as_duplicate() -> None:
+    source_component = "cainiao-cnprint"
+    source_index = "generation-race:42"
+    with TestClient(app) as client:
+        headers = login_headers(client)
+        registration = register_collector(client, headers, "event-race-machine")
+        token = str(registration["collector_token"])
+        collector_id = int(registration["collector"]["id"])
+        task = client.post(
+            "/api/v1/collector-control/start",
+            headers=headers,
+            json={"collector_id": collector_id},
+        ).json()
+        event_key = hashlib.sha256(
+            f"1\0{collector_id}\0{source_component}\0{source_index}".encode("utf-8")
+        ).hexdigest()
+        with SessionLocal() as db:
+            db.add(
+                RawCaptureRecord(
+                    tenant_id=1,
+                    workspace_id=1,
+                    task_id=int(task["id"]),
+                    collector_id=collector_id,
+                    source_component="concurrent-uncommitted-view",
+                    source_index="different-query-key",
+                    capture_event_key=event_key,
+                    payload_format="json",
+                    raw_payload="{}",
+                    status="pending",
+                )
+            )
+            db.commit()
+
+        duplicate = client.post(
+            "/api/v1/collector-runtime/raw-records",
+            headers={"X-Collector-Token": token},
+            json={
+                "task_id": int(task["id"]),
+                "assignment_protocol_version": 2,
+                "records": [
+                    {
+                        "source_component": source_component,
+                        "source_index": source_index,
+                        "raw_payload": "{}",
+                    }
+                ],
+            },
+        )
+        client.post(
+            "/api/v1/collector-control/stop",
+            headers=headers,
+            json={"task_id": int(task["id"])},
+        )
+
+    assert duplicate.status_code == 201
+    assert duplicate.json() == {
+        "inserted": 0,
+        "skipped": 1,
+        "duplicates": 1,
+        "window_rejected": 0,
+    }
 
 
 def deactivate_recognition_rule_packs() -> None:
@@ -541,16 +1075,118 @@ def test_collector_task_watermark_ignores_rows_before_capture_start(tmp_path) ->
         db_path=db_path,
     )
     state = collector_client.CollectorState(idle_watermarks={"cainiao-cnprint": 0})
+    uploads: list[str] = []
+    task = {
+        "id": 58,
+        "status": "collecting",
+        "started_at": "2026-07-23T06:51:39.241233+00:00",
+    }
 
-    watermark = state.start_capture_watermark(
-        58,
+    original_upload = collector_client.upload_records
+    try:
+        collector_client.upload_records = lambda _url, _token, _task_id, records: (
+            uploads.extend(record["source_index"] for record in records)
+            or {"inserted": len(records), "skipped": 0}
+        )
+        collector_client.upload_adapter_rows(
+            "http://collector.test", "token", state, adapter, [task], 10, True
+        )
+    finally:
+        collector_client.upload_records = original_upload
+
+    assert uploads == ["2"]
+    assert state.source_cursor(adapter) == 2
+
+
+def test_fresh_collector_does_not_assign_old_invalid_time_row_to_active_round(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "print.db"
+    with collector_client.sqlite3.connect(db_path) as connection:
+        connection.execute("create table task (taskID text, msg text, time text)")
+        connection.executemany(
+            "insert into task (taskID, msg, time) values (?, ?, ?)",
+            [
+                ("old-valid", "{}", "2026-07-27 09:00:00"),
+                ("old-invalid", "{}", "not-a-time"),
+                ("current", "{}", "2026-07-27 10:01:00"),
+            ],
+        )
+
+    adapter = collector_client.PrintDbAdapter("cainiao-cnprint", "Cainiao", db_path)
+    state = collector_client.CollectorState()
+    uploaded_rowids: list[int] = []
+
+    def capture_upload(_base_url, _token, _task_id, records):
+        uploaded_rowids.extend(int(record["source_columns"]["rowid"]) for record in records)
+        return {"inserted": len(records), "duplicates": 0, "window_rejected": 0}
+
+    monkeypatch.setattr(collector_client, "upload_records", capture_upload)
+    collector_client.upload_adapter_rows(
+        "http://collector.test",
+        "token",
+        state,
         adapter,
-        capture_started_at="2026-07-23T06:51:39.241233+00:00",
+        [
+            {
+                "id": 58,
+                "status": "collecting",
+                "started_at": "2026-07-27T02:00:00+00:00",
+            }
+        ],
+        100,
+        True,
     )
 
-    assert watermark == 1
-    rows = adapter.read_since(watermark, 10)
-    assert [row.task_id for row in rows] == ["new-local-task"]
+    assert uploaded_rowids == [2, 3]
+    assert state.source_cursor(adapter) == 3
+
+
+def test_fresh_collector_quarantines_invalid_time_row_before_current_round_row(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "print.db"
+    with collector_client.sqlite3.connect(db_path) as connection:
+        connection.execute("create table task (taskID text, msg text, time text)")
+        connection.executemany(
+            "insert into task (taskID, msg, time) values (?, ?, ?)",
+            [
+                ("old", "{}", "2026-07-27 09:00:00"),
+                ("current-invalid", "{}", "not-a-time"),
+                ("current-valid", "{}", "2026-07-27 10:01:00"),
+            ],
+        )
+
+    adapter = collector_client.PrintDbAdapter("cainiao-cnprint", "Cainiao", db_path)
+    state = collector_client.CollectorState()
+    uploads: list[dict[str, object]] = []
+
+    def capture_upload(_base_url, _token, _task_id, records):
+        uploads.extend(records)
+        return {"inserted": len(records), "duplicates": 0, "window_rejected": 0}
+
+    monkeypatch.setattr(collector_client, "upload_records", capture_upload)
+    collector_client.upload_adapter_rows(
+        "http://collector.test",
+        "token",
+        state,
+        adapter,
+        [
+            {
+                "id": 58,
+                "status": "collecting",
+                "started_at": "2026-07-27T02:00:00+00:00",
+            }
+        ],
+        100,
+        True,
+    )
+
+    assert [record["source_columns"]["rowid"] for record in uploads] == [2, 3]
+    assert uploads[0]["source_columns"]["capture_assignment"] == "timestamp_invalid_fallback"
+    assert state.source_cursor(adapter) == 3
 
 
 def test_collector_keeps_print_created_after_idle_heartbeat_before_task_is_observed(
@@ -592,11 +1228,19 @@ def test_collector_keeps_print_created_after_idle_heartbeat_before_task_is_obser
                         (start_local + timedelta(seconds=1)).strftime("%Y-%m-%d %H:%M:%S"),
                     ),
                 )
-            return {"tasks": []}
-        return {"tasks": [{"id": 58, "started_at": capture_started_at}]}
+            return {
+                "assignment_protocol_version": 2,
+                "task_windows": [],
+                "window_coverage_complete": True,
+            }
+        return {
+            "assignment_protocol_version": 2,
+            "task_windows": [{"id": 58, "status": "collecting", "started_at": capture_started_at}],
+            "window_coverage_complete": True,
+        }
 
     def capture_upload(_base_url, _token, _task_id, records):
-        uploaded_source_indexes.extend(record["source_index"] for record in records)
+        uploaded_source_indexes.extend(str(record["source_columns"]["rowid"]) for record in records)
         return {"inserted": len(records), "skipped": 0}
 
     monkeypatch.setattr(collector_client, "heartbeat", heartbeat_with_task_start_race)
@@ -627,10 +1271,24 @@ def test_collector_keeps_task_open_for_print_committed_after_first_empty_closing
     )
     uploaded_source_indexes: list[str] = []
 
-    monkeypatch.setattr(collector_client, "heartbeat", lambda *_args, **_kwargs: {"tasks": []})
+    completed_task = {
+        "id": 58,
+        "status": "completed",
+        "started_at": "2026-07-27T01:59:00+00:00",
+        "ended_at": "2026-07-27T02:00:05+00:00",
+    }
+    monkeypatch.setattr(
+        collector_client,
+        "heartbeat",
+        lambda *_args, **_kwargs: {
+            "assignment_protocol_version": 2,
+            "task_windows": [completed_task],
+            "window_coverage_complete": True,
+        },
+    )
 
     def capture_upload(_base_url, _token, _task_id, records):
-        uploaded_source_indexes.extend(record["source_index"] for record in records)
+        uploaded_source_indexes.extend(str(record["source_columns"]["rowid"]) for record in records)
         return {"inserted": len(records), "skipped": 0}
 
     monkeypatch.setattr(collector_client, "upload_records", capture_upload)
@@ -673,11 +1331,15 @@ def test_collector_drains_completed_task_without_collecting_post_stop_prints(
     monkeypatch.setattr(
         collector_client,
         "heartbeat",
-        lambda *_args, **_kwargs: {"tasks": [completed_task]},
+        lambda *_args, **_kwargs: {
+            "assignment_protocol_version": 2,
+            "task_windows": [completed_task],
+            "window_coverage_complete": True,
+        },
     )
 
     def capture_upload(_base_url, _token, _task_id, records):
-        uploaded_source_indexes.extend(record["source_index"] for record in records)
+        uploaded_source_indexes.extend(str(record["source_columns"]["rowid"]) for record in records)
         return {"inserted": len(records), "skipped": 0}
 
     monkeypatch.setattr(collector_client, "upload_records", capture_upload)
@@ -725,20 +1387,21 @@ def test_collector_keeps_previous_round_until_late_print_can_no_longer_enter_new
         "started_at": "2026-07-27T02:01:00+00:00",
     }
 
-    def heartbeat_with_tracked_completed(*_args, **kwargs):
-        tracked = kwargs["state"].active_task_ids()
-        tasks = [collecting_task]
-        if 58 in tracked:
-            tasks.insert(0, completed_task)
-        return {"tasks": tasks}
-
     uploads: list[tuple[int, str]] = []
 
     def capture_upload(_base_url, _token, task_id, records):
-        uploads.extend((task_id, record["source_index"]) for record in records)
+        uploads.extend((task_id, str(record["source_columns"]["rowid"])) for record in records)
         return {"inserted": len(records), "skipped": 0}
 
-    monkeypatch.setattr(collector_client, "heartbeat", heartbeat_with_tracked_completed)
+    monkeypatch.setattr(
+        collector_client,
+        "heartbeat",
+        lambda *_args, **_kwargs: {
+            "assignment_protocol_version": 2,
+            "task_windows": [completed_task, collecting_task],
+            "window_coverage_complete": True,
+        },
+    )
     monkeypatch.setattr(collector_client, "upload_records", capture_upload)
 
     collector_client.run_sqlite_once("http://collector.test", "token", state, [adapter], 100)
@@ -753,7 +1416,829 @@ def test_collector_keeps_previous_round_until_late_print_can_no_longer_enter_new
     assert uploads == [(58, "2")]
 
 
-def test_collector_state_loads_old_file_and_counts_each_pending_row_once(tmp_path) -> None:
+def test_collector_requests_windows_for_oldest_time_in_the_whole_pending_batch(tmp_path) -> None:
+    db_path = tmp_path / "print.db"
+    with collector_client.sqlite3.connect(db_path) as connection:
+        connection.execute("create table task (taskID text, msg text, time text)")
+        connection.executemany(
+            "insert into task (taskID, msg, time) values (?, ?, ?)",
+            [
+                ("committed-first", "{}", "2026-07-27 10:05:00"),
+                ("late-old-time", "{}", "2026-07-27 10:01:00"),
+            ],
+        )
+
+    adapter = collector_client.PrintDbAdapter("cainiao-cnprint", "Cainiao", db_path)
+    state = collector_client.CollectorState(idle_watermarks={"cainiao-cnprint": 0})
+
+    assert collector_client.pending_batch_profile(state, [adapter], 100) == (
+        2,
+        "2026-07-27 10:01:00",
+        "2026-07-27 10:05:00",
+    )
+
+
+def test_collector_keeps_invalid_timestamp_row_with_an_audit_reason(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "print.db"
+    with collector_client.sqlite3.connect(db_path) as connection:
+        connection.execute("create table task (taskID text, msg text, time text)")
+        connection.execute(
+            "insert into task (taskID, msg, time) values (?, ?, ?)",
+            ("invalid-time", "{}", "not-a-time"),
+        )
+
+    adapter = collector_client.PrintDbAdapter("cainiao-cnprint", "Cainiao", db_path)
+    state = collector_client.CollectorState(idle_watermarks={"cainiao-cnprint": 0})
+    uploaded: list[dict[str, object]] = []
+
+    def capture_upload(_base_url, _token, _task_id, records):
+        uploaded.extend(records)
+        return {"inserted": len(records), "duplicates": 0, "window_rejected": 0}
+
+    monkeypatch.setattr(collector_client, "upload_records", capture_upload)
+    collector_client.upload_adapter_rows(
+        "http://collector.test",
+        "token",
+        state,
+        adapter,
+        [
+            {
+                "id": 58,
+                "status": "completed",
+                "started_at": "2026-07-27T01:59:00+00:00",
+                "ended_at": "2026-07-27T02:00:05+00:00",
+            }
+        ],
+        100,
+    )
+
+    assert uploaded[0]["captured_at"] == "not-a-time"
+    assert uploaded[0]["source_columns"]["capture_assignment"] == "timestamp_invalid_fallback"
+    assert state.source_cursor(adapter) == 1
+
+
+def test_fresh_collector_does_not_baseline_past_an_invalid_timestamp_row(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "print.db"
+    with collector_client.sqlite3.connect(db_path) as connection:
+        connection.execute("create table task (taskID text, msg text, time text)")
+        connection.executemany(
+            "insert into task (taskID, msg, time) values (?, ?, ?)",
+            [
+                ("old", '{"task":"old"}', "2026-07-27 09:00:00"),
+                ("invalid", '{"task":"invalid"}', "not-a-time"),
+                ("late-old", '{"task":"late-old"}', "2026-07-27 09:30:00"),
+                ("current", '{"task":"current"}', "2026-07-27 10:01:00"),
+            ],
+        )
+
+    adapter = collector_client.PrintDbAdapter("cainiao-cnprint", "Cainiao", db_path)
+    state = collector_client.CollectorState()
+    uploaded: list[dict[str, object]] = []
+
+    def capture_upload(_base_url, _token, _task_id, records):
+        uploaded.extend(records)
+        return {"inserted": len(records), "duplicates": 0, "window_rejected": 0}
+
+    monkeypatch.setattr(collector_client, "upload_records", capture_upload)
+    collector_client.upload_adapter_rows(
+        "http://collector.test",
+        "token",
+        state,
+        adapter,
+        [
+            {
+                "id": 58,
+                "status": "collecting",
+                "started_at": "2026-07-27T02:00:00+00:00",
+            }
+        ],
+        100,
+        window_coverage_complete=True,
+    )
+
+    assert [record["source_columns"]["rowid"] for record in uploaded] == [2, 4]
+    assert uploaded[0]["source_columns"]["capture_assignment"] == "timestamp_invalid_fallback"
+    assert state.source_cursor(adapter) == 4
+
+
+def test_collector_assigns_same_second_boundary_row_to_one_round_only(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "print.db"
+    with collector_client.sqlite3.connect(db_path) as connection:
+        connection.execute("create table task (taskID text, msg text, time text)")
+        connection.execute(
+            "insert into task (taskID, msg, time) values (?, ?, ?)",
+            ("boundary", '{"task":{"taskID":"BOUNDARY"}}', "2026-07-27 10:00:05"),
+        )
+
+    adapter = collector_client.PrintDbAdapter("cainiao-cnprint", "Cainiao", db_path)
+    state = collector_client.CollectorState(idle_watermarks={"cainiao-cnprint": 0})
+    monkeypatch.setattr(
+        collector_client,
+        "heartbeat",
+        lambda *_args, **_kwargs: {
+            "assignment_protocol_version": 2,
+            "task_windows": [
+                {
+                    "id": 58,
+                    "status": "completed",
+                    "started_at": "2026-07-27T01:59:00+00:00",
+                    "ended_at": "2026-07-27T02:00:05.900000+00:00",
+                },
+                {
+                    "id": 59,
+                    "status": "collecting",
+                    "started_at": "2026-07-27T02:00:05.100000+00:00",
+                },
+            ],
+            "window_coverage_complete": True,
+        },
+    )
+    uploads: list[tuple[int, str]] = []
+
+    def capture_upload(_base_url, _token, task_id, records):
+        uploads.extend((task_id, str(record["source_columns"]["rowid"])) for record in records)
+        return {"inserted": len(records), "skipped": 0}
+
+    monkeypatch.setattr(collector_client, "upload_records", capture_upload)
+
+    collector_client.run_sqlite_once("http://collector.test", "token", state, [adapter], 100)
+
+    assert uploads == [(59, "1")]
+
+
+def test_collector_keeps_cursor_when_print_db_is_replaced_with_same_history(tmp_path) -> None:
+    db_path = tmp_path / "print.db"
+    with collector_client.sqlite3.connect(db_path) as connection:
+        connection.execute("create table task (taskID text, msg text, time text)")
+        connection.executemany(
+            "insert into task (taskID, msg, time) values (?, ?, ?)",
+            [
+                ("one", '{"task":"one"}', "2026-07-27 10:00:01"),
+                ("two", '{"task":"two"}', "2026-07-27 10:00:02"),
+            ],
+        )
+
+    adapter = collector_client.PrintDbAdapter("cainiao-cnprint", "Cainiao", db_path)
+    state = collector_client.CollectorState(
+        idle_watermarks={"cainiao-cnprint": 2},
+        db_generations={"cainiao-cnprint": str(adapter.generation())},
+    )
+    state.advance_source_cursor(adapter, 2)
+    state.sync_db_generation(adapter)
+    original_epoch = state.source_epochs["cainiao-cnprint"]
+
+    replacement = tmp_path / "replacement.db"
+    shutil.copyfile(db_path, replacement)
+    replacement_adapter = collector_client.PrintDbAdapter(
+        "cainiao-cnprint",
+        "Cainiao",
+        replacement,
+    )
+    assert str(replacement_adapter.generation()) != state.db_generations["cainiao-cnprint"]
+
+    state.sync_db_generation(replacement_adapter)
+
+    assert state.source_cursor(replacement_adapter) == 2
+    assert state.source_epochs["cainiao-cnprint"] == original_epoch
+
+
+def test_collector_resets_cursor_and_changes_source_identity_for_new_print_db(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "print.db"
+    with collector_client.sqlite3.connect(db_path) as connection:
+        connection.execute("create table task (taskID text, msg text, time text)")
+        connection.execute(
+            "insert into task (taskID, msg, time) values (?, ?, ?)",
+            ("old", '{"task":"old"}', "2026-07-27 10:00:01"),
+        )
+
+    adapter = collector_client.PrintDbAdapter("cainiao-cnprint", "Cainiao", db_path)
+    state = collector_client.CollectorState(
+        idle_watermarks={"cainiao-cnprint": 1},
+        db_generations={"cainiao-cnprint": str(adapter.generation())},
+    )
+    state.advance_source_cursor(adapter, 1)
+    old_generation = state.db_generations["cainiao-cnprint"]
+
+    replacement = tmp_path / "replacement.db"
+    with collector_client.sqlite3.connect(replacement) as connection:
+        connection.execute("create table task (taskID text, msg text, time text)")
+        connection.execute(
+            "insert into task (taskID, msg, time) values (?, ?, ?)",
+            ("new", '{"task":"new"}', "2026-07-27 10:00:03"),
+        )
+    replacement_adapter = collector_client.PrintDbAdapter(
+        "cainiao-cnprint",
+        "Cainiao",
+        replacement,
+    )
+    state.sync_db_generation(replacement_adapter)
+    assert state.source_cursor(replacement_adapter) == 0
+    assert state.db_generations["cainiao-cnprint"] != old_generation
+
+    uploaded_source_indexes: list[str] = []
+
+    def capture_upload(_base_url, _token, _task_id, records):
+        uploaded_source_indexes.extend(record["source_index"] for record in records)
+        return {"inserted": len(records), "duplicates": 0, "window_rejected": 0}
+
+    monkeypatch.setattr(collector_client, "upload_records", capture_upload)
+    collector_client.upload_adapter_rows(
+        "http://collector.test",
+        "token",
+        state,
+        replacement_adapter,
+        [
+            {
+                "id": 58,
+                "status": "collecting",
+                "started_at": "2026-07-27T01:59:00+00:00",
+            }
+        ],
+        100,
+    )
+
+    assert uploaded_source_indexes == [
+        f"{state.source_epochs['cainiao-cnprint']}:1"
+    ]
+
+
+def test_collector_rotates_logical_epoch_when_same_db_file_is_rebuilt(tmp_path) -> None:
+    db_path = tmp_path / "print.db"
+    with collector_client.sqlite3.connect(db_path) as connection:
+        connection.execute("create table task (taskID text, msg text, time text)")
+        connection.executemany(
+            "insert into task (taskID, msg, time) values (?, ?, ?)",
+            [
+                ("old-1", '{"task":"old-1"}', "2026-07-27 10:00:01"),
+                ("old-2", '{"task":"old-2"}', "2026-07-27 10:00:02"),
+            ],
+        )
+
+    adapter = collector_client.PrintDbAdapter("cainiao-cnprint", "Cainiao", db_path)
+    state = collector_client.CollectorState(idle_watermarks={"cainiao-cnprint": 2})
+    state.advance_source_cursor(adapter, 2)
+    state.sync_db_generation(adapter)
+    original_generation = state.db_generations["cainiao-cnprint"]
+    assert state.source_epochs["cainiao-cnprint"] == ""
+
+    with collector_client.sqlite3.connect(db_path) as connection:
+        connection.execute("delete from task")
+        connection.executemany(
+            "insert into task (taskID, msg, time) values (?, ?, ?)",
+            [
+                ("new-1", '{"task":"new-1"}', "2026-07-27 11:00:01"),
+                ("new-2", '{"task":"new-2"}', "2026-07-27 11:00:02"),
+                ("new-3", '{"task":"new-3"}', "2026-07-27 11:00:03"),
+            ],
+        )
+
+    state.sync_db_generation(adapter)
+
+    assert state.db_generations["cainiao-cnprint"] == original_generation
+    assert state.source_cursor(adapter) == 0
+    assert state.source_epochs["cainiao-cnprint"]
+
+
+def test_collector_quarantines_history_when_uploaded_row_is_updated(tmp_path) -> None:
+    db_path = tmp_path / "print.db"
+    with collector_client.sqlite3.connect(db_path) as connection:
+        connection.execute("create table task (taskID text, msg text, time text)")
+        connection.executemany(
+            "insert into task (taskID, msg, time) values (?, ?, ?)",
+            [
+                ("one", '{"task":"one"}', "2026-07-27 10:00:01"),
+                ("two", '{"task":"two"}', "2026-07-27 10:00:02"),
+            ],
+        )
+
+    adapter = collector_client.PrintDbAdapter("cainiao-cnprint", "Cainiao", db_path)
+    state = collector_client.CollectorState(idle_watermarks={"cainiao-cnprint": 2})
+    state.advance_source_cursor(adapter, 2)
+    state.sync_db_generation(adapter)
+    original_epoch = state.source_epochs["cainiao-cnprint"]
+
+    with collector_client.sqlite3.connect(db_path) as connection:
+        connection.execute("update task set msg = ? where rowid = 2", ('{"task":"two-updated"}',))
+
+    state.sync_db_generation(adapter)
+
+    assert state.source_cursor(adapter) == 0
+    assert state.source_epochs["cainiao-cnprint"] != original_epoch
+    assert state.ambiguous_replay_until["cainiao-cnprint"] == 2
+    assert state.last_reconnect_reason == "source_history_ambiguous"
+
+
+def test_collector_quarantines_reused_rows_when_same_db_is_rebuilt_with_same_origin(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "print.db"
+    with collector_client.sqlite3.connect(db_path) as connection:
+        connection.execute("create table task (taskID text, msg text, time text)")
+        connection.executemany(
+            "insert into task (taskID, msg, time) values (?, ?, ?)",
+            [
+                ("same", '{"task":"same"}', "2026-07-27 10:00:01"),
+                ("old", '{"task":"old"}', "2026-07-27 10:00:02"),
+            ],
+        )
+
+    adapter = collector_client.PrintDbAdapter("cainiao-cnprint", "Cainiao", db_path)
+    state = collector_client.CollectorState(idle_watermarks={"cainiao-cnprint": 2})
+    state.advance_source_cursor(adapter, 2)
+    state.sync_db_generation(adapter)
+
+    with collector_client.sqlite3.connect(db_path) as connection:
+        connection.execute("delete from task")
+        connection.executemany(
+            "insert into task (taskID, msg, time) values (?, ?, ?)",
+            [
+                ("same", '{"task":"same"}', "2026-07-27 10:00:01"),
+                ("new-two", '{"task":"new-two"}', "2026-07-27 10:00:02"),
+                ("new-three", '{"task":"new-three"}', "2026-07-27 10:00:03"),
+            ],
+        )
+
+    state.sync_db_generation(adapter)
+    uploads: list[dict[str, object]] = []
+
+    def capture_upload(_base_url, _token, _task_id, records):
+        uploads.extend(records)
+        return {"inserted": len(records), "duplicates": 0, "window_rejected": 0}
+
+    monkeypatch.setattr(collector_client, "upload_records", capture_upload)
+    collector_client.upload_adapter_rows(
+        "http://collector.test",
+        "token",
+        state,
+        adapter,
+        [
+            {
+                "id": 58,
+                "status": "collecting",
+                "started_at": "2026-07-27T01:59:00+00:00",
+            }
+        ],
+        100,
+    )
+
+    assert [record["source_columns"]["rowid"] for record in uploads] == [1, 2, 3]
+    assert [
+        record["source_columns"].get("capture_assignment") for record in uploads
+    ] == ["source_history_ambiguous", "source_history_ambiguous", None]
+    assert state.source_cursor(adapter) == 3
+    assert "cainiao-cnprint" not in state.ambiguous_replay_until
+
+
+def test_collector_persists_rotated_epoch_before_upload_for_ambiguous_and_reset_recovery(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    attempts: dict[str, list[list[str]]] = {"ambiguous": [], "reset": []}
+    active_case = ""
+    seen: dict[str, set[str]] = {"ambiguous": set(), "reset": set()}
+
+    monkeypatch.setattr(
+        collector_client,
+        "heartbeat",
+        lambda *_args, **_kwargs: {
+            "assignment_protocol_version": 2,
+            "task_windows": [
+                {
+                    "id": 58,
+                    "status": "collecting",
+                    "started_at": "2026-07-27T01:59:00+00:00",
+                }
+            ],
+            "window_coverage_complete": True,
+        },
+    )
+
+    def capture_upload(_base_url, _token, _task_id, records):
+        indexes = [str(record["source_index"]) for record in records]
+        attempts[active_case].append(indexes)
+        inserted = sum(index not in seen[active_case] for index in indexes)
+        seen[active_case].update(indexes)
+        return {
+            "inserted": inserted,
+            "duplicates": len(indexes) - inserted,
+            "window_rejected": 0,
+        }
+
+    monkeypatch.setattr(collector_client, "upload_records", capture_upload)
+
+    for case in ("ambiguous", "reset"):
+        active_case = case
+        case_dir = tmp_path / case
+        case_dir.mkdir()
+        db_path = case_dir / "print.db"
+        state_path = case_dir / "collector-state.json"
+        with collector_client.sqlite3.connect(db_path) as connection:
+            connection.execute("create table task (taskID text, msg text, time text)")
+            connection.executemany(
+                "insert into task (taskID, msg, time) values (?, ?, ?)",
+                [
+                    ("old-1", '{"task":"old-1"}', "2026-07-27 10:00:01"),
+                    ("old-2", '{"task":"old-2"}', "2026-07-27 10:00:02"),
+                ],
+            )
+        connection.close()
+
+        adapter = collector_client.PrintDbAdapter("cainiao-cnprint", "Cainiao", db_path)
+        initial_state = collector_client.CollectorState(idle_watermarks={"cainiao-cnprint": 2})
+        initial_state.advance_source_cursor(adapter, 2)
+        initial_state.sync_db_generation(adapter)
+        initial_state.save(state_path)
+
+        if case == "ambiguous":
+            with collector_client.sqlite3.connect(db_path) as connection:
+                connection.execute("delete from task")
+                connection.executemany(
+                    "insert into task (taskID, msg, time) values (?, ?, ?)",
+                    [
+                        ("old-1", '{"task":"old-1"}', "2026-07-27 10:00:01"),
+                        ("new-2", '{"task":"new-2"}', "2026-07-27 10:00:02"),
+                        ("new-3", '{"task":"new-3"}', "2026-07-27 10:00:03"),
+                    ],
+                )
+            connection.close()
+        else:
+            with collector_client.sqlite3.connect(db_path) as connection:
+                connection.execute("delete from task")
+                connection.execute(
+                    "insert into task (taskID, msg, time) values (?, ?, ?)",
+                    ("new-1", '{"task":"new-1"}', "2026-07-27 10:00:01"),
+                )
+            connection.close()
+
+        crashed_state = collector_client.CollectorState.load(state_path)
+        collector_client.run_sqlite_once(
+            "http://collector.test",
+            "token",
+            crashed_state,
+            [adapter],
+            100,
+        )
+        persisted_before_upload = collector_client.CollectorState.load(state_path)
+        assert persisted_before_upload.source_cursor(adapter) == 0
+
+        with collector_client.sqlite3.connect(db_path) as connection:
+            next_row = connection.execute("select coalesce(max(rowid), 0) + 1 from task").fetchone()[0]
+            connection.execute(
+                "insert into task (taskID, msg, time) values (?, ?, ?)",
+                (
+                    f"new-{next_row}",
+                    f'{{"task":"new-{next_row}"}}',
+                    f"2026-07-27 10:00:0{next_row}",
+                ),
+            )
+        connection.close()
+
+        restarted_state = collector_client.CollectorState.load(state_path)
+        collector_client.run_sqlite_once(
+            "http://collector.test",
+            "token",
+            restarted_state,
+            [adapter],
+            100,
+        )
+
+        first_attempt, second_attempt = attempts[case]
+        assert second_attempt[: len(first_attempt)] == first_attempt
+        assert len(second_attempt) == len(first_attempt) + 1
+        assert len(seen[case]) == len(second_attempt)
+
+
+def test_collector_rechecks_database_snapshot_after_heartbeat_before_advancing_cursor(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "print.db"
+    state_path = tmp_path / "collector-state.json"
+    with collector_client.sqlite3.connect(db_path) as connection:
+        connection.execute("create table task (taskID text, msg text, time text)")
+        connection.executemany(
+            "insert into task (taskID, msg, time) values (?, ?, ?)",
+            [
+                ("old-1", '{"task":"old-1"}', "2026-07-27 10:00:01"),
+                ("old-2", '{"task":"old-2"}', "2026-07-27 10:00:02"),
+            ],
+        )
+    connection.close()
+
+    adapter = collector_client.PrintDbAdapter("cainiao-cnprint", "Cainiao", db_path)
+    state = collector_client.CollectorState(idle_watermarks={"cainiao-cnprint": 2})
+    state.advance_source_cursor(adapter, 2)
+    state.sync_db_generation(adapter)
+    state.state_path = state_path
+    state.save(state_path)
+
+    heartbeat_count = 0
+
+    def rebuild_during_heartbeat(*_args, **_kwargs):
+        nonlocal heartbeat_count
+        heartbeat_count += 1
+        if heartbeat_count == 1:
+            with collector_client.sqlite3.connect(db_path) as connection:
+                connection.execute("delete from task")
+                connection.executemany(
+                    "insert into task (taskID, msg, time) values (?, ?, ?)",
+                    [
+                        ("old-1", '{"task":"old-1"}', "2026-07-27 10:00:01"),
+                        ("new-2", '{"task":"new-2"}', "2026-07-27 10:00:02"),
+                        ("new-3", '{"task":"new-3"}', "2026-07-27 10:00:03"),
+                    ],
+                )
+            connection.close()
+        return {
+            "assignment_protocol_version": 2,
+            "task_windows": [
+                {
+                    "id": 58,
+                    "status": "collecting",
+                    "started_at": "2026-07-27T01:59:00+00:00",
+                }
+            ],
+            "window_coverage_complete": True,
+        }
+
+    uploads: list[list[dict[str, object]]] = []
+
+    def capture_upload(_base_url, _token, _task_id, records):
+        uploads.append(records)
+        return {"inserted": len(records), "duplicates": 0, "window_rejected": 0}
+
+    monkeypatch.setattr(collector_client, "heartbeat", rebuild_during_heartbeat)
+    monkeypatch.setattr(collector_client, "upload_records", capture_upload)
+
+    collector_client.run_sqlite_once("http://collector.test", "token", state, [adapter], 100)
+    collector_client.run_sqlite_once("http://collector.test", "token", state, [adapter], 100)
+
+    assert len(uploads) == 1
+    assert [record["source_columns"]["rowid"] for record in uploads[0]] == [1, 2, 3]
+    assert [
+        record["source_columns"].get("capture_assignment") for record in uploads[0]
+    ] == ["source_history_ambiguous", "source_history_ambiguous", None]
+    assert state.source_cursor(adapter) == 3
+
+
+def test_collector_detects_middle_history_change_committed_during_upload(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "print.db"
+    with collector_client.sqlite3.connect(db_path) as connection:
+        connection.execute("create table task (taskID text, msg text, time text)")
+        connection.executemany(
+            "insert into task (taskID, msg, time) values (?, ?, ?)",
+            [
+                ("same-1", '{"task":"same-1"}', "2026-07-27 10:00:01"),
+                ("old-2", '{"task":"old-2"}', "2026-07-27 10:00:02"),
+                ("same-3", '{"task":"same-3"}', "2026-07-27 10:00:03"),
+            ],
+        )
+    connection.close()
+
+    adapter = collector_client.PrintDbAdapter("cainiao-cnprint", "Cainiao", db_path)
+    state = collector_client.CollectorState(idle_watermarks={"cainiao-cnprint": 2})
+    state.advance_source_cursor(adapter, 2)
+    state.sync_db_generation(adapter)
+    monkeypatch.setattr(
+        collector_client,
+        "heartbeat",
+        lambda *_args, **_kwargs: {
+            "assignment_protocol_version": 2,
+            "task_windows": [
+                {
+                    "id": 58,
+                    "status": "collecting",
+                    "started_at": "2026-07-27T01:59:00+00:00",
+                }
+            ],
+            "window_coverage_complete": True,
+        },
+    )
+
+    uploads: list[list[dict[str, object]]] = []
+
+    def rebuild_on_first_upload(_base_url, _token, _task_id, records):
+        uploads.append(records)
+        if len(uploads) == 1:
+            with collector_client.sqlite3.connect(db_path) as connection:
+                connection.execute("delete from task")
+                connection.executemany(
+                    "insert into task (taskID, msg, time) values (?, ?, ?)",
+                    [
+                        ("same-1", '{"task":"same-1"}', "2026-07-27 10:00:01"),
+                        ("new-2", '{"task":"new-2"}', "2026-07-27 10:00:02"),
+                        ("same-3", '{"task":"same-3"}', "2026-07-27 10:00:03"),
+                    ],
+                )
+            connection.close()
+        return {"inserted": len(records), "duplicates": 0, "window_rejected": 0}
+
+    monkeypatch.setattr(collector_client, "upload_records", rebuild_on_first_upload)
+
+    collector_client.run_sqlite_once("http://collector.test", "token", state, [adapter], 100)
+    collector_client.run_sqlite_once("http://collector.test", "token", state, [adapter], 100)
+
+    assert [record["source_columns"]["rowid"] for record in uploads[0]] == [3]
+    assert [record["source_columns"]["rowid"] for record in uploads[1]] == [1, 2, 3]
+    assert uploads[1][1]["source_columns"]["capture_assignment"] == "source_history_ambiguous"
+    assert sum(
+        record["source_columns"]["rowid"] == 3
+        and not record["source_columns"].get("capture_assignment")
+        for batch in uploads
+        for record in batch
+    ) == 1
+
+
+def test_collector_audits_prefix_only_at_startup_and_when_backlog_is_drained(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "print.db"
+    with collector_client.sqlite3.connect(db_path) as connection:
+        connection.execute("create table task (taskID text, msg text, time text)")
+        connection.executemany(
+            "insert into task (taskID, msg, time) values (?, ?, ?)",
+            [
+                (str(index), f'{{"task":"{index}"}}', f"2026-07-27 10:{index // 60:02d}:{index % 60:02d}")
+                for index in range(1, 251)
+            ],
+        )
+    adapter = collector_client.PrintDbAdapter("cainiao-cnprint", "Cainiao", db_path)
+    state = collector_client.CollectorState(
+        idle_watermarks={"cainiao-cnprint": 0},
+        source_epochs={"cainiao-cnprint": "epoch-a"},
+        prefix_fingerprints={
+            "cainiao-cnprint": collector_client.EMPTY_PREFIX_FINGERPRINT,
+        },
+        prefix_start_rowids={"cainiao-cnprint": 0},
+    )
+    monkeypatch.setattr(
+        collector_client,
+        "heartbeat",
+        lambda *_args, **_kwargs: {
+            "assignment_protocol_version": 2,
+            "task_windows": [
+                {
+                    "id": 58,
+                    "status": "collecting",
+                    "started_at": "2026-07-27T01:59:00+00:00",
+                }
+            ],
+            "window_coverage_complete": True,
+        },
+    )
+    monkeypatch.setattr(
+        collector_client,
+        "upload_records",
+        lambda _base_url, _token, _task_id, records: {
+            "inserted": len(records),
+            "duplicates": 0,
+            "window_rejected": 0,
+        },
+    )
+    audits: list[tuple[int, int]] = []
+    original_prefix_fingerprint = collector_client.PrintDbAdapter.prefix_fingerprint
+
+    def counted_prefix_fingerprint(self, start_rowid, end_rowid):
+        audits.append((start_rowid, end_rowid))
+        return original_prefix_fingerprint(self, start_rowid, end_rowid)
+
+    monkeypatch.setattr(
+        collector_client.PrintDbAdapter,
+        "prefix_fingerprint",
+        counted_prefix_fingerprint,
+    )
+
+    for _ in range(3):
+        collector_client.run_sqlite_once("http://collector.test", "token", state, [adapter], 100)
+
+    assert state.source_cursor(adapter) == 250
+    assert audits == [(0, 0), (0, 250)]
+
+
+def test_collector_detects_caught_up_middle_row_rewrite_without_new_rowid(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "print.db"
+    with collector_client.sqlite3.connect(db_path) as connection:
+        connection.execute("create table task (taskID text, msg text, time text)")
+        connection.executemany(
+            "insert into task (taskID, msg, time) values (?, ?, ?)",
+            [
+                ("same-1", '{"task":"same-1"}', "2026-07-27 10:00:01"),
+                ("old-2", '{"task":"old-2"}', "2026-07-27 10:00:02"),
+                ("same-3", '{"task":"same-3"}', "2026-07-27 10:00:03"),
+            ],
+        )
+    adapter = collector_client.PrintDbAdapter("cainiao-cnprint", "Cainiao", db_path)
+    state = collector_client.CollectorState(
+        idle_watermarks={"cainiao-cnprint": 0},
+        source_epochs={"cainiao-cnprint": "epoch-a"},
+        prefix_fingerprints={
+            "cainiao-cnprint": collector_client.EMPTY_PREFIX_FINGERPRINT,
+        },
+        prefix_start_rowids={"cainiao-cnprint": 0},
+    )
+    monkeypatch.setattr(
+        collector_client,
+        "heartbeat",
+        lambda *_args, **_kwargs: {
+            "assignment_protocol_version": 2,
+            "task_windows": [
+                {
+                    "id": 58,
+                    "status": "collecting",
+                    "started_at": "2026-07-27T01:59:00+00:00",
+                }
+            ],
+            "window_coverage_complete": True,
+        },
+    )
+    uploads: list[list[dict[str, object]]] = []
+    monkeypatch.setattr(
+        collector_client,
+        "upload_records",
+        lambda _base_url, _token, _task_id, records: (
+            uploads.append(records)
+            or {"inserted": len(records), "duplicates": 0, "window_rejected": 0}
+        ),
+    )
+
+    collector_client.run_sqlite_once("http://collector.test", "token", state, [adapter], 100)
+    previous_change_token = adapter.change_token()
+    with collector_client.sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "update task set taskID = ?, msg = ? where rowid = 2",
+            ("new-2", '{"task":"new-2"}'),
+        )
+    assert adapter.change_token() != previous_change_token
+
+    collector_client.run_sqlite_once("http://collector.test", "token", state, [adapter], 100)
+
+    assert [record["source_columns"]["rowid"] for record in uploads[0]] == [1, 2, 3]
+    assert [record["source_columns"]["rowid"] for record in uploads[1]] == [1, 2, 3]
+    assert uploads[1][1]["raw_payload"] == '{"task":"new-2"}'
+    assert all(
+        record["source_columns"]["capture_assignment"] == "source_history_ambiguous"
+        for record in uploads[1]
+    )
+
+
+def test_consecutive_same_max_middle_rewrites_rotate_source_epoch_each_time(tmp_path) -> None:
+    db_path = tmp_path / "print.db"
+    with collector_client.sqlite3.connect(db_path) as connection:
+        connection.execute("create table task (taskID text, msg text, time text)")
+        connection.executemany(
+            "insert into task (taskID, msg, time) values (?, ?, ?)",
+            [
+                ("same-1", '{"task":"same-1"}', "2026-07-27 10:00:01"),
+                ("old-2", '{"task":"old-2"}', "2026-07-27 10:00:02"),
+                ("same-3", '{"task":"same-3"}', "2026-07-27 10:00:03"),
+            ],
+        )
+
+    adapter = collector_client.PrintDbAdapter("cainiao-cnprint", "Cainiao", db_path)
+    state = collector_client.CollectorState()
+    initial_snapshot = adapter.snapshot(0, 100)
+    assert initial_snapshot is not None
+    state.sync_db_generation(adapter, initial_snapshot)
+    state.advance_source_cursor(adapter, 3, snapshot=initial_snapshot)
+
+    with collector_client.sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "update task set taskID = ?, msg = ? where rowid = 2",
+            ("new-2", '{"task":"new-2"}'),
+        )
+    state.sync_db_generation(adapter, adapter.snapshot(3, 100), audit_prefix=True)
+    first_replay_epoch = state.source_epochs[adapter.source_component]
+    first_replay_snapshot = adapter.snapshot(0, 100)
+    assert first_replay_snapshot is not None
+    state.advance_source_cursor(adapter, 3, snapshot=first_replay_snapshot)
+
+    with collector_client.sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "update task set taskID = ?, msg = ? where rowid = 2",
+            ("newer-2", '{"task":"newer-2"}'),
+        )
+    state.sync_db_generation(adapter, adapter.snapshot(3, 100), audit_prefix=True)
+
+    assert state.source_epochs[adapter.source_component] != first_replay_epoch
+    assert state.source_cursor(adapter) == 0
+    assert state.ambiguous_replay_until[adapter.source_component] == 3
+
+
+def test_collector_state_replays_old_file_conservatively_and_keeps_rollback_watermark(tmp_path) -> None:
     state_path = tmp_path / "collector-state.json"
     collector_client.write_json(
         state_path,
@@ -779,20 +2264,29 @@ def test_collector_state_loads_old_file_and_counts_each_pending_row_once(tmp_pat
     adapter = collector_client.PrintDbAdapter("cainiao-cnprint", "Cainiao", db_path)
 
     state = collector_client.CollectorState.load(state_path)
+    state.sync_db_generation(adapter)
 
     assert state.last_upload_at is None
-    assert state.last_reconnect_reason is None
-    assert state.closing_empty_polls == {}
-    assert state.pending_count([adapter]) == 2
+    assert state.last_reconnect_reason == "source_history_ambiguous"
+    assert state.source_cursor(adapter) == 0
+    assert state.pending_count([adapter]) == 3
+    assert state.source_epochs["cainiao-cnprint"]
+    assert state.ambiguous_replay_until["cainiao-cnprint"] == 2
+    assert collector_client.build_raw_record(
+        adapter,
+        adapter.read_since(0, 1)[0],
+        state.source_epochs["cainiao-cnprint"],
+    )["source_index"].endswith(":1")
 
+    state.advance_source_cursor(adapter, 1)
     state.last_upload_at = "2026-07-27T10:00:00+00:00"
     state.last_reconnect_reason = "network"
-    state.closing_empty_polls["58"] = 1
     state.save(state_path)
     reloaded = collector_client.CollectorState.load(state_path)
     assert reloaded.last_upload_at == "2026-07-27T10:00:00+00:00"
     assert reloaded.last_reconnect_reason == "network"
-    assert reloaded.closing_empty_polls == {"58": 1}
+    assert reloaded.capture_watermarks == {"58:cainiao-cnprint": 1}
+    assert reloaded.source_cursor(adapter) == 1
 
 
 def test_collector_pending_count_is_unknown_when_print_db_is_unavailable(tmp_path) -> None:
@@ -836,27 +2330,84 @@ def test_collector_retries_unacknowledged_rows_without_advancing_watermark(tmp_p
         "utc_now",
         lambda: "2026-07-27T10:00:00+00:00",
     )
+    tasks = [
+        {
+            "id": 58,
+            "status": "collecting",
+            "started_at": "2026-07-27T01:59:00+00:00",
+        }
+    ]
 
     try:
-        collector_client.upload_rows_for_task("http://collector.test", "token", state, 58, adapter, 100)
+        collector_client.upload_adapter_rows(
+            "http://collector.test", "token", state, adapter, tasks, 100
+        )
     except ConnectionError:
         pass
     else:
         raise AssertionError("first upload must simulate a lost response")
 
-    assert state.capture_watermarks["58:cainiao-cnprint"] == 0
+    assert state.source_cursor(adapter) == 0
     assert state.last_upload_at is None
-    assert collector_client.upload_rows_for_task(
+    assert collector_client.upload_adapter_rows(
         "http://collector.test",
         "token",
         state,
-        58,
         adapter,
+        tasks,
         100,
     ) == 2
     assert attempts == [["1", "2"], ["1", "2"]]
-    assert state.capture_watermarks["58:cainiao-cnprint"] == 2
+    assert state.source_cursor(adapter) == 2
     assert state.last_upload_at == "2026-07-27T10:00:00+00:00"
+
+
+def test_collector_does_not_advance_cursor_when_server_rejects_a_task_window(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "print.db"
+    with collector_client.sqlite3.connect(db_path) as connection:
+        connection.execute("create table task (taskID text, msg text, time text)")
+        connection.execute(
+            "insert into task (taskID, msg, time) values (?, ?, ?)",
+            ("local-1", '{"task":"one"}', "2026-07-27 10:00:01"),
+        )
+
+    adapter = collector_client.PrintDbAdapter("cainiao-cnprint", "Cainiao", db_path)
+    state = collector_client.CollectorState(idle_watermarks={"cainiao-cnprint": 0})
+    state.sync_db_generation(adapter)
+    monkeypatch.setattr(
+        collector_client,
+        "upload_records",
+        lambda *_args, **_kwargs: {
+            "inserted": 0,
+            "duplicates": 0,
+            "window_rejected": 1,
+        },
+    )
+
+    try:
+        collector_client.upload_adapter_rows(
+            "http://collector.test",
+            "token",
+            state,
+            adapter,
+            [
+                {
+                    "id": 58,
+                    "status": "collecting",
+                    "started_at": "2026-07-27T01:59:00+00:00",
+                }
+            ],
+            100,
+        )
+    except RuntimeError as exc:
+        assert "outside task 58" in str(exc)
+    else:
+        raise AssertionError("window rejection must keep the local row retryable")
+
+    assert state.source_cursor(adapter) == 0
 
 
 def test_collector_reconnect_reason_uses_stable_categories() -> None:
@@ -889,7 +2440,40 @@ def test_collector_heartbeat_reports_upload_status(monkeypatch) -> None:
     assert sent_payloads[0]["queue_size"] == 0
     assert sent_payloads[0]["last_upload_at"] == "2026-07-27T10:00:00+00:00"
     assert sent_payloads[0]["last_reconnect_reason"] == "network"
-    assert sent_payloads[0]["tracked_task_ids"] == [58]
+    assert "tracked_task_ids" not in sent_payloads[0]
+
+
+def test_collector_check_rejects_server_without_assignment_protocol_v2(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        collector_client,
+        "heartbeat",
+        lambda *_args, **_kwargs: {
+            "assignment_protocol_version": 1,
+            "tasks": [],
+            "collector": {"id": 1, "online_status": "online"},
+        },
+    )
+
+    assert collector_client.run_check(
+        collector_client.CollectorConfig(token="token"),
+        tmp_path / "collector-config.json",
+        tmp_path / "collector-state.json",
+        [],
+    ) == 1
+
+
+def test_collector_state_file_allows_only_one_running_instance(tmp_path) -> None:
+    state_path = tmp_path / "collector-state.json"
+    first = collector_client.CollectorInstanceLock(state_path)
+    second = collector_client.CollectorInstanceLock(state_path)
+
+    assert first.acquire() is True
+    try:
+        assert second.acquire() is False
+    finally:
+        first.release()
+    assert second.acquire() is True
+    second.release()
 
 
 def test_collector_state_save_failure_records_reason(tmp_path, monkeypatch) -> None:
@@ -1107,6 +2691,29 @@ def test_raw_record_upload_contract_stops_at_raw_capture_record() -> None:
         assert stop.json()["status"] == "completed"
 
 
+def test_invalid_capture_time_is_explained_as_a_visible_exception() -> None:
+    row = collector_runtime_route.pending_unmapped_waybill_product_sku_linking_row(
+        {
+            "raw_record_id": 7133,
+            "capture_assignment": "timestamp_invalid_fallback",
+            "sample_text": "商品原文",
+        },
+        detail_number=1,
+    )
+
+    assert row["coverage_only"] is True
+    assert row["status"] == "pending"
+    assert row["reason"] == "这条打印记录的采集时间无效，已保留并隔离，请检查采集源时间。"
+    assert row["exception_code"] == "timestamp_invalid_fallback"
+
+    history_row = collector_runtime_route.pending_unmapped_waybill_product_sku_linking_row(
+        {"capture_assignment": "source_history_ambiguous"},
+        detail_number=2,
+    )
+    assert history_row["reason"] == "打印数据库历史发生变化，这条记录已保留并隔离，请检查采集源。"
+    assert history_row["exception_code"] == "source_history_ambiguous"
+
+
 def test_raw_record_upload_preserves_identical_prints_with_different_source_indexes() -> None:
     with TestClient(app) as client:
         headers = login_headers(client)
@@ -1198,6 +2805,17 @@ def test_raw_record_upload_rejects_unbounded_batches_and_payloads() -> None:
             json={"task_id": task_id, "records": []},
         )
         assert empty_batch.status_code == 422
+
+        missing_v2_identity = client.post(
+            "/api/v1/collector-runtime/raw-records",
+            headers=collector_headers,
+            json={
+                "task_id": task_id,
+                "assignment_protocol_version": 2,
+                "records": [{"raw_payload": "{}"}],
+            },
+        )
+        assert missing_v2_identity.status_code == 422
 
         too_many_records = client.post(
             "/api/v1/collector-runtime/raw-records",

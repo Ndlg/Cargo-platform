@@ -3,6 +3,7 @@ export type ParserIssueAction =
   | 'format-learning'
   | 'fingerprint-settings'
   | 'recognition-rule-packs'
+  | 'collector-connections'
 
 export type ParserIssueDefinition = {
   label: string
@@ -54,6 +55,12 @@ const parserIssueDefinitions: Record<string, ParserIssueDefinition> = {
     actionLabel: '重新学习这种面单格式',
     action: 'format-learning',
   },
+  capture_source_exception: {
+    label: '采集源数据异常，面单已保留并隔离',
+    type: 'warning',
+    actionLabel: '检查采集连接',
+    action: 'collector-connections',
+  },
   rule_pack_missing: {
     label: '当前工作空间没有启用识别规则包',
     type: 'warning',
@@ -85,6 +92,7 @@ export function parserIssueFor(
 }
 
 export function parserIssueRoute(action: ParserIssueAction): string | null {
+  if (action === 'collector-connections') return '/admin/collector-connections'
   if (action === 'fingerprint-settings') return '/admin/fingerprint-settings'
   if (action === 'recognition-rule-packs') return '/admin/recognition-rule-packs'
   if (action === 'format-learning') return '/admin/format-learning'

@@ -39,6 +39,13 @@ assert.equal(parserIssueRoute(unsupportedFingerprint?.action ?? 'refresh'), null
 const ambiguousProfile = parserIssueFor('profile_ambiguous')
 assert.equal(ambiguousProfile?.action, 'format-learning')
 
+const collectionSourceIssue = parserIssueFor('capture_source_exception')
+assert.equal(collectionSourceIssue?.action, 'collector-connections')
+assert.equal(
+  parserIssueRoute(collectionSourceIssue?.action ?? 'refresh'),
+  '/admin/collector-connections',
+)
+
 assert.equal(parserIssueFor('parsed'), null)
 
 const unknownFailure = parserIssueFor('new_parser_failure', '', true)
