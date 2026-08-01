@@ -28,6 +28,7 @@ class User(BaseModel):
     username: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
     display_name: Mapped[str] = mapped_column(String(128), nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    password_initialized: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
 

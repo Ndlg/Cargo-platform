@@ -37,13 +37,18 @@ def verify_password(password: str, password_hash: str) -> bool:
     return hmac.compare_digest(actual.hex(), digest)
 
 
+def password_version(password_hash: str) -> str:
+    return hashlib.sha256(password_hash.encode("utf-8")).hexdigest()[:24]
+
+
 def create_collector_token() -> str:
     return secrets.token_urlsafe(32)
 
 
-def hash_collector_token(token: str) -> str:
+def hash_collector_token(token: str, key: str | None = None) -> str:
     settings = get_settings()
-    return hmac.new(settings.secret_key.encode("utf-8"), token.encode("utf-8"), hashlib.sha256).hexdigest()
+    hash_key = key or settings.collector_token_hash_key
+    return hmac.new(hash_key.encode("utf-8"), token.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def create_access_token(subject: str, claims: dict[str, Any] | None = None) -> str:

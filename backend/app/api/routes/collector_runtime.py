@@ -1916,6 +1916,20 @@ def get_collector_from_token(
             Collector.is_deleted.is_(False),
         )
     ).first()
+    settings = get_settings()
+    previous_key = settings.collector_token_previous_hash_key
+    if collector is None and previous_key and previous_key != settings.collector_token_hash_key:
+        previous_hash = hash_collector_token(x_collector_token, previous_key)
+        collector = db.scalars(
+            select(Collector).where(
+                Collector.token_hash == previous_hash,
+                Collector.is_enabled.is_(True),
+                Collector.is_deleted.is_(False),
+            )
+        ).first()
+        if collector is not None:
+            collector.token_hash = token_hash
+            db.flush()
     if collector is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid collector token.")
     return collector

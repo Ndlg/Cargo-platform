@@ -19,7 +19,7 @@ TEST_DB = TEST_DB_DIR / f"product_matching_stage82b_test_{uuid.uuid4().hex}.db"
 
 os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DB.as_posix()}"
 os.environ["AUTO_CREATE_TABLES"] = "true"
-os.environ["SECRET_KEY"] = "product-matching-stage82b-secret"
+os.environ["SECRET_KEY"] = "product-matching-stage82b-test-secret-at-least-32-bytes"
 
 from fastapi.testclient import TestClient  # noqa: E402
 from openpyxl import load_workbook  # noqa: E402

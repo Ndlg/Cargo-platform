@@ -3,12 +3,15 @@ param(
     [string]$TenantUiUrl = "http://127.0.0.1:5173/",
     [string]$AdminUiUrl = "http://127.0.0.1:5174/admin",
     [string]$Username = "admin",
-    [string]$Password = "admin123",
+    [string]$Password = $env:CARGO_PLATFORM_PASSWORD,
     [int]$WorkspaceId = 0,
     [int]$TaskId = 0
 )
 
 $ErrorActionPreference = "Stop"
+if ([string]::IsNullOrWhiteSpace($Password)) {
+    throw "Pass -Password or set CARGO_PLATFORM_PASSWORD."
+}
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Resolve-Path (Join-Path $scriptDir "..")
 

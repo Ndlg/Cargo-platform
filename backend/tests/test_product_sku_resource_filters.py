@@ -9,7 +9,7 @@ TEST_DB = TEST_DB_DIR / f"product_sku_resource_filters_{uuid.uuid4().hex}.db"
 
 os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DB.as_posix()}"
 os.environ["AUTO_CREATE_TABLES"] = "true"
-os.environ["SECRET_KEY"] = "product-sku-resource-filters-secret"
+os.environ["SECRET_KEY"] = "product-sku-resource-filters-test-secret-at-least-32-bytes"
 
 from fastapi.testclient import TestClient  # noqa: E402
 

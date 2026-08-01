@@ -8,7 +8,7 @@ if TEST_DB.exists():
 
 os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DB.as_posix()}"
 os.environ["AUTO_CREATE_TABLES"] = "true"
-os.environ["SECRET_KEY"] = "workspace-isolation-secret"
+os.environ["SECRET_KEY"] = "workspace-isolation-test-secret-at-least-32-bytes"
 
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import select  # noqa: E402
@@ -39,6 +39,7 @@ def _create_user_workspace_pair(username: str, workspace_code: str) -> tuple[str
             username=username,
             display_name=username.title(),
             password_hash=hash_password(password),
+            password_initialized=True,
         )
         db.add_all([role, user])
         db.flush()

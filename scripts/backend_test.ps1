@@ -56,6 +56,18 @@ if (-not $env:STORAGE_ROOT) {
 if (-not $env:AUTO_CREATE_TABLES) {
     $env:AUTO_CREATE_TABLES = "true"
 }
+if (-not $env:SECRET_KEY) {
+    $env:SECRET_KEY = "backend-test-secret-key-at-least-32-bytes"
+}
+if (-not $env:COLLECTOR_TOKEN_HASH_KEY) {
+    $env:COLLECTOR_TOKEN_HASH_KEY = "collector-test-hash-key-at-least-32-bytes"
+}
+if (-not $env:INITIAL_SETUP_TOKEN) {
+    $env:INITIAL_SETUP_TOKEN = "initial-setup-test-token-at-least-32-bytes"
+}
+if (-not $env:BOOTSTRAP_ADMIN_PASSWORD) {
+    $env:BOOTSTRAP_ADMIN_PASSWORD = "admin123"
+}
 
 if ($args.Count -eq 0) {
     & $venvPython -m pytest (Join-Path $backendDir "tests")

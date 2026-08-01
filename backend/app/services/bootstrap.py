@@ -1,6 +1,7 @@
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.core.security import hash_password
 from app.models import (
     CaptureBatch,
@@ -52,6 +53,7 @@ def _backfill_workspace_tenant_ids(db: Session) -> None:
 
 
 def seed_initial_data(db: Session) -> None:
+    settings = get_settings()
     tenant = db.scalars(select(Tenant).where(Tenant.code == "default")).first()
     if tenant is None:
         tenant = Tenant(
@@ -97,16 +99,86 @@ def seed_initial_data(db: Session) -> None:
     elif role.tenant_id is None:
         role.tenant_id = workspace.tenant_id
 
-    user = db.scalars(select(User).where(User.username == "admin")).first()
-    if user is None:
+    user = db.scalars(select(User).where(User.username == "admin", User.is_deleted.is_(False))).first()
+    if user is None and settings.bootstrap_admin_password:
         user = User(
             username="admin",
             display_name="Administrator",
-            password_hash=hash_password("admin123"),
+            password_hash=hash_password(settings.bootstrap_admin_password),
+            password_initialized=True,
             is_enabled=True,
         )
         db.add(user)
         db.flush()
+
+    if user is not None:
+        membership = db.scalars(
+            select(UserWorkspace).where(
+                UserWorkspace.workspace_id == workspace.id,
+                UserWorkspace.user_id == user.id,
+            )
+        ).first()
+        if membership is None:
+            db.add(
+                UserWorkspace(
+                    tenant_id=workspace.tenant_id,
+                    workspace_id=workspace.id,
+                    user_id=user.id,
+                    role_id=role.id,
+                )
+            )
+        elif membership.tenant_id is None:
+            membership.tenant_id = workspace.tenant_id
+
+    db.commit()
+
+
+def system_setup_required(db: Session) -> bool:
+    initialized_admin = db.execute(
+        select(User.id)
+        .join(UserWorkspace, UserWorkspace.user_id == User.id)
+        .join(Role, Role.id == UserWorkspace.role_id)
+        .where(
+            User.is_deleted.is_(False),
+            User.is_enabled.is_(True),
+            User.password_initialized.is_(True),
+            UserWorkspace.is_deleted.is_(False),
+            Role.is_deleted.is_(False),
+            Role.name == "system_admin",
+        )
+    ).first()
+    return initialized_admin is None
+
+
+def initialize_system_admin(db: Session, *, display_name: str, password: str) -> User:
+    if not system_setup_required(db):
+        raise ValueError("System setup has already completed.")
+
+    workspace = db.scalars(select(Workspace).where(Workspace.code == "default")).first()
+    if workspace is None:
+        raise RuntimeError("Default workspace is missing.")
+    role = db.scalars(
+        select(Role).where(Role.workspace_id == workspace.id, Role.name == "system_admin")
+    ).first()
+    if role is None:
+        raise RuntimeError("System administrator role is missing.")
+
+    user = db.scalars(select(User).where(User.username == "admin", User.is_deleted.is_(False))).first()
+    if user is None:
+        user = User(
+            username="admin",
+            display_name=display_name,
+            password_hash=hash_password(password),
+            password_initialized=True,
+            is_enabled=True,
+        )
+        db.add(user)
+        db.flush()
+    else:
+        user.display_name = display_name
+        user.password_hash = hash_password(password)
+        user.password_initialized = True
+        user.is_enabled = True
 
     membership = db.scalars(
         select(UserWorkspace).where(
@@ -123,7 +195,11 @@ def seed_initial_data(db: Session) -> None:
                 role_id=role.id,
             )
         )
-    elif membership.tenant_id is None:
+    else:
         membership.tenant_id = workspace.tenant_id
+        membership.role_id = role.id
+        membership.is_deleted = False
 
     db.commit()
+    db.refresh(user)
+    return user

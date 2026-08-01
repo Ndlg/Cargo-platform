@@ -322,6 +322,11 @@ export interface OrderRowDraftRecord extends ApiRecord {
   } | null
 }
 
+export interface AuthSetupStatus {
+  required: boolean
+  available: boolean
+}
+
 export interface CompiledRuleTrace extends ApiRecord {
   source: 'confirmed_learning_rule' | 'declarative_rule' | string
   learning_record_id?: string
@@ -1192,6 +1197,21 @@ export function login(username: string, password: string): Promise<{ access_toke
   return request<{ access_token: string }>('/auth/login', {
     method: 'POST',
     body: JSON.stringify({ username, password }),
+  })
+}
+
+export function getAuthSetupStatus(): Promise<AuthSetupStatus> {
+  return request<AuthSetupStatus>('/auth/setup-status')
+}
+
+export function setupSystemAdmin(payload: {
+  setup_token: string
+  display_name: string
+  password: string
+}): Promise<{ access_token: string }> {
+  return request<{ access_token: string }>('/auth/setup', {
+    method: 'POST',
+    body: JSON.stringify(payload),
   })
 }
 

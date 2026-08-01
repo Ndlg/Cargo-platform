@@ -15,7 +15,7 @@ if TEST_DB.exists():
 
 os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DB.as_posix()}"
 os.environ["AUTO_CREATE_TABLES"] = "true"
-os.environ["SECRET_KEY"] = "test-secret"
+os.environ["SECRET_KEY"] = "order-row-drafts-test-secret-at-least-32-bytes"
 
 from fastapi.testclient import TestClient  # noqa: E402
 

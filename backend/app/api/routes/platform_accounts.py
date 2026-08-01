@@ -217,6 +217,7 @@ def create_customer_account(
         username=username,
         display_name=_clean_text(payload.display_name),
         password_hash=hash_password(payload.password),
+        password_initialized=True,
         is_enabled=True,
         created_by=current_user.id,
         updated_by=current_user.id,
@@ -285,6 +286,7 @@ def reset_customer_user_password(
     if user is None or user.is_deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="账号不存在。")
     user.password_hash = hash_password(payload.password)
+    user.password_initialized = True
     user.updated_by = current_user.id
     db.commit()
     db.refresh(user)

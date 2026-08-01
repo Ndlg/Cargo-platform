@@ -38,12 +38,25 @@ See:
 
 ## Release deployment
 
-Copy `deploy.env.example` to `.env`, replace the secret, then start the core
-platform:
+Copy `deploy.env.example` to `.env`, then generate three independent random
+values for `SECRET_KEY`, `COLLECTOR_TOKEN_HASH_KEY`, and
+`INITIAL_SETUP_TOKEN` (at least 32 bytes each). Leave
+`COLLECTOR_TOKEN_PREVIOUS_HASH_KEY` empty on a first installation.
+
+PowerShell 7 can generate each value with:
+
+```powershell
+[Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
+```
+
+Start the core platform:
 
 ```powershell
 docker compose --env-file .env -f docker-compose.release.yml up -d
 ```
+
+On the first visit, enter `INITIAL_SETUP_TOKEN` and choose the administrator
+password. The images contain no default administrator password.
 
 The release publishes four version-matched images: backend, tenant UI,
 admin UI, and waybill parser. Recognition is performed by declarative rules;

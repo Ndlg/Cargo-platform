@@ -80,6 +80,13 @@ def _run_sqlite_compat_migrations() -> None:
             table_name: {column["name"] for column in inspector.get_columns(table_name)}
             for table_name in table_names
         }
+        if "users" in table_columns and "password_initialized" not in table_columns["users"]:
+            connection.exec_driver_sql(
+                "ALTER TABLE users ADD COLUMN password_initialized BOOLEAN DEFAULT 0 NOT NULL"
+            )
+            connection.exec_driver_sql(
+                "UPDATE users SET password_initialized = 1 WHERE username <> 'admin'"
+            )
         if "collectors" in table_columns:
             if "token_hash" not in table_columns["collectors"]:
                 connection.exec_driver_sql("ALTER TABLE collectors ADD COLUMN token_hash VARCHAR(255)")

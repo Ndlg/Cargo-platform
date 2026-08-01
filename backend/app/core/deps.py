@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.context import CurrentUser
 from app.core.database import get_db
-from app.core.security import decode_access_token
+from app.core.security import decode_access_token, password_version
 from app.models import Role, User, UserWorkspace, Workspace
 
 
@@ -32,6 +32,8 @@ def get_current_user(
     user = db.get(User, user_id)
     if user is None or user.is_deleted or not user.is_enabled:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User is disabled or missing.")
+    if payload.get("pwdv") != password_version(user.password_hash):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Bearer token is no longer valid.")
 
     memberships = db.execute(
         select(UserWorkspace, Role)

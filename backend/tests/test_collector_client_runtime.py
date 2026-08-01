@@ -22,7 +22,7 @@ if TEST_STORAGE.exists():
 
 os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DB.as_posix()}"
 os.environ["AUTO_CREATE_TABLES"] = "true"
-os.environ["SECRET_KEY"] = "test-secret"
+os.environ["SECRET_KEY"] = "collector-runtime-test-secret-at-least-32-bytes"
 os.environ["STORAGE_ROOT"] = TEST_STORAGE.as_posix()
 
 COLLECTOR_CLIENT_PATH = Path(__file__).resolve().parents[2] / "collector-client"
@@ -271,6 +271,39 @@ def test_collector_token_rotation_requires_admin_authorization() -> None:
             json=heartbeat_payload,
         )
         assert rotated_heartbeat.status_code == 200
+
+
+def test_collector_token_hash_migrates_from_previous_key(monkeypatch) -> None:
+    previous_key = "previous-collector-token-key-at-least-32-bytes"
+    with TestClient(app) as client:
+        headers = login_headers(client)
+        identity = "runtime-machine-key-migration"
+        registration = register_collector(client, headers, identity)
+        token = str(registration["collector_token"])
+        collector_id = int(registration["collector"]["id"])
+
+        with SessionLocal() as db:
+            collector = db.get(Collector, collector_id)
+            assert collector is not None
+            collector.token_hash = collector_runtime_route.hash_collector_token(token, previous_key)
+            db.commit()
+
+        settings = collector_runtime_route.get_settings().model_copy(
+            update={"collector_token_previous_hash_key": previous_key}
+        )
+        monkeypatch.setattr(collector_runtime_route, "get_settings", lambda: settings)
+
+        heartbeat = client.post(
+            "/api/v1/collector-runtime/heartbeat",
+            headers={"X-Collector-Token": token},
+            json={"collector_id": identity, "source_machine": identity},
+        )
+        assert heartbeat.status_code == 200
+
+        with SessionLocal() as db:
+            collector = db.get(Collector, collector_id)
+            assert collector is not None
+            assert collector.token_hash == collector_runtime_route.hash_collector_token(token)
 
 
 def test_collector_status_reports_client_package_availability(tmp_path, monkeypatch) -> None:
