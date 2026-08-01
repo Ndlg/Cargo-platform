@@ -28,7 +28,7 @@ FINGERPRINT_CATALOG = (
     {
         "code": "CN-PRINT-XML",
         "name": "菜鸟打印 XML 型",
-        "description": "把菜鸟打印 XML 转成纯文本后提供给 AI。",
+        "description": "把菜鸟打印 XML 转成纯文本后供识别规则解析使用。",
         "detect_path": "contents[].printXML",
         "fields": (_field("print_text", "打印文本", "contents[].printXML//text"),),
     },

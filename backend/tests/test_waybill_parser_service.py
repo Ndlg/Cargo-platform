@@ -32,6 +32,15 @@ def valid_rule_pack_payload() -> dict:
     }
 
 
+def test_waybill_parser_health_reports_runtime_version() -> None:
+    app = load_parser_service_app()
+    with TestClient(app) as client:
+        response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json()["version"] == app.version
+
+
 def structured_rule_pack_payload() -> dict:
     payload = valid_rule_pack_payload()
     payload["parser_policy"]["structured_item_sources"] = [

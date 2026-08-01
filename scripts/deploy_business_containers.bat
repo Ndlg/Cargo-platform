@@ -2,7 +2,14 @@
 setlocal
 cd /d "%~dp0.."
 
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0deploy_business_containers.ps1" %*
+where pwsh.exe >nul 2>nul
+if errorlevel 1 (
+  echo PowerShell 7 is required.
+  pause
+  exit /b 1
+)
+
+pwsh.exe -NoProfile -File "%~dp0deploy_business_containers.ps1" %*
 if errorlevel 1 (
   echo.
   echo Business container deployment failed.

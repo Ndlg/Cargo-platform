@@ -355,7 +355,6 @@ function buildGlobalRuleScope(): ProductMatchingScope {
   return {
     scope_type: 'current_batch',
     task_id: selectedTaskId.value,
-    confirmed_by_user: true,
     preview_impact_count: null,
   }
 }
@@ -801,7 +800,7 @@ onMounted(load)
 
         <section class="form-section">
           <h2>3. 填写商品匹配关键词</h2>
-          <p>这是用户确认后的学习记录，不是系统硬编码的业务猜测。</p>
+          <p>这是管理员维护的匹配规则，不是系统硬编码的业务猜测。</p>
           <el-input
             v-model="form.product_keyword"
             class="full-control"
@@ -881,7 +880,7 @@ onMounted(load)
           <h2>6. 保存学习记录</h2>
           <p>保存后可复用到后续订单行，命中前仍以五字段内容和商品资产为准。</p>
           <el-input v-model="form.name" class="full-control" :placeholder="selectedProduct ? `${selectedProduct.name} 匹配学习记录` : '商品匹配学习记录名称'" />
-          <el-input v-model="form.revision_note" class="full-control stacked-control" placeholder="修订说明，例如：用户确认鞋类关键词" clearable />
+          <el-input v-model="form.revision_note" class="full-control stacked-control" placeholder="修订说明，例如：补充鞋类关键词" clearable />
         </section>
 
         <div class="editor-sticky-actions">

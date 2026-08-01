@@ -374,7 +374,8 @@ onMounted(async () => {
 
         <div class="row-heading">
           <div>
-            <h3>管理员确认的商品行</h3>
+            <h3>用于生成规则的样本结果</h3>
+            <p class="muted">修改不会直接覆盖订单行；保存后会生成新规则并重新解析相关采集轮次。</p>
             <p>备注可以为空；一张面单有多个商品时增加商品行。</p>
           </div>
           <el-button @click="addRow">添加商品行</el-button>

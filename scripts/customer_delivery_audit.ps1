@@ -168,7 +168,6 @@ $previewBody = @{
     scope = @{
         scope_type = "current_batch"
         task_id = $script:TaskId
-        confirmed_by_user = $true
     }
     include_saved_rules = $true
 }

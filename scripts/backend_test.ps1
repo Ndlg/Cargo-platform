@@ -35,7 +35,7 @@ if (-not (Test-Path $venvPython)) {
 }
 
 Write-Host "Installing backend dependencies..."
-& $venvPython -m pip install --disable-pip-version-check -q -r (Join-Path $backendDir "requirements.txt")
+& $venvPython -m pip install --disable-pip-version-check -q -r (Join-Path $backendDir "requirements-dev.txt")
 
 $env:PYTHONPATH = $backendDir
 

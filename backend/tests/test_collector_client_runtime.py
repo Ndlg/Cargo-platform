@@ -371,6 +371,22 @@ def test_collector_status_rejects_invalid_release_manifest(tmp_path, monkeypatch
     assert "SHA-256" in status_payload["message"]
 
 
+def test_collector_status_rejects_mixed_platform_version(tmp_path, monkeypatch) -> None:
+    source_dir = tmp_path / "collector-client"
+    write_test_collector_release(source_dir)
+    manifest_path = source_dir / collector_runtime_route.COLLECTOR_CLIENT_RELEASE_MANIFEST
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["release_version"] = "9.9.9"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(collector_runtime_route, "collector_client_source_dir", lambda: source_dir)
+
+    status_payload = collector_runtime_route.collector_client_release_status()
+
+    assert status_payload["release_available"] is False
+    assert status_payload["status"] == "invalid"
+    assert "平台版本不一致" in status_payload["message"]
+
+
 def test_collector_status_requires_release_manifest(tmp_path, monkeypatch) -> None:
     source_dir = tmp_path / "collector-client"
     exe_path = source_dir / collector_runtime_route.COLLECTOR_CLIENT_RELEASE_EXE

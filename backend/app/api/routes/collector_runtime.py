@@ -270,6 +270,8 @@ def validated_collector_client_release(source_dir: Path) -> tuple[Path, Path, di
         raise ValueError("采集器发布清单中的文件名不匹配。")
     if any(not isinstance(manifest.get(field), str) or not manifest[field].strip() for field in required_text_fields):
         raise ValueError("采集器发布清单缺少必填字段。")
+    if manifest["release_version"] != get_settings().app_version:
+        raise ValueError("采集器发布版本与平台版本不一致。")
     if not re.fullmatch(r"[0-9a-fA-F]{40}", manifest["git_sha"]):
         raise ValueError("采集器发布清单中的 Git SHA 无效。")
     if not re.fullmatch(r"[0-9a-fA-F]{64}", manifest["sha256"]):
@@ -1573,7 +1575,6 @@ def recognition_rows_from_current_order_rows(
     scope = ProductMatchingScope(
         scope_type="current_batch",
         task_id=task_id,
-        confirmed_by_user=True,
     )
     rows, sources = product_sku_rows_for_preview(
         db,

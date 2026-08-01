@@ -1,5 +1,11 @@
 name: cargo-platform-validation
 
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
   waybill-parser:
     image: cargo-platform-validation-parser:${RELEASE_TAG:?set RELEASE_TAG}
@@ -8,13 +14,21 @@ services:
       APP_VERSION: ${RELEASE_TAG}
     ports:
       - "127.0.0.1:18010:8010"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    logging: *default-logging
     restart: unless-stopped
 
   backend:
     image: cargo-platform-validation-backend:${RELEASE_TAG:?set RELEASE_TAG}
     container_name: cargo-platform-validation-backend
     depends_on:
-      - waybill-parser
+      waybill-parser:
+        condition: service_healthy
     environment:
       APP_NAME: Cargo Platform Validation
       APP_VERSION: ${RELEASE_TAG}
@@ -34,30 +48,53 @@ services:
       - "127.0.0.1:18001:8000"
     volumes:
       - validation-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/ready', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    logging: *default-logging
     restart: unless-stopped
 
   ui:
     image: cargo-platform-validation-ui:${RELEASE_TAG:?set RELEASE_TAG}
     container_name: cargo-platform-validation-ui
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     environment:
       API_PROXY_PASS: http://backend:8000
       SPA_FALLBACK: /index.html
     ports:
       - "127.0.0.1:6173:80"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    logging: *default-logging
     restart: unless-stopped
 
   platform-admin-ui:
     image: cargo-platform-validation-admin-ui:${RELEASE_TAG:?set RELEASE_TAG}
     container_name: cargo-platform-validation-admin-ui
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     environment:
       API_PROXY_PASS: http://backend:8000
       SPA_FALLBACK: /server-admin.html
     ports:
       - "127.0.0.1:6174:80"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    logging: *default-logging
     restart: unless-stopped
 
 volumes:

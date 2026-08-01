@@ -396,6 +396,7 @@ def health() -> dict[str, str]:
     return {
         "status": "ok",
         "app": "Cargo Platform Waybill Parser",
+        "version": app.version,
         "contract_version": ORDER_ROW_DRAFTS_CONTRACT_VERSION,
     }
 

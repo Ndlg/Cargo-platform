@@ -162,7 +162,6 @@ export interface ProductMatchingScope {
   task_id?: number | null
   standard_detail_ids?: number[]
   selected_record_ids?: number[]
-  confirmed_by_user?: boolean
   preview_impact_count?: number | null
 }
 

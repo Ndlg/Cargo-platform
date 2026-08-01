@@ -49,11 +49,15 @@ PowerShell 7 can generate each value with:
 [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
 ```
 
-Start the core platform:
+Install or upgrade the core platform through the guarded deployment entrypoint:
 
 ```powershell
-docker compose --env-file .env -f docker-compose.release.yml up -d
+pwsh.exe -File scripts/deploy_business_containers.ps1
 ```
+
+The script creates the external data volume on a first installation. On an
+upgrade it records the current images, creates a verified SQLite snapshot, and
+restores the previous images automatically if the new release is not ready.
 
 On the first visit, enter `INITIAL_SETUP_TOKEN` and choose the administrator
 password. The images contain no default administrator password.
@@ -63,10 +67,12 @@ creates and verifies an online SQLite snapshot before recreating containers.
 Manual backup and stopped-database restore use the same guarded command:
 
 ```powershell
-pwsh.exe -File scripts/sqlite_volume_snapshot.ps1 -Action Backup
+pwsh.exe -File scripts/sqlite_volume_snapshot.ps1 -Action Backup `
+  -BackendImage ghcr.io/ndlg/cargo-platform-backend:<version>
 pwsh.exe -File scripts/sqlite_volume_snapshot.ps1 -Action Restore `
   -BackupFile C:\path\cargo-platform-data-20260801-230000.db `
-  -ExpectedSha256 <recorded-sha256> -ConfirmRestore
+  -ExpectedSha256 <recorded-sha256> -ConfirmRestore `
+  -BackendImage ghcr.io/ndlg/cargo-platform-backend:<version>
 ```
 
 Restore is refused while any container still mounts the data volume. The

@@ -4,7 +4,8 @@ param(
     [string]$Action,
     [string]$VolumeName = "cargo-platform-data",
     [string]$DatabasePath = "cargo-platform.db",
-    [string]$BackendImage = "cargo-platform-backend:latest",
+    [Parameter(Mandatory = $true)]
+    [string]$BackendImage,
     [string]$BackupDirectory,
     [string]$BackupFile,
     [string]$ExpectedSha256,
@@ -38,7 +39,7 @@ $resolvedBackupDirectory = Resolve-Path $BackupDirectory
 $toolMount = "type=bind,src=$snapshotScript,dst=/tool/sqlite_snapshot.py,readonly"
 
 if ($Action -eq "Backup") {
-    $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    $timestamp = Get-Date -Format "yyyyMMdd-HHmmssfff"
     $safeVolumeName = $VolumeName -replace '[^A-Za-z0-9_.-]', '_'
     $fileName = "$safeVolumeName-$timestamp.db"
     $dockerArgs = @(
@@ -50,10 +51,14 @@ if ($Action -eq "Backup") {
         "/tool/sqlite_snapshot.py", "backup",
         "/data/$normalizedDatabasePath", "/backup/$fileName"
     )
-    & docker @dockerArgs
+    $backupOutput = & docker @dockerArgs
     if ($LASTEXITCODE -ne 0) {
         throw "SQLite volume backup failed."
     }
+    $record = $backupOutput | Select-Object -Last 1 | ConvertFrom-Json
+    $record.path = Join-Path $resolvedBackupDirectory $fileName
+    $record.source = "$VolumeName/$normalizedDatabasePath"
+    Write-Output ($record | ConvertTo-Json -Compress)
     return
 }
 

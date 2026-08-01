@@ -27,7 +27,7 @@ def test_product_sku_linking_preview_matches_user_bound_five_field_rule() -> Non
                 "source_samples": [{"product": "鞋", "sales_attr1": "黑色", "quantity": "2"}],
                 "product_id": product.id,
                 "sku_id": sku.id,
-                "revision_note": "用户确认黑色鞋关联黑色 SKU",
+                "revision_note": "管理员维护黑色鞋关联黑色 SKU",
             }
         ],
         products=[product],
@@ -73,9 +73,9 @@ def test_product_sku_linking_preview_keeps_unmatched_rows_as_exceptions() -> Non
 
     row = preview["rows"][0]
     assert row["match_status"] == "product_unmatched"
-    assert row["exception_reason"] == "没有用户确认的商品匹配学习记录命中这行订单。"
+    assert row["exception_reason"] == "没有管理员维护的商品匹配规则命中这行订单。"
     assert preview["samples"]["product_unmatched"][0]["match_status"] == "product_unmatched"
-    assert preview["samples"]["product_unmatched"][0]["exception_reason"] == "没有用户确认的商品匹配学习记录命中这行订单。"
+    assert preview["samples"]["product_unmatched"][0]["exception_reason"] == "没有管理员维护的商品匹配规则命中这行订单。"
     assert preview["summary"]["product_unmatched"] == 1
 
 
@@ -144,7 +144,7 @@ def test_product_sku_linking_keeps_needs_review_rows_out_of_matches() -> None:
     assert preview["summary"]["matched"] == 0
 
 
-def test_product_sku_linking_does_not_use_catalog_assets_without_user_rule() -> None:
+def test_product_sku_linking_does_not_use_catalog_assets_without_maintained_rule() -> None:
     product = record(1, "VAP", keywords=["vap2025"])
     image = record(11, "VAP 黑色图", file_path="storage/vap-black.png")
     sku = record(21, "二代黑白", product_id=product.id, keywords=["二代黑白"], image_asset_id=image.id)
@@ -162,8 +162,8 @@ def test_product_sku_linking_does_not_use_catalog_assets_without_user_rule() -> 
     assert row["product"] is None
     assert row["sku"] is None
     assert row["image"] is None
-    assert row["match_source"] == "user_learning_rule"
-    assert row["exception_reason"] == "没有用户确认的商品匹配学习记录命中这行订单。"
+    assert row["match_source"] == "administrator_matching_rule"
+    assert row["exception_reason"] == "没有管理员维护的商品匹配规则命中这行订单。"
     assert preview["summary"]["product_unmatched"] == 1
     assert preview["summary"]["matched"] == 0
 
@@ -182,13 +182,13 @@ def test_product_sku_linking_ignores_product_assets_even_when_multiple_products_
 
     row = preview["rows"][0]
     assert row["match_status"] == "product_unmatched"
-    assert row["match_source"] == "user_learning_rule"
+    assert row["match_source"] == "administrator_matching_rule"
     assert row["product"] is None
     assert preview["summary"]["product_unmatched"] == 1
     assert preview["summary"]["conflict"] == 0
 
 
-def test_product_sku_linking_ignores_catalog_assets_before_user_rule_selects_product() -> None:
+def test_product_sku_linking_ignores_catalog_assets_before_maintained_rule_selects_product() -> None:
     product = record(1, "户外登山鞋", keywords=["登山鞋"])
     black = record(21, "黑色", product_id=product.id, keywords=["黑"])
     black_white = record(22, "黑白", product_id=product.id, keywords=["黑"])
@@ -203,38 +203,38 @@ def test_product_sku_linking_ignores_catalog_assets_before_user_rule_selects_pro
 
     row = preview["rows"][0]
     assert row["match_status"] == "product_unmatched"
-    assert row["match_source"] == "user_learning_rule"
+    assert row["match_source"] == "administrator_matching_rule"
     assert preview["summary"]["product_unmatched"] == 1
     assert preview["summary"]["sku_unmatched"] == 0
 
 
-def test_product_sku_linking_user_rule_takes_priority_over_product_asset_names() -> None:
+def test_product_sku_linking_maintained_rule_takes_priority_over_product_asset_names() -> None:
     product = record(1, "户外登山鞋", keywords=["登山鞋"])
     image = record(11, "用户规则图", file_path="storage/user.png")
     catalog_sku = record(21, "低帮黑白", product_id=product.id, keywords=["低帮黑白"], image_asset_id=image.id)
-    user_sku = record(22, "用户确认 SKU", product_id=product.id, keywords=["低帮黑白"], image_asset_id=image.id)
+    maintained_sku = record(22, "管理员维护 SKU", product_id=product.id, keywords=["低帮黑白"], image_asset_id=image.id)
 
     preview = preview_product_sku_linking(
         [{"product": "登山鞋", "sales_attr1": "低帮黑白"}],
         [
             {
                 "id": 101,
-                "name": "用户确认规则",
+                "name": "管理员维护规则",
                 "product_match_fields": ["product"],
                 "product_keyword": "登山鞋",
                 "product_id": product.id,
-                "sku_id": user_sku.id,
+                    "sku_id": maintained_sku.id,
             }
         ],
         products=[product],
-        skus=[catalog_sku, user_sku],
+        skus=[catalog_sku, maintained_sku],
         images=[image],
     )
 
     row = preview["rows"][0]
     assert row["match_status"] == "matched"
-    assert row.get("match_source") == "user_learning_rule"
-    assert row["sku"] == {"id": user_sku.id, "name": "用户确认 SKU"}
+    assert row.get("match_source") == "administrator_matching_rule"
+    assert row["sku"] == {"id": maintained_sku.id, "name": "管理员维护 SKU"}
     assert row["matched_linking_rule"]["id"] == 101
 
 
@@ -260,7 +260,7 @@ def test_product_rule_matches_when_keyword_appears_in_any_selected_field() -> No
     assert preview["rows"][0]["matched_linking_rule"]["id"] == 102
 
 
-def test_product_sku_linking_does_not_conflict_when_user_rule_field_does_not_match() -> None:
+def test_product_sku_linking_does_not_conflict_when_maintained_rule_field_does_not_match() -> None:
     four = record(1, "4.0", keywords=["4.0"])
     five = record(2, "5.0", keywords=["5.0"])
 
@@ -290,7 +290,7 @@ def test_product_sku_linking_does_not_conflict_when_user_rule_field_does_not_mat
 
     row = preview["rows"][0]
     assert row["match_status"] == "product_unmatched"
-    assert row["match_source"] == "user_learning_rule"
+    assert row["match_source"] == "administrator_matching_rule"
     assert preview["summary"]["conflict"] == 0
     assert preview["summary"]["product_unmatched"] == 1
 
@@ -506,7 +506,7 @@ def test_product_sku_linking_contract_excludes_waybill_internals() -> None:
     assert contract["input_fields"] == ["product", "sales_attr1", "sales_attr2", "quantity", "remark"]
     assert contract["output_fields"] == ["product", "sku", "image", "match_status", "exception_reason"]
     assert contract["output_name"] == "商品匹配结果"
-    assert contract["rule_learning_model"] == "progressive_user_confirmed_five_field_product_matching_rules"
+    assert contract["rule_learning_model"] == "administrator_maintained_five_field_product_matching_rules"
     assert "source_five_field_samples" in contract["rule_requirements"]
     assert "preview_match_counts" in contract["rule_requirements"]
     assert "can_disable_or_revise" in contract["rule_requirements"]

@@ -137,7 +137,7 @@ New-Item -ItemType Directory -Force -Path $SmokeHome | Out-Null
 $PreviousCollectorHome = $env:CARGO_PLATFORM_COLLECTOR_HOME
 try {
   $env:CARGO_PLATFORM_COLLECTOR_HOME = $SmokeHome
-  $SmokeProcess = Start-Process -FilePath $ExePath -ArgumentList @("--check", "--no-log-file") -Wait -PassThru
+  $SmokeProcess = Start-Process -FilePath $ExePath -ArgumentList @("--check", "--no-log-file") -WindowStyle Hidden -Wait -PassThru
   if ($SmokeProcess.ExitCode -ne 0) {
     throw "Collector EXE --check failed with exit code $($SmokeProcess.ExitCode)."
   }

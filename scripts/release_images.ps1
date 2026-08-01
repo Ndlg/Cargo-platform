@@ -1,5 +1,7 @@
 param(
-  [string]$Version = "0.1.0",
+  [Parameter(Mandatory = $true)]
+  [ValidatePattern('^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$')]
+  [string]$Version,
   [string]$Registry = "ghcr.io/ndlg",
   [string]$GitSha = "",
   [string]$CollectorPython = "",
@@ -55,23 +57,35 @@ $images = @(
   }
 )
 
+if ($Push) {
+  foreach ($image in $images) {
+    $versionTag = "$Registry/$($image.Name):$Version"
+    & docker manifest inspect $versionTag *> $null
+    if ($LASTEXITCODE -eq 0) {
+      throw "Refusing to overwrite existing release tag: $versionTag"
+    }
+  }
+}
+
 foreach ($image in $images) {
   $versionTag = "$Registry/$($image.Name):$Version"
-  $latestTag = "$Registry/$($image.Name):latest"
   $args = @(
     "build",
     "-f", $image.Dockerfile,
-    "-t", $versionTag,
-    "-t", $latestTag
+    "-t", $versionTag
   ) + $image.Args + @($image.Context)
 
   Write-Host "Building $versionTag"
-  docker @args
+  & docker @args
+  if ($LASTEXITCODE -ne 0) {
+    throw "Image build failed: $versionTag"
+  }
 
   if ($Push) {
     Write-Host "Pushing $versionTag"
-    docker push $versionTag
-    Write-Host "Pushing $latestTag"
-    docker push $latestTag
+    & docker push $versionTag
+    if ($LASTEXITCODE -ne 0) {
+      throw "Image push failed: $versionTag"
+    }
   }
 }

@@ -53,7 +53,6 @@ class ProductMatchingScope(BaseModel):
     task_id: int | None = None
     standard_detail_ids: list[int] = Field(default_factory=list)
     selected_record_ids: list[int] = Field(default_factory=list)
-    confirmed_by_user: bool = True
     preview_impact_count: int | None = None
 
 

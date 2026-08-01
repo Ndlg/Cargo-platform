@@ -19,6 +19,13 @@ def test_sqlite_volume_restore_refuses_running_volume() -> None:
     assert "sqlite_snapshot.py" in source
     assert 'docker ps -q --filter "volume=$VolumeName"' in source
     assert "RESTORE_STOPPED_DATABASE" in source
+    assert "Join-Path $resolvedBackupDirectory $fileName" in source
+
+
+def test_development_compose_keeps_backend_and_parser_on_one_version() -> None:
+    source = (ROOT / "docker-compose.yml").read_text(encoding="utf-8-sig")
+
+    assert source.count("APP_VERSION: ${CARGO_PLATFORM_VERSION:-0.2.0-rc.1}") == 2
 
 
 def test_business_deploy_takes_verified_snapshot_before_recreate() -> None:
@@ -27,3 +34,46 @@ def test_business_deploy_takes_verified_snapshot_before_recreate() -> None:
     backup_index = source.index("sqlite_volume_snapshot.ps1")
     recreate_index = source.index('compose @composeFiles up -d')
     assert backup_index < recreate_index
+    assert "pull @services" in source
+    assert "--wait" in source
+    assert "restoring the previous four images" in source
+    assert "composeConfig.services.backend.environment.APP_VERSION" in source
+    assert "previous_app_versions" in source
+    assert "previous_image_ids" in source
+    assert "target_image_ids" in source
+    assert "Existing release is incomplete" in source
+    assert "rollback verification failed" in source
+
+
+def test_release_compose_requires_one_version_and_runtime_guards() -> None:
+    source = (ROOT / "docker-compose.release.yml").read_text(encoding="utf-8-sig")
+
+    assert source.count("${CARGO_PLATFORM_VERSION:?set CARGO_PLATFORM_VERSION}") == 6
+    assert ":latest" not in source
+    assert source.count("healthcheck:") == 4
+    assert source.count("logging: *default-logging") == 4
+    assert "external: true" in source
+
+
+def test_release_builds_four_immutable_images_after_quality_gate() -> None:
+    script = (ROOT / "scripts" / "release_images.ps1").read_text(encoding="utf-8-sig")
+    workflow = (ROOT / ".github" / "workflows" / "release-images.yml").read_text(encoding="utf-8-sig")
+
+    assert "cargo-platform-waybill-parser" in script
+    assert ":latest" not in script
+    assert "Parameter(Mandatory = $true)" in script
+    assert "needs: [version, collector, quality, immutable-tags]" in workflow
+    assert "Refusing to overwrite existing release tag" in script
+    assert "Refusing to overwrite existing release tag" in workflow
+    assert "python -m pytest backend/tests -q" in workflow
+    assert "npm audit --omit=dev --audit-level=high" in workflow
+    assert ":latest" not in workflow
+
+
+def test_release_dependencies_exclude_retired_jose_and_vulnerable_pillow() -> None:
+    requirements = (ROOT / "backend" / "requirements.txt").read_text(encoding="utf-8")
+
+    assert "python-jose" not in requirements.casefold()
+    assert "passlib" not in requirements.casefold()
+    assert "pytest" not in requirements.casefold()
+    assert "pillow>=12.3,<13.0" in requirements.casefold()

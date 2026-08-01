@@ -392,7 +392,7 @@ def product_sku_linking_result(
         "match_status": "matched",
         "exception_reason": "",
         "matched_linking_rule": linking_rule_public_summary(binding),
-        "match_source": "user_learning_rule",
+        "match_source": "administrator_matching_rule",
         "sku_match_trace": sku_match_trace,
     }
 
@@ -420,7 +420,7 @@ def linking_exception_result(
         "matched_linking_rule": matched_rule,
         "conflict_kind": conflict_kind,
         "conflict_linking_rules": conflict_linking_rules or [],
-        "match_source": "user_learning_rule" if binding else "",
+        "match_source": "administrator_matching_rule" if binding else "",
     }
 
 
@@ -643,9 +643,9 @@ def preview_product_sku_linking(
                 linking_exception_result(
                     fields,
                     "product_unmatched",
-                    "没有用户确认的商品匹配学习记录命中这行订单。",
+                    "没有管理员维护的商品匹配规则命中这行订单。",
                 )
-                | {"row_index": index, "match_trace": [], "match_source": "user_learning_rule"}
+                | {"row_index": index, "match_trace": [], "match_source": "administrator_matching_rule"}
             )
             continue
 
@@ -717,7 +717,7 @@ def product_sku_linking_contract() -> dict[str, Any]:
         "output_name": "商品匹配结果",
         "match_statuses": sorted(PRODUCT_SKU_LINKING_MATCH_STATUSES),
         "allowed_assets": ["products", "product_skus", "image_assets"],
-        "rule_learning_model": "progressive_user_confirmed_five_field_product_matching_rules",
+        "rule_learning_model": "administrator_maintained_five_field_product_matching_rules",
         "rule_requirements": [
             "workspace",
             "global_rule_scope",

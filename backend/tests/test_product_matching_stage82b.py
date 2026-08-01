@@ -247,8 +247,8 @@ def test_product_matching_scoped_preview_requires_active_rule_pack() -> None:
         _product_id, _sku_id, _image_id, detail_id = _seed_assets_and_detail()
 
         for scope in (
-            {"scope_type": "selected_records", "standard_detail_ids": [detail_id], "confirmed_by_user": True},
-            {"scope_type": "global", "confirmed_by_user": True},
+            {"scope_type": "selected_records", "standard_detail_ids": [detail_id]},
+            {"scope_type": "global"},
         ):
             preview_response = client.post(
                 "/api/v1/product-sku-linking/preview",
@@ -267,7 +267,7 @@ def test_product_matching_scoped_preview_requires_active_rule_pack() -> None:
             "/api/v1/product-sku-linking/apply",
             headers=headers,
             json={
-                "scope": {"scope_type": "selected_records", "standard_detail_ids": [detail_id], "confirmed_by_user": True},
+                "scope": {"scope_type": "selected_records", "standard_detail_ids": [detail_id]},
                 "include_enabled_rules": True,
             },
         )
@@ -309,7 +309,7 @@ def test_product_matching_preview_requires_explicit_batch_or_rows() -> None:
         preview_response = client.post(
             "/api/v1/product-sku-linking/preview",
             headers=headers,
-            json={"scope": {"scope_type": "global", "confirmed_by_user": True}, "include_saved_rules": True},
+            json={"scope": {"scope_type": "global"}, "include_saved_rules": True},
         )
 
         assert preview_response.status_code == 200
@@ -375,7 +375,7 @@ def test_current_batch_preview_consumes_clean_order_rows_not_legacy_standard_det
             "/api/v1/product-sku-linking/preview",
             headers=headers,
             json={
-                "scope": {"scope_type": "current_batch", "task_id": task_id, "confirmed_by_user": True},
+                "scope": {"scope_type": "current_batch", "task_id": task_id},
                 "rule": {
                     "product_id": product_id,
                     "product_match_fields": ["product"],
@@ -499,7 +499,6 @@ def test_product_matching_rule_preview_save_and_disable() -> None:
         scope = {
             "scope_type": "selected_records",
             "standard_detail_ids": [detail_id],
-            "confirmed_by_user": True,
         }
         draft_rule = {
             "name": "鞋类黑色",
@@ -523,7 +522,7 @@ def test_product_matching_rule_preview_save_and_disable() -> None:
                 }
             ],
             "field_sources": {"product": "面单解析后的五字段.product"},
-            "revision_note": "用户确认鞋类黑色规则",
+            "revision_note": "管理员补充鞋类黑色规则",
         }
 
         with SessionLocal() as db:
@@ -547,7 +546,7 @@ def test_product_matching_rule_preview_save_and_disable() -> None:
             "/api/v1/product-sku-linking/preview",
             headers=headers,
             json={
-                "scope": {"scope_type": "selected_records", "standard_detail_ids": [], "confirmed_by_user": True},
+                "scope": {"scope_type": "selected_records", "standard_detail_ids": []},
                 "rule": draft_rule,
             },
         )
@@ -611,7 +610,7 @@ def test_product_matching_rule_preview_save_and_disable() -> None:
         disabled_preview_body = disabled_preview.json()
         assert disabled_preview_body["summary"]["matched"] == 0
         assert disabled_preview_body["summary"]["product_unmatched"] == 1
-        assert disabled_preview_body["samples"]["product_unmatched"][0]["match_source"] == "user_learning_rule"
+        assert disabled_preview_body["samples"]["product_unmatched"][0]["match_source"] == "administrator_matching_rule"
 
         delete_response = client.delete(f"/api/v1/product-sku-linking/rules/{saved_rule['id']}", headers=headers)
         assert delete_response.status_code == 204
@@ -775,7 +774,6 @@ def test_product_matching_consumes_order_row_drafts_and_export_uses_clean_result
         scope = {
             "scope_type": "current_batch",
             "task_id": task_id,
-            "confirmed_by_user": True,
         }
         draft_rule = {
             "name": "登山鞋多商品",
@@ -880,7 +878,6 @@ def test_product_matching_preview_reports_batch_order_row_coverage(monkeypatch) 
         scope = {
             "scope_type": "current_batch",
             "task_id": task_id,
-            "confirmed_by_user": True,
         }
         draft_rule = {
             "name": "登山鞋覆盖率",
@@ -1367,7 +1364,7 @@ def test_current_batch_product_matching_uses_parser_service_order_rows(monkeypat
             "/api/v1/product-sku-linking/preview",
             headers=headers,
             json={
-                "scope": {"scope_type": "current_batch", "task_id": task_id, "confirmed_by_user": True},
+                "scope": {"scope_type": "current_batch", "task_id": task_id},
                 "include_saved_rules": True,
             },
         )
@@ -1516,7 +1513,7 @@ def test_current_batch_product_matching_prefers_current_raw_samples_over_stale_s
             "/api/v1/product-sku-linking/preview",
             headers=headers,
             json={
-                "scope": {"scope_type": "current_batch", "task_id": task_id, "confirmed_by_user": True},
+                "scope": {"scope_type": "current_batch", "task_id": task_id},
                 "include_saved_rules": True,
             },
         )
@@ -1582,7 +1579,7 @@ def test_current_batch_product_matching_reports_parser_service_failure(monkeypat
             "/api/v1/product-sku-linking/preview",
             headers=headers,
             json={
-                "scope": {"scope_type": "current_batch", "task_id": task_id, "confirmed_by_user": True},
+                "scope": {"scope_type": "current_batch", "task_id": task_id},
                 "include_saved_rules": True,
             },
         )
@@ -1636,7 +1633,7 @@ def test_current_batch_product_matching_requires_parser_service(monkeypatch) -> 
             "/api/v1/product-sku-linking/preview",
             headers=headers,
             json={
-                "scope": {"scope_type": "current_batch", "task_id": task_id, "confirmed_by_user": True},
+                "scope": {"scope_type": "current_batch", "task_id": task_id},
                 "include_saved_rules": True,
             },
         )
