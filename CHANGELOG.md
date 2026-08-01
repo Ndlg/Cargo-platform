@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.0-rc.1 - 2026-08-01
+
 - Preserves the field collection-to-export workflow and removes manual order-row review.
 - Keeps waybill parsing in the independent parser service.
 - Keeps tenant fingerprint field selection and declarative, replay-validated rules.

@@ -28,7 +28,7 @@ from services.shared.waybill_fingerprint import fingerprint_catalog, inspect_fin
 
 app = FastAPI(
     title="Cargo Platform Waybill Parser",
-    version=os.getenv("APP_VERSION", "0.2.0-rc.1"),
+    version=os.getenv("APP_VERSION", "1.0.0-rc.1"),
 )
 
 RECOGNITION_RULE_PACK_CONTRACT_VERSION = "recognition_rule_pack_v1"
