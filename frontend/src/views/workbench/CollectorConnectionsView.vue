@@ -18,7 +18,6 @@ type AdapterRow = {
   displayName: string
   status: string
   dbPath: string
-  taskCount: string
   localProgress: string
   error: string
 }
@@ -83,7 +82,6 @@ function adapterRows(collector: CollectorRecord): AdapterRow[] {
     displayName: textValue(value.display_name, key),
     status: textValue(value.status, 'unknown'),
     dbPath: textValue(value.db_path),
-    taskCount: textValue(value.task_count),
     localProgress: value.max_rowid ? '已记录' : '无',
     error: textValue(value.error, ''),
   }))
@@ -313,7 +311,6 @@ onMounted(load)
                   </div>
                   <div class="adapter-metrics">
                     <el-tag :type="tagType(adapter.status)">{{ adapter.status }}</el-tag>
-                    <span>组件任务 {{ adapter.taskCount }}</span>
                     <span>本地进度 {{ adapter.localProgress }}</span>
                   </div>
                 </div>

@@ -153,6 +153,25 @@ def test_prepare_binds_selected_document_and_returns_only_tenant_selected_fields
     db.close()
 
 
+def test_rerun_warning_does_not_expose_internal_task_id(monkeypatch) -> None:
+    from app.api.routes import format_learning as route
+
+    def fail_rerun(*_args, **_kwargs):
+        raise RuntimeError("解析服务超时")
+
+    monkeypatch.setattr(route, "_rerun_task_with_active_rule", fail_rerun)
+
+    reruns, warnings = route.rerun_affected_tasks(
+        object(),
+        workspace_id=1,
+        task_ids=[62],
+    )
+
+    assert reruns == [{"task_id": 62, "status": "failed", "error": "解析服务超时"}]
+    assert warnings == ["相关采集轮次重算失败：解析服务超时"]
+    assert "62" not in warnings[0]
+
+
 def test_learn_compiles_admin_rows_into_versioned_active_rule_pack(monkeypatch) -> None:
     from app.api.routes import format_learning as route
 
@@ -304,7 +323,7 @@ def test_failed_round_replay_keeps_previous_active_rule(monkeypatch) -> None:
         "rerun_affected_tasks",
         lambda _db, *, workspace_id, task_ids: (
             [{"task_id": task_ids[0], "status": "failed", "error": "解析服务超时"}],
-            [f"采集轮次 {task_ids[0]} 重算失败：解析服务超时"],
+            ["相关采集轮次重算失败：解析服务超时"],
         ),
     )
 

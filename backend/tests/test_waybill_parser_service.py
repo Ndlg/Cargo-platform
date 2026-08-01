@@ -242,7 +242,7 @@ def test_waybill_parser_service_keeps_each_raw_document_as_one_parent_waybill() 
     body = response.json()
     assert body["summary"]["parent_waybill_count"] == 2
     assert body["summary"]["child_waybill_count"] == 2
-    assert [parent["parent_label"] for parent in body["parents"]] == ["第1批-第1单", "第1批-第2单"]
+    assert [parent["parent_label"] for parent in body["parents"]] == ["面单 1", "面单 2"]
     assert [row["product"] for row in body["rows"]] == ["秒21 vap2025", "范33 带木one帆布kw"]
 
 
@@ -935,8 +935,8 @@ def test_waybill_parser_service_accepts_expanded_waybill_samples() -> None:
         "special_count": 0,
     }
     assert [row["child_label"] for row in body["rows"]] == [
-        "第1批-第1单-子1",
-        "第1批-第2单-子1",
+        "面单 1",
+        "面单 2",
     ]
     assert [row["source_index"] for row in body["rows"]] == ["7134", "7134"]
     assert [row["product"] for row in body["rows"]] == ["5.0范48", "范33 带木one帆布kw"]
@@ -945,7 +945,7 @@ def test_waybill_parser_service_accepts_expanded_waybill_samples() -> None:
     assert [row["quantity"] for row in body["rows"]] == [1, 1]
 
 
-def test_waybill_parser_service_raw_records_use_batch_sequence_labels() -> None:
+def test_waybill_parser_service_raw_records_use_business_sequence_labels() -> None:
     app = load_parser_service_app()
     with TestClient(app) as client:
         response = client.post(
@@ -989,7 +989,7 @@ def test_waybill_parser_service_raw_records_use_batch_sequence_labels() -> None:
 
     assert response.status_code == 200
     body = response.json()
-    assert body["rows"][0]["child_label"] == "第1批-第8单-子1"
+    assert body["rows"][0]["child_label"] == "面单 8"
 
 
 def test_waybill_parser_service_raw_records_parse_item_info_documents() -> None:

@@ -446,6 +446,7 @@ class CollectorHeartbeatRequest(BaseModel):
     last_error: str | None = None
     last_upload_at: str | None = Field(default=None, max_length=64)
     last_reconnect_reason: str | None = Field(default=None, max_length=32)
+    tracked_task_ids: list[int] = Field(default_factory=list, max_length=32)
 
 
 class RawCaptureRecordPayload(BaseModel):
@@ -1276,6 +1277,18 @@ def export_result_value(
     return standard_fields.get(key, "")
 
 
+def business_waybill_source_label(
+    detail_number: int,
+    *,
+    item_index: int = 1,
+    item_count: int = 1,
+) -> str:
+    parent_label = f"面单 {detail_number}"
+    if item_count > 1:
+        return f"{parent_label}-子项 {item_index}"
+    return parent_label
+
+
 def product_sku_linking_export_row(
     payload: dict[str, Any],
     *,
@@ -1314,10 +1327,10 @@ def product_sku_linking_export_row(
         "contract": EXPORT_PRODUCT_SKU_LINKING_CONTRACT,
         **source_identifiers,
         "candidate_key": text_value(payload.get("candidate_key")) or candidate_key_fallback,
-        "source_label": (
-            f"面单 {detail_number}-{item_index}"
-            if item_count > 1
-            else f"面单 {detail_number}"
+        "source_label": business_waybill_source_label(
+            detail_number,
+            item_index=item_index,
+            item_count=item_count,
         ),
         "item_index": item_index,
         "item_count": item_count,
@@ -1419,7 +1432,7 @@ def pending_unmapped_waybill_product_sku_linking_row(
 ) -> dict[str, Any]:
     sample_text = text_value(sample.get("sample_text"))
     message = "这张面单还没有生成五字段结果，无法进入商品匹配。"
-    source_label = f"第1批-第{detail_number}单"
+    source_label = business_waybill_source_label(detail_number)
     return {
         "contract": EXPORT_PRODUCT_SKU_LINKING_CONTRACT,
         "detail_id": None,
@@ -1506,8 +1519,8 @@ def export_recognition_summary(rows: list[dict[str, Any]]) -> dict[str, int]:
     return summary
 
 
-CHILD_SOURCE_LABEL_SUFFIX_PATTERN = re.compile(r"-子\d+$")
-PARENT_SEQUENCE_PATTERN = re.compile(r"(?:第1批-第|面单\s*)(\d+)(?:单)?")
+CHILD_SOURCE_LABEL_SUFFIX_PATTERN = re.compile(r"-子(?:项\s*)?\d+$")
+PARENT_SEQUENCE_PATTERN = re.compile(r"(?:第\d+批-第|面单\s*)(\d+)(?:单)?")
 
 
 def recognition_waybill_count(rows: list[dict[str, Any]]) -> int:
@@ -1557,7 +1570,13 @@ def recognition_row_from_product_matching_preview(
         item_count=item_count,
     )
     if child_label:
-        result["source_label"] = child_label
+        parent_match = PARENT_SEQUENCE_PATTERN.search(child_label)
+        parent_sequence = int(parent_match.group(1)) if parent_match else fallback_number
+        result["source_label"] = business_waybill_source_label(
+            parent_sequence,
+            item_index=item_index,
+            item_count=item_count,
+        )
     source_row = source.get("row")
     source_status = text_value(getattr(source_row, "status", ""))
     if source_status == "special":
@@ -2680,6 +2699,20 @@ def collector_heartbeat(
         collector.client_version = payload.client_version
 
     tasks = db.scalars(active_task_statement(collector.workspace_id, collector.id)).all()
+    tracked_task_ids = {task_id for task_id in payload.tracked_task_ids if task_id > 0}
+    if tracked_task_ids:
+        completed_tasks = db.scalars(
+            select(CaptureTask).where(
+                CaptureTask.workspace_id == collector.workspace_id,
+                CaptureTask.id.in_(tracked_task_ids),
+                CaptureTask.status == "completed",
+                CaptureTask.archived_at.is_(None),
+                CaptureTask.is_deleted.is_(False),
+                (CaptureTask.collector_id.is_(None)) | (CaptureTask.collector_id == collector.id),
+            )
+        ).all()
+        active_ids = {task.id for task in tasks}
+        tasks.extend(task for task in completed_tasks if task.id not in active_ids)
     db.commit()
     return {
         "collector": public_collector(collector),

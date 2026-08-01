@@ -70,12 +70,14 @@ const sourceOptions = computed(() => {
   return [...values]
 })
 const sourceCounts = computed(() => {
-  const rows = allRows.value
+  const parents = drafts.value?.parents ?? []
   return {
-    total: sourceOptions.value.length,
-    douyin: rows.filter((row) => row.source_component === 'cloud-print-client').length,
-    cainiao: rows.filter((row) => row.source_component === 'cainiao-cnprint').length,
-    other: rows.filter((row) => !['cloud-print-client', 'cainiao-cnprint'].includes(row.source_component)).length,
+    total: parents.length,
+    douyin: parents.filter((parent) => parent.source_component === 'cloud-print-client').length,
+    cainiao: parents.filter((parent) => parent.source_component === 'cainiao-cnprint').length,
+    other: parents.filter(
+      (parent) => !['cloud-print-client', 'cainiao-cnprint'].includes(parent.source_component),
+    ).length,
   }
 })
 const filteredRows = computed(() => {

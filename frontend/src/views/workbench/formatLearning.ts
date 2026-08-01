@@ -54,11 +54,10 @@ export function learningResultWarnings(result: LearningResultLike): string[] {
       if (!rerun || typeof rerun !== 'object') continue
       const record = rerun as Record<string, unknown>
       if (record.status !== 'failed') continue
-      const taskId = typeof record.task_id === 'number' ? String(record.task_id) : '未知'
       const error = typeof record.error === 'string' && record.error.trim()
         ? `：${record.error.trim()}`
         : ''
-      messages.add(`采集轮次 ${taskId} 重算失败${error}`)
+      messages.add(`相关采集轮次重算失败${error}`)
     }
   }
 

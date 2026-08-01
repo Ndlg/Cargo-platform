@@ -574,9 +574,9 @@ def test_raw_payload_item_info_semicolon_size_keeps_one_row_per_item_line() -> N
         parent_sequence=27,
     )
 
-    assert result.parent_label == "第1批-第27单"
+    assert result.parent_label == "面单 27"
     assert result.child_count == 2
-    assert [row.child_label for row in result.rows] == ["第1批-第27单-子1", "第1批-第27单-子2"]
+    assert [row.child_label for row in result.rows] == ["面单 27-子项 1", "面单 27-子项 2"]
     assert [row.product for row in result.rows] == [
         "【HK】特2跑步鞋飞速超轻减震防滑透气运动鞋男鞋女鞋2代联名厚底",
         "【HK】特2跑步鞋飞速超轻减震防滑透气运动鞋男鞋女鞋2代联名厚底",
@@ -620,12 +620,12 @@ def test_multi_product_waybill_preserves_repeated_identical_child_rows() -> None
         source_index="24",
     )
 
-    assert result.parent_label == "第1批-第24单"
+    assert result.parent_label == "面单 24"
     assert result.child_count == 3
     assert [row.child_label for row in result.rows] == [
-        "第1批-第24单-子1",
-        "第1批-第24单-子2",
-        "第1批-第24单-子3",
+        "面单 24-子项 1",
+        "面单 24-子项 2",
+        "面单 24-子项 3",
     ]
     assert [row.product for row in result.rows] == [
         "登山鞋涉水鞋防水机能户外徒步男鞋女鞋休闲防滑溯溪越野鞋跑步鞋",
@@ -668,7 +668,7 @@ def test_single_product_waybill_becomes_one_child_waybill_with_numeric_quantity(
     )
 
     assert result.child_count == 1
-    assert result.rows[0].child_label == "第1批-第16单-子1"
+    assert result.rows[0].child_label == "面单 16"
     assert result.rows[0].product == "现货新款4.0鞋子跑步鞋公路四代男鞋女鞋网面透气系带跑道5.0"
     assert result.rows[0].sales_attr1 == "4.0灰蓝"
     assert result.rows[0].sales_attr2 == "42.5"
@@ -704,8 +704,8 @@ def test_raw_record_source_index_does_not_leak_as_business_waybill_number() -> N
         parent_sequence=8,
     )
 
-    assert result.parent_label == "第1批-第8单"
-    assert result.rows[0].child_label == "第1批-第8单-子1"
+    assert result.parent_label == "面单 8"
+    assert result.rows[0].child_label == "面单 8"
 
 
 def test_standard_detail_two_line_waybill_prefers_business_product_line() -> None:
@@ -725,9 +725,9 @@ def test_standard_detail_two_line_waybill_prefers_business_product_line() -> Non
         parent_sequence=1,
     )
 
-    assert result.parent_label == "第1批-第1单"
+    assert result.parent_label == "面单 1"
     assert result.child_count == 1
-    assert result.rows[0].child_label == "第1批-第1单-子1"
+    assert result.rows[0].child_label == "面单 1"
     assert result.rows[0].product == "2025新款网面女鞋男鞋情侣透气跑步鞋休闲时尚运动鞋健身"
     assert result.rows[0].sales_attr1 == "5.0二代灰色"
     assert result.rows[0].sales_attr2 == "38.5"
@@ -749,7 +749,7 @@ def test_standard_detail_two_line_product_then_labeled_attrs_stays_one_child_way
     )
 
     assert result.child_count == 1
-    assert result.rows[0].child_label == "第1批-第56单-子1"
+    assert result.rows[0].child_label == "面单 56"
     assert result.rows[0].product == "【流放】男鞋针织跑步鞋全掌气垫女鞋白黑舒适休闲鞋运动鞋健身鞋"
     assert result.rows[0].sales_attr1 == "黑灰"
     assert result.rows[0].sales_attr2 == "42.5"
@@ -796,8 +796,8 @@ def test_standard_detail_product_lines_pair_with_labeled_attr_remark_lines() -> 
 
     assert result.child_count == 2
     assert [row.child_label for row in result.rows] == [
-        "第1批-第131单-子1",
-        "第1批-第131单-子2",
+        "面单 131-子项 1",
+        "面单 131-子项 2",
     ]
     assert [row.product for row in result.rows] == ["秒67 175", "秒67 175"]
     assert [row.sales_attr1 for row in result.rows] == ["Cloudtilt聯名2代白黑", "Cloudtilt蓝灰"]
@@ -1325,8 +1325,8 @@ def test_order_row_draft_endpoint_returns_child_waybill_rows(monkeypatch) -> Non
         "special_count": 0,
     }
     assert [row["child_label"] for row in body["rows"]] == [
-        "第1批-第1单-子1",
-        "第1批-第1单-子2",
+        "面单 1-子项 1",
+        "面单 1-子项 2",
     ]
     assert [row["source_index"] for row in body["rows"]] == ["24", "24"]
 
@@ -1392,8 +1392,8 @@ def test_order_row_draft_endpoint_expands_raw_record_documents_as_waybills(monke
         "special_count": 0,
     }
     assert [row["child_label"] for row in body["rows"]] == [
-        "第1批-第1单-子1",
-        "第1批-第2单-子1",
+        "面单 1",
+        "面单 2",
     ]
     assert [row["source_index"] for row in body["rows"]] == ["7134", "7134"]
     assert [row["product"] for row in body["rows"]] == ["5.0范48", "范33 带木one帆布kw"]
@@ -1465,8 +1465,8 @@ def test_order_row_draft_endpoint_prefers_standard_details_as_business_waybills(
     assert body["summary"]["parent_waybill_count"] == 2
     assert body["summary"]["child_waybill_count"] == 2
     assert [row["child_label"] for row in body["rows"]] == [
-        "第1批-第1单-子1",
-        "第1批-第2单-子1",
+        "面单 1",
+        "面单 2",
     ]
     assert [row["product"] for row in body["rows"]] == ["鞋款A", "鞋款B"]
 

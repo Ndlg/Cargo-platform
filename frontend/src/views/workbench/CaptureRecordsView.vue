@@ -81,25 +81,6 @@ function rawRecordsForTask(taskId: number): ApiRecord[] {
     .sort((a, b) => Number(a.id ?? 0) - Number(b.id ?? 0))
 }
 
-function parsedRawPayload(record: ApiRecord): Record<string, unknown> | null {
-  const raw = record.raw_payload
-  if (typeof raw !== 'string') return raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : null
-  try {
-    const parsed = JSON.parse(raw)
-    return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null
-  } catch {
-    return null
-  }
-}
-
-function waybillCountForRawRecord(record: ApiRecord): number {
-  const payload = parsedRawPayload(record)
-  const task = payload?.task
-  const documents = task && typeof task === 'object' ? (task as Record<string, unknown>).documents : null
-  if (Array.isArray(documents) && documents.length > 0) return documents.length
-  return record.raw_payload || record.source_columns ? 1 : 0
-}
-
 function numericCount(value: unknown): number | null {
   const count = Number(value)
   return Number.isFinite(count) && count >= 0 ? count : null
@@ -107,8 +88,7 @@ function numericCount(value: unknown): number | null {
 
 function waybillCountForTask(task: CaptureTaskRecord): number {
   const backendCount = numericCount(task.waybill_count ?? task.parent_waybill_count)
-  if (backendCount !== null) return backendCount
-  return rawRecordsForTask(task.id).reduce((total, record) => total + waybillCountForRawRecord(record), 0)
+  return backendCount ?? 0
 }
 
 function statusType(status: string) {
@@ -199,7 +179,7 @@ async function load() {
   try {
     const [status, tasks] = await Promise.all([
       getCollectorControlStatus(),
-      getRecords('/capture-tasks?limit=6&include_waybill_counts=false'),
+      getRecords('/capture-tasks?limit=6&include_waybill_counts=true'),
     ])
     collectors.value = status.collectors
     activeTask.value = status.active_task

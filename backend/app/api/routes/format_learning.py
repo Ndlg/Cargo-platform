@@ -668,7 +668,7 @@ def rerun_affected_tasks(
         except Exception as exc:
             error = _text(exc)[:500] or "重算服务暂时不可用"
             results.append({"task_id": task_id, "status": "failed", "error": error})
-            warnings.append(f"采集轮次 {task_id} 重算失败：{error}")
+            warnings.append(f"相关采集轮次重算失败：{error}")
     return results, warnings
 
 

@@ -11,6 +11,7 @@ from app.api.routes.collector_runtime import (
     append_xlsx_rows,
     pending_unmapped_waybill_product_sku_linking_row,
     product_sku_linking_export_row,
+    recognition_parent_sequences,
     recognition_exception_export_rows,
     recognition_report_export_rows,
     recognition_report_headers,
@@ -18,6 +19,8 @@ from app.api.routes.collector_runtime import (
     recognition_report_row_is_exportable,
     recognition_report_workbook,
     recognition_report_rows_by_stall,
+    recognition_row_from_product_matching_preview,
+    recognition_waybill_count,
     recognition_rows_from_product_sku_linking_results,
     report_quantity_value,
 )
@@ -29,7 +32,7 @@ def test_pending_unmapped_export_text_does_not_expose_batch_numbers() -> None:
         detail_number=7,
     )
 
-    assert row["source_label"] == "第1批-第7单"
+    assert row["source_label"] == "面单 7"
     assert row["image_match_text"] == "鞋款文字 42 *1"
     assert recognition_exception_export_rows([row]) == [["鞋款文字 42 *1"]]
 
@@ -49,6 +52,38 @@ def test_report_preview_keeps_matched_rule_id_for_exception_repair() -> None:
     )
 
     assert row["rule_id"] == 35
+
+
+def test_multi_product_export_uses_business_child_label() -> None:
+    row = product_sku_linking_export_row(
+        {"match_status": "matched", "product": "鞋款", "quantity": 1},
+        source_identifiers={"detail_id": 101},
+        candidate_key_fallback="101:2",
+        detail_number=7,
+        item_index=2,
+        item_count=2,
+    )
+
+    assert row["source_label"] == "面单 7-子项 2"
+
+
+def test_legacy_parser_label_is_normalized_before_business_display() -> None:
+    row = recognition_row_from_product_matching_preview(
+        {"match_status": "matched", "product": "鞋款", "quantity": 1},
+        {
+            "raw_record_id": 123,
+            "child_label": "第1批-第7单-子2",
+            "child_index": 2,
+            "child_count": 2,
+        },
+        fallback_number=99,
+    )
+
+    assert row["source_label"] == "面单 7-子项 2"
+    assert recognition_parent_sequences([row]) == {7}
+    assert recognition_waybill_count(
+        [row, {**row, "source_label": "面单 7-子项 1"}],
+    ) == 1
 
 
 def test_export_contract_keeps_matched_rows_with_or_without_images() -> None:

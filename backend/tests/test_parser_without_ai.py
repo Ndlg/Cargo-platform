@@ -114,7 +114,7 @@ def test_parser_batch_contract_has_no_ai_switch_or_session_output() -> None:
     assert payload["diagnostics"] == [
         {
             "raw_record_id": 10,
-            "parent_label": "第1批-第1单",
+            "parent_label": "面单 1",
             "fingerprint": payload["diagnostics"][0]["fingerprint"],
             "reason": "format_profile_missing",
             "document_sequence": 1,

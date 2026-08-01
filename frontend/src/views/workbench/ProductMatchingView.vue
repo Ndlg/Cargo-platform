@@ -264,9 +264,8 @@ function queryPositiveInt(value: unknown): number | null {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null
 }
 
-function ruleCode(ruleId?: number | null): string {
-  if (!ruleId) return '本次记录'
-  return `学习记录 ${ruleId}`
+function ruleDisplayName(rule: ProductMatchingRuleRecord): string {
+  return rule.name?.trim() || '未命名学习记录'
 }
 
 function productName(productId?: number | null): string {
@@ -285,8 +284,7 @@ function normalizeRuleSearch(value: string): string {
 
 function ruleSearchText(rule: ProductMatchingRuleRecord): string {
   return [
-    ruleCode(rule.id),
-    rule.name,
+    ruleDisplayName(rule),
     productName(rule.product_id),
     rule.product_keyword,
     rule.product_match_type === 'exact' ? '完全相同' : '包含关键词',
@@ -647,7 +645,7 @@ function editRule(rule: ProductMatchingRuleRecord) {
   void loadProducts(productSearchKeyword.value)
   void loadSelectedProductSkus(form.product_id)
   if (form.image_asset_id) void ensureImagesLoaded()
-  ElMessage.info(`正在修订 ${ruleCode(rule.id)}`)
+  ElMessage.info(`正在修订 ${ruleDisplayName(rule)}`)
 }
 
 async function toggleRule(rule: ProductMatchingRuleRecord, enabled: boolean) {
@@ -666,7 +664,7 @@ async function toggleRule(rule: ProductMatchingRuleRecord, enabled: boolean) {
 async function deleteRule(rule: ProductMatchingRuleRecord) {
   try {
     await ElMessageBox.confirm(
-      `确认删除 ${ruleCode(rule.id)}？删除后这条商品匹配学习记录不会再命中后续五字段。`,
+      `确认删除 ${ruleDisplayName(rule)}？删除后这条商品匹配学习记录不会再命中后续五字段。`,
       '删除商品匹配学习记录',
       { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
     )
@@ -935,8 +933,8 @@ onMounted(load)
           <el-table v-else :data="filteredRules" size="small" border height="360" class="rules-table">
             <el-table-column label="规则" min-width="190">
               <template #default="{ row }">
-                <div class="rule-name">{{ row.name || ruleCode(row.id) }}</div>
-                <div class="muted">{{ ruleCode(row.id) }} · 版本 {{ row.revision }}</div>
+                <div class="rule-name">{{ ruleDisplayName(row) }}</div>
+                <div class="muted">版本 {{ row.revision }}</div>
                 <el-tag size="small" :type="row.is_enabled ? 'success' : 'info'">
                   {{ row.is_enabled ? '启用中' : '已停用' }}
                 </el-tag>

@@ -966,7 +966,7 @@ def test_recognition_preview_uses_waybill_sequence_not_raw_record_source_index(m
         assert body["waybill_count"] == 2
         assert body["order_row_count"] == 2
         labels = [row["source_label"] for row in body["rows"]]
-        assert labels == ["第1批-第1单-子1", "第1批-第2单-子1"]
+        assert labels == ["面单 1", "面单 2"]
         assert all("2648" not in label and "7132" not in label for label in labels)
 
 
@@ -1253,7 +1253,7 @@ def test_recognition_export_keeps_unreadable_raw_print_in_exception_sheet(monkey
         assert preview["waybill_count"] == 1
         assert preview["order_row_count"] == 1
         assert preview["rows"][0]["status"] == "pending"
-        assert preview["rows"][0]["source_label"] == "第1批-第1单-子1"
+        assert preview["rows"][0]["source_label"] == "面单 1"
 
         workbook_response = client.get(
             f"/api/v1/collector-control/tasks/{task_id}/report-workbook",

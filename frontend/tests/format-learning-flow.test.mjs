@@ -83,7 +83,7 @@ assert.deepEqual(
   learning.learningResultWarnings({
     warnings: [
       '规则已保存，但有一项提醒',
-      '采集轮次 62 重算失败：解析服务超时',
+      '相关采集轮次重算失败：解析服务超时',
     ],
     reruns: [
       { task_id: 61, status: 'completed' },
@@ -92,9 +92,9 @@ assert.deepEqual(
   }),
   [
     '规则已保存，但有一项提醒',
-    '采集轮次 62 重算失败：解析服务超时',
+    '相关采集轮次重算失败：解析服务超时',
   ],
-  'warnings and failed reruns must remain visible instead of being reported as unconditional success',
+  'warnings and failed reruns must remain visible without exposing internal task ids',
 )
 assert.equal(
   learning.isFingerprintFieldsMissingError(

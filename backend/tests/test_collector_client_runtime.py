@@ -188,6 +188,38 @@ def test_heartbeat_replaces_existing_generic_name_with_source_machine() -> None:
     assert status_payload["last_reconnect_reason"] == "network"
 
 
+def test_heartbeat_returns_tracked_completed_task_until_collector_drains_it() -> None:
+    with TestClient(app) as client:
+        headers = login_headers(client)
+        registration = register_collector(client, headers, "tracked-completed-machine")
+        token = str(registration["collector_token"])
+        collector_id = int(registration["collector"]["id"])
+        started = client.post(
+            "/api/v1/collector-control/start",
+            headers=headers,
+            json={"collector_id": collector_id},
+        )
+        assert started.status_code == 201
+        task_id = int(started.json()["id"])
+        stopped = client.post(
+            "/api/v1/collector-control/stop",
+            headers=headers,
+            json={"task_id": task_id},
+        )
+        assert stopped.status_code == 200
+
+        heartbeat = client.post(
+            "/api/v1/collector-runtime/heartbeat",
+            headers={"X-Collector-Token": token},
+            json={"tracked_task_ids": [task_id]},
+        )
+
+    assert heartbeat.status_code == 200
+    assert [(task["id"], task["status"]) for task in heartbeat.json()["tasks"]] == [
+        (task_id, "completed")
+    ]
+
+
 def deactivate_recognition_rule_packs() -> None:
     with SessionLocal() as db:
         db.query(RecognitionRulePack).filter(RecognitionRulePack.workspace_id == 1).update(
@@ -521,6 +553,206 @@ def test_collector_task_watermark_ignores_rows_before_capture_start(tmp_path) ->
     assert [row.task_id for row in rows] == ["new-local-task"]
 
 
+def test_collector_keeps_print_created_after_idle_heartbeat_before_task_is_observed(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "print.db"
+    capture_started_at = "2026-07-23T06:51:39.241233+00:00"
+    start_local = datetime.strptime(
+        collector_client.local_db_time_from_iso(capture_started_at),
+        "%Y-%m-%d %H:%M:%S",
+    )
+    with collector_client.sqlite3.connect(db_path) as connection:
+        connection.execute("create table task (taskID text, msg text, time text)")
+        connection.execute(
+            "insert into task (taskID, msg, time) values (?, ?, ?)",
+            (
+                "old-local-task",
+                '{"task":{"taskID":"OLD"}}',
+                (start_local - timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S"),
+            ),
+        )
+
+    adapter = collector_client.PrintDbAdapter("cainiao-cnprint", "Cainiao", db_path)
+    state = collector_client.CollectorState(idle_watermarks={"cainiao-cnprint": 1})
+    heartbeat_count = 0
+    uploaded_source_indexes: list[str] = []
+
+    def heartbeat_with_task_start_race(*_args, **_kwargs):
+        nonlocal heartbeat_count
+        heartbeat_count += 1
+        if heartbeat_count == 1:
+            with collector_client.sqlite3.connect(db_path) as connection:
+                connection.execute(
+                    "insert into task (taskID, msg, time) values (?, ?, ?)",
+                    (
+                        "new-local-task",
+                        '{"task":{"taskID":"NEW"}}',
+                        (start_local + timedelta(seconds=1)).strftime("%Y-%m-%d %H:%M:%S"),
+                    ),
+                )
+            return {"tasks": []}
+        return {"tasks": [{"id": 58, "started_at": capture_started_at}]}
+
+    def capture_upload(_base_url, _token, _task_id, records):
+        uploaded_source_indexes.extend(record["source_index"] for record in records)
+        return {"inserted": len(records), "skipped": 0}
+
+    monkeypatch.setattr(collector_client, "heartbeat", heartbeat_with_task_start_race)
+    monkeypatch.setattr(collector_client, "upload_records", capture_upload)
+
+    collector_client.run_sqlite_once("http://collector.test", "token", state, [adapter], 100)
+    collector_client.run_sqlite_once("http://collector.test", "token", state, [adapter], 100)
+
+    assert uploaded_source_indexes == ["2"]
+
+
+def test_collector_keeps_task_open_for_print_committed_after_first_empty_closing_poll(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "print.db"
+    with collector_client.sqlite3.connect(db_path) as connection:
+        connection.execute("create table task (taskID text, msg text, time text)")
+        connection.execute(
+            "insert into task (taskID, msg, time) values (?, ?, ?)",
+            ("already-uploaded", '{"task":{"taskID":"OLD"}}', "2026-07-27 10:00:01"),
+        )
+
+    adapter = collector_client.PrintDbAdapter("cainiao-cnprint", "Cainiao", db_path)
+    state = collector_client.CollectorState(
+        idle_watermarks={"cainiao-cnprint": 1},
+        capture_watermarks={"58:cainiao-cnprint": 1},
+    )
+    uploaded_source_indexes: list[str] = []
+
+    monkeypatch.setattr(collector_client, "heartbeat", lambda *_args, **_kwargs: {"tasks": []})
+
+    def capture_upload(_base_url, _token, _task_id, records):
+        uploaded_source_indexes.extend(record["source_index"] for record in records)
+        return {"inserted": len(records), "skipped": 0}
+
+    monkeypatch.setattr(collector_client, "upload_records", capture_upload)
+
+    collector_client.run_sqlite_once("http://collector.test", "token", state, [adapter], 100)
+    with collector_client.sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "insert into task (taskID, msg, time) values (?, ?, ?)",
+            ("late-commit", '{"task":{"taskID":"LATE"}}', "2026-07-27 10:00:02"),
+        )
+    collector_client.run_sqlite_once("http://collector.test", "token", state, [adapter], 100)
+
+    assert uploaded_source_indexes == ["2"]
+
+
+def test_collector_drains_completed_task_without_collecting_post_stop_prints(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "print.db"
+    with collector_client.sqlite3.connect(db_path) as connection:
+        connection.execute("create table task (taskID text, msg text, time text)")
+        connection.execute(
+            "insert into task (taskID, msg, time) values (?, ?, ?)",
+            ("already-uploaded", '{"task":{"taskID":"OLD"}}', "2026-07-27 10:00:01"),
+        )
+
+    adapter = collector_client.PrintDbAdapter("cainiao-cnprint", "Cainiao", db_path)
+    state = collector_client.CollectorState(
+        idle_watermarks={"cainiao-cnprint": 1},
+        capture_watermarks={"58:cainiao-cnprint": 1},
+    )
+    uploaded_source_indexes: list[str] = []
+    completed_task = {
+        "id": 58,
+        "status": "completed",
+        "started_at": "2026-07-27T01:59:00+00:00",
+        "ended_at": "2026-07-27T02:00:05+00:00",
+    }
+    monkeypatch.setattr(
+        collector_client,
+        "heartbeat",
+        lambda *_args, **_kwargs: {"tasks": [completed_task]},
+    )
+
+    def capture_upload(_base_url, _token, _task_id, records):
+        uploaded_source_indexes.extend(record["source_index"] for record in records)
+        return {"inserted": len(records), "skipped": 0}
+
+    monkeypatch.setattr(collector_client, "upload_records", capture_upload)
+
+    collector_client.run_sqlite_once("http://collector.test", "token", state, [adapter], 100)
+    with collector_client.sqlite3.connect(db_path) as connection:
+        connection.executemany(
+            "insert into task (taskID, msg, time) values (?, ?, ?)",
+            [
+                ("late-before-stop", '{"task":{"taskID":"LATE"}}', "2026-07-27 10:00:04"),
+                ("printed-after-stop", '{"task":{"taskID":"IDLE"}}', "2026-07-27 10:00:06"),
+            ],
+        )
+    collector_client.run_sqlite_once("http://collector.test", "token", state, [adapter], 100)
+
+    assert uploaded_source_indexes == ["2"]
+
+
+def test_collector_keeps_previous_round_until_late_print_can_no_longer_enter_new_round(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "print.db"
+    with collector_client.sqlite3.connect(db_path) as connection:
+        connection.execute("create table task (taskID text, msg text, time text)")
+        connection.execute(
+            "insert into task (taskID, msg, time) values (?, ?, ?)",
+            ("already-uploaded", '{"task":{"taskID":"OLD"}}', "2026-07-27 10:00:01"),
+        )
+
+    adapter = collector_client.PrintDbAdapter("cainiao-cnprint", "Cainiao", db_path)
+    state = collector_client.CollectorState(
+        idle_watermarks={"cainiao-cnprint": 1},
+        capture_watermarks={"58:cainiao-cnprint": 1},
+    )
+    completed_task = {
+        "id": 58,
+        "status": "completed",
+        "started_at": "2026-07-27T01:59:00+00:00",
+        "ended_at": "2026-07-27T02:00:05+00:00",
+    }
+    collecting_task = {
+        "id": 59,
+        "status": "collecting",
+        "started_at": "2026-07-27T02:01:00+00:00",
+    }
+
+    def heartbeat_with_tracked_completed(*_args, **kwargs):
+        tracked = kwargs["state"].active_task_ids()
+        tasks = [collecting_task]
+        if 58 in tracked:
+            tasks.insert(0, completed_task)
+        return {"tasks": tasks}
+
+    uploads: list[tuple[int, str]] = []
+
+    def capture_upload(_base_url, _token, task_id, records):
+        uploads.extend((task_id, record["source_index"]) for record in records)
+        return {"inserted": len(records), "skipped": 0}
+
+    monkeypatch.setattr(collector_client, "heartbeat", heartbeat_with_tracked_completed)
+    monkeypatch.setattr(collector_client, "upload_records", capture_upload)
+
+    collector_client.run_sqlite_once("http://collector.test", "token", state, [adapter], 100)
+    collector_client.run_sqlite_once("http://collector.test", "token", state, [adapter], 100)
+    with collector_client.sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "insert into task (taskID, msg, time) values (?, ?, ?)",
+            ("late-old-round", '{"task":{"taskID":"LATE"}}', "2026-07-27 10:00:04"),
+        )
+    collector_client.run_sqlite_once("http://collector.test", "token", state, [adapter], 100)
+
+    assert uploads == [(58, "2")]
+
+
 def test_collector_state_loads_old_file_and_counts_each_pending_row_once(tmp_path) -> None:
     state_path = tmp_path / "collector-state.json"
     collector_client.write_json(
@@ -550,14 +782,17 @@ def test_collector_state_loads_old_file_and_counts_each_pending_row_once(tmp_pat
 
     assert state.last_upload_at is None
     assert state.last_reconnect_reason is None
+    assert state.closing_empty_polls == {}
     assert state.pending_count([adapter]) == 2
 
     state.last_upload_at = "2026-07-27T10:00:00+00:00"
     state.last_reconnect_reason = "network"
+    state.closing_empty_polls["58"] = 1
     state.save(state_path)
     reloaded = collector_client.CollectorState.load(state_path)
     assert reloaded.last_upload_at == "2026-07-27T10:00:00+00:00"
     assert reloaded.last_reconnect_reason == "network"
+    assert reloaded.closing_empty_polls == {"58": 1}
 
 
 def test_collector_pending_count_is_unknown_when_print_db_is_unavailable(tmp_path) -> None:
@@ -643,6 +878,7 @@ def test_collector_heartbeat_reports_upload_status(monkeypatch) -> None:
 
     monkeypatch.setattr(collector_client, "post_json", capture_post)
     state = collector_client.CollectorState(
+        capture_watermarks={"58:cainiao-cnprint": 1},
         last_upload_at="2026-07-27T10:00:00+00:00",
         last_reconnect_reason="network",
     )
@@ -653,6 +889,7 @@ def test_collector_heartbeat_reports_upload_status(monkeypatch) -> None:
     assert sent_payloads[0]["queue_size"] == 0
     assert sent_payloads[0]["last_upload_at"] == "2026-07-27T10:00:00+00:00"
     assert sent_payloads[0]["last_reconnect_reason"] == "network"
+    assert sent_payloads[0]["tracked_task_ids"] == [58]
 
 
 def test_collector_state_save_failure_records_reason(tmp_path, monkeypatch) -> None:

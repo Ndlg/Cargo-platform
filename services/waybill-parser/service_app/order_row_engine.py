@@ -194,16 +194,23 @@ def business_parent_label(
     parent_sequence: int | None = None,
 ) -> str:
     if parent_sequence is not None and parent_sequence > 0:
-        return f"第1批-第{parent_sequence}单"
-    cleaned = text_value(source_index)
-    if not cleaned:
-        return f"第1批-第{raw_record_id}单"
-    if re.fullmatch(r"\d+-\d+", cleaned):
-        batch_no, order_no = cleaned.split("-", 1)
-        return f"第{int(batch_no)}批-第{int(order_no)}单"
-    if re.fullmatch(r"\d+", cleaned):
-        return f"第1批-第{int(cleaned)}单"
-    return cleaned
+        sequence = parent_sequence
+    else:
+        cleaned = text_value(source_index)
+        if re.fullmatch(r"\d+-\d+", cleaned):
+            _, order_no = cleaned.split("-", 1)
+            sequence = int(order_no)
+        elif re.fullmatch(r"\d+", cleaned):
+            sequence = int(cleaned)
+        else:
+            sequence = raw_record_id
+    return f"面单 {sequence}"
+
+
+def business_child_label(parent_label: str, child_index: int, child_count: int) -> str:
+    if child_count > 1:
+        return f"{parent_label}-子项 {child_index}"
+    return parent_label
 
 
 def remove_field_label(value: str) -> str:
@@ -1447,7 +1454,7 @@ def structured_rows_from_payload(
                     raw_record_id=raw_record_id,
                     task_id=task_id,
                     parent_label=parent_label,
-                    child_label=f"{parent_label}-子{index}",
+                    child_label=business_child_label(parent_label, index, len(items)),
                     child_index=index,
                     child_count=len(items),
                     source_component=source_component,
@@ -1579,7 +1586,7 @@ def draft_rows_from_payload(
                     raw_record_id=raw_record_id,
                     task_id=task_id,
                     parent_label=parent_label,
-                    child_label=f"{parent_label}-子{index}",
+                    child_label=business_child_label(parent_label, index, child_count),
                     child_index=index,
                     child_count=child_count,
                     source_component=component,
@@ -1602,7 +1609,7 @@ def draft_rows_from_payload(
                 raw_record_id=raw_record_id,
                 task_id=task_id,
                 parent_label=parent_label,
-                child_label=f"{parent_label}-子1",
+                child_label=business_child_label(parent_label, 1, 1),
                 child_index=1,
                 child_count=1,
                 source_component=component,
@@ -1626,7 +1633,7 @@ def draft_rows_from_payload(
                 **{
                     **row.as_dict(),
                     "child_count": total_children,
-                    "child_label": f"{parent_label}-子{index}",
+                    "child_label": business_child_label(parent_label, index, total_children),
                     "child_index": index,
                 }
             )
@@ -1651,7 +1658,7 @@ def draft_rows_from_waybill_sample(
 ) -> ParentWaybillDraft:
     raw_record_id = int_value(sample.get("raw_record_id")) or parent_sequence
     task_id = int_value(sample.get("task_id"))
-    parent_label = f"第1批-第{parent_sequence}单"
+    parent_label = business_parent_label(None, raw_record_id, parent_sequence=parent_sequence)
     component = text_value(sample.get("source_component"))
     source = text_value(sample.get("source_index"))
     sample_text = text_value(sample.get("sample_text"))
@@ -1670,7 +1677,7 @@ def draft_rows_from_waybill_sample(
                 raw_record_id=raw_record_id,
                 task_id=task_id,
                 parent_label=parent_label,
-                child_label=f"{parent_label}-子{index}",
+                child_label=business_child_label(parent_label, index, len(item_texts)),
                 child_index=index,
                 child_count=len(item_texts),
                 source_component=component,
@@ -1693,7 +1700,7 @@ def draft_rows_from_waybill_sample(
                 raw_record_id=raw_record_id,
                 task_id=task_id,
                 parent_label=parent_label,
-                child_label=f"{parent_label}-子1",
+                child_label=business_child_label(parent_label, 1, 1),
                 child_index=1,
                 child_count=1,
                 source_component=component,
@@ -1716,7 +1723,7 @@ def draft_rows_from_waybill_sample(
             **{
                 **row.as_dict(),
                 "child_count": total_children,
-                "child_label": f"{parent_label}-子{index}",
+                "child_label": business_child_label(parent_label, index, total_children),
                 "child_index": index,
             }
         )
@@ -1742,7 +1749,7 @@ def draft_rows_from_standard_detail_values(
 ) -> ParentWaybillDraft:
     task_id = int_value(values.get("capture_task_id"))
     raw_record_id = int_value(values.get("raw_record_id")) or standard_detail_id
-    parent_label = f"第1批-第{parent_sequence}单"
+    parent_label = business_parent_label(None, raw_record_id, parent_sequence=parent_sequence)
     component = text_value(values.get("source_component"))
     source = text_value(values.get("source_index"))
     product_text = standard_detail_product_text(values)
@@ -1770,7 +1777,7 @@ def draft_rows_from_standard_detail_values(
                 raw_record_id=raw_record_id,
                 task_id=task_id,
                 parent_label=parent_label,
-                child_label=f"{parent_label}-子{index}",
+                child_label=business_child_label(parent_label, index, len(item_texts)),
                 child_index=index,
                 child_count=len(item_texts),
                 source_component=component,
@@ -1793,7 +1800,7 @@ def draft_rows_from_standard_detail_values(
                 raw_record_id=raw_record_id,
                 task_id=task_id,
                 parent_label=parent_label,
-                child_label=f"{parent_label}-子1",
+                child_label=business_child_label(parent_label, 1, 1),
                 child_index=1,
                 child_count=1,
                 source_component=component,
@@ -1816,7 +1823,7 @@ def draft_rows_from_standard_detail_values(
             **{
                 **row.as_dict(),
                 "child_count": total_children,
-                "child_label": f"{parent_label}-子{index}",
+                "child_label": business_child_label(parent_label, index, total_children),
                 "child_index": index,
             }
         )

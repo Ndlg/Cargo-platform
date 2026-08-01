@@ -84,6 +84,8 @@ def test_collector_connection_ui_hides_raw_rowid_label() -> None:
 
     assert "rowid" not in template.lower()
     assert "本地进度" in template
+    assert "组件任务" not in template
+    assert "taskCount" not in source
 
 
 def test_capture_records_page_uses_waybill_language_and_task_scoped_raw_loading() -> None:
@@ -92,6 +94,8 @@ def test_capture_records_page_uses_waybill_language_and_task_scoped_raw_loading(
 
     assert "/raw-capture-records?limit=2000" not in source
     assert "/raw-capture-records?task_id=${taskId}&limit=500" in source
+    assert "/capture-tasks?limit=6&include_waybill_counts=true" in source
+    assert "rawRecordsForTask(task.id).reduce" not in source
     assert "面单数量" in template
     assert "批次ID" not in template
     assert "内部采集记录" not in template
@@ -106,6 +110,24 @@ def test_waybill_batches_page_hides_internal_source_positioning_language() -> No
     assert "来源诊断" not in template
     assert "采集来源" in template
     assert "可追溯到原始面单" in source
+
+
+def test_waybill_source_counts_use_parent_waybills_for_total_and_breakdown() -> None:
+    source = WAYBILL_BATCHES_VIEW.read_text(encoding="utf-8")
+
+    assert "const parents = drafts.value?.parents ?? []" in source
+    assert "total: parents.length" in source
+    assert "sourceOptions.value.length" not in source
+    assert "const rows = allRows.value" not in source
+
+
+def test_product_matching_rule_labels_do_not_expose_database_ids() -> None:
+    source = PRODUCT_MATCHING_VIEW.read_text(encoding="utf-8")
+
+    assert "ruleCode(" not in source
+    assert "`学习记录 ${ruleId}`" not in source
+    assert "未命名学习记录" in source
+    assert "版本 {{ row.revision }}" in source
 
 
 def test_matching_repairs_route_to_the_responsible_screen_without_heavy_task_counts() -> None:

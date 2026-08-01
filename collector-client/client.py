@@ -34,6 +34,7 @@ NETWORK_RETRY_EXCEPTIONS = (
     ConnectionError,
     http.client.HTTPException,
 )
+CLOSING_EMPTY_POLLS_REQUIRED = 2
 
 
 def utc_now() -> str:
@@ -329,20 +330,37 @@ class PrintDbAdapter:
 
         return int(row["max_rowid"] or 0)
 
-    def read_since(self, rowid: int, limit: int) -> list[PrintTaskRow]:
+    def read_since(
+        self,
+        rowid: int,
+        limit: int,
+        captured_after_or_at: str | None = None,
+        captured_before_or_at: str | None = None,
+    ) -> list[PrintTaskRow]:
         if not self.db_path.exists():
             return []
 
+        lower_cutoff = local_db_time_from_iso(captured_after_or_at)
+        upper_cutoff = local_db_time_from_iso(captured_before_or_at)
+        conditions = ["rowid > ?"]
+        params: list[Any] = [rowid]
+        if lower_cutoff:
+            conditions.append("(time is null or trim(time) = '' or time >= ?)")
+            params.append(lower_cutoff)
+        if upper_cutoff:
+            conditions.append("(time is null or trim(time) = '' or time <= ?)")
+            params.append(upper_cutoff)
+        params.append(limit)
         with self.connect() as connection:
             rows = connection.execute(
-                """
+                f"""
                 select rowid, taskID, msg, time
                 from task
-                where rowid > ?
+                where {' and '.join(conditions)}
                 order by rowid asc
                 limit ?
                 """,
-                (rowid, limit),
+                params,
             ).fetchall()
 
         return [
@@ -361,11 +379,13 @@ class CollectorState:
         self,
         idle_watermarks: dict[str, int] | None = None,
         capture_watermarks: dict[str, int] | None = None,
+        closing_empty_polls: dict[str, int] | None = None,
         last_upload_at: str | None = None,
         last_reconnect_reason: str | None = None,
     ) -> None:
         self.idle_watermarks = idle_watermarks or {}
         self.capture_watermarks = capture_watermarks or {}
+        self.closing_empty_polls = closing_empty_polls or {}
         self.last_upload_at = last_upload_at
         self.last_reconnect_reason = last_reconnect_reason
 
@@ -384,9 +404,14 @@ class CollectorState:
             str(key): int(value)
             for key, value in dict(payload.get("capture_watermarks") or {}).items()
         }
+        closing_empty_polls = {
+            str(key): int(value)
+            for key, value in dict(payload.get("closing_empty_polls") or {}).items()
+        }
         return cls(
             idle_watermarks=idle_watermarks,
             capture_watermarks=capture_watermarks,
+            closing_empty_polls=closing_empty_polls,
             last_upload_at=str(payload.get("last_upload_at") or "").strip() or None,
             last_reconnect_reason=str(payload.get("last_reconnect_reason") or "").strip() or None,
         )
@@ -396,6 +421,7 @@ class CollectorState:
             "updated_at": utc_now(),
             "idle_watermarks": self.idle_watermarks,
             "capture_watermarks": self.capture_watermarks,
+            "closing_empty_polls": self.closing_empty_polls,
             "last_upload_at": self.last_upload_at,
             "last_reconnect_reason": self.last_reconnect_reason,
         }
@@ -406,8 +432,8 @@ class CollectorState:
     def idle_watermark(self, adapter: PrintDbAdapter) -> int | None:
         return self.idle_watermarks.get(adapter.source_component)
 
-    def update_idle_watermark(self, adapter: PrintDbAdapter) -> None:
-        self.idle_watermarks[adapter.source_component] = adapter.max_rowid()
+    def update_idle_watermark(self, adapter: PrintDbAdapter, rowid: int | None = None) -> None:
+        self.idle_watermarks[adapter.source_component] = adapter.max_rowid() if rowid is None else rowid
 
     def pending_count(self, adapters: list[PrintDbAdapter]) -> int | None:
         adapters_by_component = {adapter.source_component: adapter for adapter in adapters}
@@ -465,6 +491,19 @@ class CollectorState:
         keys = [key for key in self.capture_watermarks if key.startswith(prefix)]
         for key in keys:
             del self.capture_watermarks[key]
+        self.closing_empty_polls.pop(str(task_id), None)
+
+    def closing_task_is_stable(self, task_id: int, uploaded: int) -> bool:
+        key = str(task_id)
+        if uploaded:
+            self.closing_empty_polls.pop(key, None)
+            return False
+        empty_polls = self.closing_empty_polls.get(key, 0) + 1
+        self.closing_empty_polls[key] = empty_polls
+        return empty_polls >= CLOSING_EMPTY_POLLS_REQUIRED
+
+    def keep_closing_task(self, task_id: int) -> None:
+        self.closing_empty_polls.pop(str(task_id), None)
 
 
 def adapters_from_config(config: CollectorConfig) -> list[PrintDbAdapter]:
@@ -714,6 +753,7 @@ def heartbeat(
             "last_error": last_error,
             "last_upload_at": state.last_upload_at if state is not None else None,
             "last_reconnect_reason": state.last_reconnect_reason if state is not None else None,
+            "tracked_task_ids": sorted(state.active_task_ids())[-32:] if state is not None else [],
         },
     )
 
@@ -738,13 +778,19 @@ def upload_rows_for_task(
     adapter: PrintDbAdapter,
     batch_size: int,
     capture_started_at: str | None = None,
+    capture_ended_at: str | None = None,
 ) -> int:
     watermark = state.start_capture_watermark(
         task_id,
         adapter,
         capture_started_at=capture_started_at,
     )
-    rows = adapter.read_since(watermark, batch_size)
+    rows = adapter.read_since(
+        watermark,
+        batch_size,
+        captured_after_or_at=capture_started_at,
+        captured_before_or_at=capture_ended_at,
+    )
     if not rows:
         return 0
 
@@ -773,6 +819,10 @@ def run_sqlite_once(
     collector_id: str | None = None,
     collector_name: str | None = None,
 ) -> None:
+    idle_snapshots = {
+        adapter.source_component: adapter.max_rowid()
+        for adapter in adapters
+    }
     heartbeat_state = heartbeat(
         base_url,
         token,
@@ -782,36 +832,62 @@ def run_sqlite_once(
         runtime_status="listening",
         state=state,
     )
-    active_tasks = heartbeat_state.get("tasks", [])
-    active_tasks_by_id = {int(task["id"]): task for task in active_tasks}
-    active_task_ids = set(active_tasks_by_id)
-    LOGGER.info("heartbeat ok, active tasks: %s", len(active_task_ids))
+    tasks = heartbeat_state.get("tasks", [])
+    tasks_by_id = {int(task["id"]): task for task in tasks}
+    collecting_task_ids = {
+        task_id
+        for task_id, task in tasks_by_id.items()
+        if str(task.get("status") or "collecting") == "collecting"
+    }
+    completed_task_ids = set(tasks_by_id) - collecting_task_ids
+    LOGGER.info("heartbeat ok, collecting tasks: %s", len(collecting_task_ids))
 
-    if active_task_ids:
-        for task_id in sorted(active_task_ids):
-            capture_started_at = active_tasks_by_id[task_id].get("started_at")
-            for adapter in adapters:
-                upload_rows_for_task(
-                    base_url,
-                    token,
-                    state,
-                    task_id,
-                    adapter,
-                    batch_size,
-                    capture_started_at=capture_started_at,
-                )
-        return
-
-    closing_task_ids = state.active_task_ids()
-    for task_id in sorted(closing_task_ids):
+    uploaded_by_task: dict[int, int] = {}
+    for task_id in sorted(tasks_by_id, key=lambda item: (item in collecting_task_ids, item)):
+        task = tasks_by_id[task_id]
+        capture_started_at = task.get("started_at")
+        capture_ended_at = task.get("ended_at") if task_id in completed_task_ids else None
         uploaded = 0
         for adapter in adapters:
-            uploaded += upload_rows_for_task(base_url, token, state, task_id, adapter, batch_size)
-        if uploaded == 0:
+            uploaded += upload_rows_for_task(
+                base_url,
+                token,
+                state,
+                task_id,
+                adapter,
+                batch_size,
+                capture_started_at=capture_started_at,
+                capture_ended_at=capture_ended_at,
+            )
+        uploaded_by_task[task_id] = uploaded
+
+    retained_completed_task_id = max(completed_task_ids, default=None)
+    for task_id in completed_task_ids:
+        if task_id == retained_completed_task_id:
+            state.keep_closing_task(task_id)
+        elif state.closing_task_is_stable(task_id, uploaded_by_task[task_id]):
             state.finish_task(task_id)
 
+    missing_tracked_task_ids = state.active_task_ids() - set(tasks_by_id)
+    for task_id in sorted(missing_tracked_task_ids):
+        uploaded = 0
+        for adapter in adapters:
+            uploaded += upload_rows_for_task(
+                base_url,
+                token,
+                state,
+                task_id,
+                adapter,
+                batch_size,
+            )
+        if state.closing_task_is_stable(task_id, uploaded):
+            state.finish_task(task_id)
+
+    if state.active_task_ids():
+        return
+
     for adapter in adapters:
-        state.update_idle_watermark(adapter)
+        state.update_idle_watermark(adapter, idle_snapshots[adapter.source_component])
 
 
 def upload_sample(base_url: str, token: str, task_id: int, sequence: int) -> dict[str, Any]:
