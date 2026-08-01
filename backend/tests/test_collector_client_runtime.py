@@ -93,6 +93,15 @@ def register_collector(client: TestClient, headers: dict[str, str], identity: st
     return response.json()
 
 
+def activate_v2_lease(client: TestClient, token: str) -> None:
+    response = client.post(
+        "/api/v1/collector-runtime/heartbeat",
+        headers={"X-Collector-Token": token},
+        json={"assignment_protocol_version": 2},
+    )
+    assert response.status_code == 200
+
+
 def write_test_collector_release(
     source_dir: Path,
     *,
@@ -132,6 +141,21 @@ def test_collector_client_clamps_batch_size_to_server_contract(tmp_path) -> None
     collector_client.write_json(config_path, {"batch_size": 1000})
 
     assert collector_client.CollectorConfig.load(config_path).batch_size == 100
+
+
+def test_collector_simulator_heartbeats_with_v2_protocol(monkeypatch) -> None:
+    requests: list[tuple[str, dict[str, object]]] = []
+
+    def fake_post_json(_base_url, path, _token, payload):
+        requests.append((path, payload))
+        return {"tasks": []}
+
+    monkeypatch.setattr(collector_client, "post_json", fake_post_json)
+
+    collector_client.run_simulator_once("http://collector.test", "token", 1)
+
+    assert requests[0][0] == "/collector-runtime/heartbeat"
+    assert requests[0][1]["assignment_protocol_version"] == 2
 
 
 def test_register_collector_replaces_generic_name_with_source_machine() -> None:
@@ -507,7 +531,7 @@ def test_v2_takeover_blocks_legacy_upload_authenticated_before_takeover(monkeypa
             )
 
 
-def test_protocol_bridge_deduplicates_exact_v1_v2_source_event_during_upgrade() -> None:
+def test_cross_protocol_same_content_is_preserved_during_upgrade_and_rollback() -> None:
     raw_payload = '{"task":"same physical print"}'
     captured_at = "2026-07-27T10:00:00+00:00"
     with TestClient(app) as client:
@@ -610,15 +634,95 @@ def test_protocol_bridge_deduplicates_exact_v1_v2_source_event_during_upgrade() 
 
     assert legacy_first.json()["inserted"] == 1
     assert v2_replay.json() == {
-        "inserted": 0,
-        "skipped": 1,
-        "duplicates": 1,
+        "inserted": 1,
+        "skipped": 0,
+        "duplicates": 0,
         "window_rejected": 0,
     }
     assert v2_new.json()["inserted"] == 1
     assert rollback_heartbeat.status_code == 200
     assert legacy_rollback.status_code == 201
-    assert legacy_rollback.json() == {"inserted": 0, "skipped": 1}
+    assert legacy_rollback.json() == {"inserted": 1, "skipped": 0}
+
+
+def test_stale_v2_upload_is_rejected_after_lease_expires() -> None:
+    with TestClient(app) as client:
+        headers = login_headers(client)
+        registration = register_collector(client, headers, "stale-v2-machine")
+        token = str(registration["collector_token"])
+        collector_id = int(registration["collector"]["id"])
+        task = client.post(
+            "/api/v1/collector-control/start",
+            headers=headers,
+            json={"collector_id": collector_id},
+        ).json()
+        heartbeat = client.post(
+            "/api/v1/collector-runtime/heartbeat",
+            headers={"X-Collector-Token": token},
+            json={"assignment_protocol_version": 2},
+        )
+        assert heartbeat.status_code == 200
+        with SessionLocal() as db:
+            collector = db.get(Collector, collector_id)
+            assert collector is not None
+            collector.assignment_protocol_lease_expires_at = (
+                datetime.now(timezone.utc) - timedelta(seconds=1)
+            ).isoformat()
+            db.commit()
+
+        stale_upload = client.post(
+            "/api/v1/collector-runtime/raw-records",
+            headers={"X-Collector-Token": token},
+            json={
+                "task_id": int(task["id"]),
+                "assignment_protocol_version": 2,
+                "records": [
+                    {
+                        "source_component": "cainiao-cnprint",
+                        "source_index": "stale-epoch:42",
+                        "captured_at": task["started_at"],
+                        "raw_payload": '{"task":"stale v2"}',
+                    }
+                ],
+            },
+        )
+        activate_v2_lease(client, token)
+        recovered_upload = client.post(
+            "/api/v1/collector-runtime/raw-records",
+            headers={"X-Collector-Token": token},
+            json={
+                "task_id": int(task["id"]),
+                "assignment_protocol_version": 2,
+                "records": [
+                    {
+                        "source_component": "cainiao-cnprint",
+                        "source_index": "stale-epoch:42",
+                        "captured_at": task["started_at"],
+                        "raw_payload": '{"task":"stale v2"}',
+                    }
+                ],
+            },
+        )
+        stop = client.post(
+            "/api/v1/collector-control/stop",
+            headers=headers,
+            json={"task_id": int(task["id"])},
+        )
+
+    assert stale_upload.status_code == 409
+    assert recovered_upload.status_code == 201
+    assert recovered_upload.json()["inserted"] == 1
+    assert stop.status_code == 200
+    with SessionLocal() as db:
+        assert (
+            db.query(RawCaptureRecord)
+            .filter(
+                RawCaptureRecord.collector_id == collector_id,
+                RawCaptureRecord.source_index == "stale-epoch:42",
+            )
+            .count()
+            == 1
+        )
 
 
 def test_v2_source_row_is_duplicate_even_if_task_window_changes() -> None:
@@ -632,6 +736,7 @@ def test_v2_source_row_is_duplicate_even_if_task_window_changes() -> None:
         registration = register_collector(client, headers, "cross-window-dedupe-machine")
         token = str(registration["collector_token"])
         collector_id = int(registration["collector"]["id"])
+        activate_v2_lease(client, token)
 
         first = client.post(
             "/api/v1/collector-control/start",
@@ -699,6 +804,7 @@ def test_v2_unique_event_race_is_counted_as_duplicate() -> None:
         registration = register_collector(client, headers, "event-race-machine")
         token = str(registration["collector_token"])
         collector_id = int(registration["collector"]["id"])
+        activate_v2_lease(client, token)
         task = client.post(
             "/api/v1/collector-control/start",
             headers=headers,

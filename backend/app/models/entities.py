@@ -66,9 +66,6 @@ class Collector(WorkspaceModel):
     assignment_protocol_lease_expires_at: Mapped[str | None] = mapped_column(
         String(64), nullable=True
     )
-    assignment_protocol_bridge_expires_at: Mapped[str | None] = mapped_column(
-        String(64), nullable=True
-    )
     remark: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 

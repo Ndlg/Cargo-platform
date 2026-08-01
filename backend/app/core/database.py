@@ -120,10 +120,6 @@ def _run_sqlite_compat_migrations() -> None:
                 connection.exec_driver_sql(
                     "ALTER TABLE collectors ADD COLUMN assignment_protocol_lease_expires_at VARCHAR(64)"
                 )
-            if "assignment_protocol_bridge_expires_at" not in table_columns["collectors"]:
-                connection.exec_driver_sql(
-                    "ALTER TABLE collectors ADD COLUMN assignment_protocol_bridge_expires_at VARCHAR(64)"
-                )
 
         if "capture_tasks" in table_columns:
             if "started_at" not in table_columns["capture_tasks"]:

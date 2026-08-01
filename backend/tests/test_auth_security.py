@@ -88,7 +88,6 @@ def test_sqlite_upgrade_adds_collector_protocol_fence_columns(tmp_path, monkeypa
     assert columns["protocol_revision"] == ("INTEGER", 1, "0")
     assert columns["assignment_protocol_version"] == ("INTEGER", 1, "1")
     assert columns["assignment_protocol_lease_expires_at"][0] == "VARCHAR(64)"
-    assert columns["assignment_protocol_bridge_expires_at"][0] == "VARCHAR(64)"
 
 
 def test_runtime_security_settings_reject_missing_or_placeholder_keys() -> None:

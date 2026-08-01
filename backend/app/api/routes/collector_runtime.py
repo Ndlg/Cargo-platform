@@ -76,7 +76,6 @@ COLLECTOR_CLEANUP_TIMEOUT = timedelta(hours=24)
 COLLECTOR_TASK_WINDOW_PROTOCOL = 2
 COLLECTOR_TASK_WINDOW_LEASE = timedelta(seconds=30)
 COLLECTOR_PROTOCOL_LEASE = timedelta(seconds=60)
-COLLECTOR_PROTOCOL_BRIDGE = timedelta(hours=1)
 
 COLLECTOR_CLIENT_ARCHIVE_ROOT = "Cargo Platform 采集器"
 COLLECTOR_CLIENT_RELEASE_EXE = Path("dist") / "Cargo Platform 采集器.exe"
@@ -2179,43 +2178,6 @@ def collector_v2_protocol_lease_active(collector: Collector) -> bool:
     return expires_at is not None and expires_at >= datetime.now(timezone.utc)
 
 
-def collector_protocol_bridge_active(collector: Collector) -> bool:
-    expires_at = parse_utc_datetime(collector.assignment_protocol_bridge_expires_at)
-    return expires_at is not None and expires_at >= datetime.now(timezone.utc)
-
-
-def cross_protocol_source_duplicate_exists(
-    db: Session,
-    *,
-    collector: Collector,
-    item: RawCaptureRecordPayload,
-    assignment_protocol_version: int,
-) -> bool:
-    if not collector_protocol_bridge_active(collector):
-        return False
-    source_index = str(item.source_index or "")
-    physical_rowid = source_index.rpartition(":")[2]
-    if not item.captured_at or not item.source_component or not physical_rowid.isdigit():
-        return False
-    if assignment_protocol_version >= COLLECTOR_TASK_WINDOW_PROTOCOL:
-        if ":" not in source_index:
-            return False
-        source_index_condition = RawCaptureRecord.source_index == physical_rowid
-    else:
-        source_index_condition = RawCaptureRecord.source_index.like(f"%:{physical_rowid}")
-    return db.scalar(
-        select(RawCaptureRecord.id).where(
-            RawCaptureRecord.workspace_id == collector.workspace_id,
-            RawCaptureRecord.collector_id == collector.id,
-            RawCaptureRecord.source_component == item.source_component,
-            source_index_condition,
-            RawCaptureRecord.captured_at == item.captured_at,
-            RawCaptureRecord.raw_payload == item.raw_payload,
-            RawCaptureRecord.is_deleted.is_(False),
-        )
-    ) is not None
-
-
 def upsert_collector(
     db: Session,
     *,
@@ -2907,35 +2869,21 @@ def collector_heartbeat(
             "task_ids": [task.id for task in task_windows],
             "expires_at": (received_datetime + COLLECTOR_TASK_WINDOW_LEASE).isoformat(),
         }
-        bridge_expires_at = parse_utc_datetime(
-            collector.assignment_protocol_bridge_expires_at
-        )
-        if bridge_expires_at is None or bridge_expires_at < received_datetime:
-            bridge_expires_at = received_datetime + COLLECTOR_PROTOCOL_BRIDGE
         collector.assignment_protocol_version = COLLECTOR_TASK_WINDOW_PROTOCOL
         collector.assignment_protocol_lease_expires_at = (
             received_datetime + COLLECTOR_PROTOCOL_LEASE
         ).isoformat()
-        collector.assignment_protocol_bridge_expires_at = bridge_expires_at.isoformat()
         status_payload["assignment_protocol_lease"] = {
             "version": COLLECTOR_TASK_WINDOW_PROTOCOL,
             "expires_at": collector.assignment_protocol_lease_expires_at,
-            "bridge_expires_at": collector.assignment_protocol_bridge_expires_at,
         }
     elif collector_v2_protocol_lease_active(collector):
         status_payload["assignment_protocol_lease"] = {
             "version": collector.assignment_protocol_version,
             "expires_at": collector.assignment_protocol_lease_expires_at,
-            "bridge_expires_at": collector.assignment_protocol_bridge_expires_at,
         }
         if "task_window_lease" in previous_status_payload:
             status_payload["task_window_lease"] = previous_status_payload["task_window_lease"]
-    elif collector_protocol_bridge_active(collector):
-        status_payload["assignment_protocol_lease"] = {
-            "version": collector.assignment_protocol_version,
-            "expires_at": collector.assignment_protocol_lease_expires_at,
-            "bridge_expires_at": collector.assignment_protocol_bridge_expires_at,
-        }
     collector.status_payload = status_payload
     db.commit()
     return {
@@ -2968,6 +2916,15 @@ def upload_raw_records(
             payload.assignment_protocol_version < COLLECTOR_TASK_WINDOW_PROTOCOL
         ),
     )
+    if (
+        payload.assignment_protocol_version >= COLLECTOR_TASK_WINDOW_PROTOCOL
+        and not collector_v2_protocol_lease_active(collector)
+    ):
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="新版采集器租约已失效，请重新连接后再上传。",
+        )
     task = db.get(CaptureTask, payload.task_id)
     leased_archive = bool(
         task is not None
@@ -2995,14 +2952,6 @@ def upload_raw_records(
             continue
         capture_event_key = None
         if item.source_component and item.source_index:
-            if cross_protocol_source_duplicate_exists(
-                db,
-                collector=collector,
-                item=item,
-                assignment_protocol_version=payload.assignment_protocol_version,
-            ):
-                duplicates += 1
-                continue
             # A source row is one print event. Equal payloads may be legitimate reprints.
             duplicate_conditions = [
                 RawCaptureRecord.workspace_id == collector.workspace_id,

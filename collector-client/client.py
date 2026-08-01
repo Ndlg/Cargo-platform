@@ -1480,6 +1480,7 @@ def run_simulator_once(
             "runtime_status": "listening",
             "adapter_status": {"simulator": {"status": "ready"}},
             "queue_size": 0,
+            "assignment_protocol_version": ASSIGNMENT_PROTOCOL_VERSION,
         },
     )
     tasks = state.get("tasks", [])
