@@ -1,5 +1,7 @@
 import json
 
+import pytest
+from fastapi import HTTPException
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
@@ -232,6 +234,110 @@ def test_learn_compiles_admin_rows_into_versioned_active_rule_pack(monkeypatch) 
     assert "model_candidate" not in pack.payload["learning_records"][0]
     assert pack.payload["parser_policy"]["format_profiles"][0]["provenance"]["source"] == "confirmed_learning_rule"
     assert pack.payload["parser_policy"]["format_profiles"][0]["provenance"]["learning_record_id"]
+    db.close()
+
+
+def test_failed_round_replay_keeps_previous_active_rule(monkeypatch) -> None:
+    from app.api.routes import format_learning as route
+
+    db = seeded_db()
+    old_payload = {
+        "contract_version": "recognition_rule_pack_v1",
+        "pack": {
+            "code": "adaptive-recognition-main",
+            "name": "自适应识别规则包",
+            "version": "1.0.0",
+        },
+        "parser_policy": {
+            "order_row_parser": "declarative_v1",
+            "format_profiles": [],
+        },
+    }
+    db.add(
+        RecognitionRulePack(
+            tenant_id=1,
+            workspace_id=1,
+            name="自适应识别规则包",
+            code="adaptive-recognition-main",
+            version="1.0.0",
+            payload=old_payload,
+            status="active",
+            is_enabled=True,
+        )
+    )
+    db.commit()
+    fingerprint = f"v2:CN-ITEM-INFO:sha256:{'a' * 64}"
+    monkeypatch.setattr(
+        route,
+        "inspect_waybill_fingerprint_with_service",
+        lambda *, raw_payload, source_component: parser_fingerprint(raw_payload),
+    )
+    monkeypatch.setattr(
+        route,
+        "analyze_waybill_with_service",
+        lambda *, raw_payload, source_component, selected_fields: parser_analysis(raw_payload),
+    )
+    monkeypatch.setattr(
+        route,
+        "synthesize_rule_with_service",
+        lambda **_kwargs: {
+            "status": "compiled",
+            "rule": {
+                "fingerprint": fingerprint,
+                "grammar_signature": f"grammar-v1:sha256:{'b' * 64}",
+                "strategy": "structured_items_v1",
+                "selected_fields": ["item_info"],
+                "items_path": "task.documents[].contents[].data",
+                "fields": {"product": "ITEM_INFO"},
+                "defaults": {"quantity": 1},
+            },
+            "replay_report": [{"kind": "current", "passed": True}],
+        },
+    )
+    monkeypatch.setattr(
+        route,
+        "validate_rule_pack_with_service",
+        lambda **_kwargs: {"status": "valid", "errors": []},
+    )
+    monkeypatch.setattr(
+        route,
+        "rerun_affected_tasks",
+        lambda _db, *, workspace_id, task_ids: (
+            [{"task_id": task_ids[0], "status": "failed", "error": "解析服务超时"}],
+            [f"采集轮次 {task_ids[0]} 重算失败：解析服务超时"],
+        ),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        route.learn_format(
+            task_id=61,
+            request=route.FormatLearningRequest(
+                raw_record_id=100,
+                document_sequence=2,
+                parent_sequence=2,
+                expected_evidence_sha256="e" * 64,
+                rows=[
+                    {
+                        "product": "商品乙",
+                        "sales_attr1": "蓝色",
+                        "sales_attr2": "40",
+                        "quantity": 2,
+                        "remark": "",
+                    }
+                ],
+            ),
+            db=db,
+            current_user=system_admin(),
+            workspace_id=1,
+        )
+
+    assert exc_info.value.status_code == 422
+    db.expire_all()
+    pack = db.scalar(select(RecognitionRulePack))
+    assert pack is not None
+    assert pack.payload == old_payload
+    assert pack.status == "active" and pack.is_enabled is True
+    assert db.scalar(select(RecognitionRulePackRevision)) is None
     db.close()
 
 

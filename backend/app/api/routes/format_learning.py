@@ -846,6 +846,13 @@ def learn_format(
             grammar_signature=grammar_signature,
             current_task_id=task_id,
         )
+        reruns, warnings = rerun_affected_tasks(
+            db,
+            workspace_id=workspace_id,
+            task_ids=task_ids,
+        )
+        if warnings:
+            raise ValueError(f"新规则整轮回放未通过：{warnings[0]}。旧规则未修改。")
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -869,11 +876,6 @@ def learn_format(
             detail="识别规则服务暂时不可用，旧规则未修改。",
         ) from exc
 
-    reruns, warnings = rerun_affected_tasks(
-        db,
-        workspace_id=workspace_id,
-        task_ids=task_ids,
-    )
     return _learned_response(
         pack=pack,
         fingerprint=fingerprint,
