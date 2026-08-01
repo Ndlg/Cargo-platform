@@ -71,7 +71,7 @@ def test_exception_actions_have_explicit_status_routes_without_default_jump() ->
     assert "return '查看识别结果'" not in source
     assert "path: '/admin/product-matching'" in source
     assert "path: '/admin/products'" in source
-    assert "path: '/admin/ai-recognition'" in source
+    assert "path: '/admin/format-learning'" in source
     assert "path: '/waybill-batches'" not in source
     assert "route.query.rule_id" in matching_source
     assert "route.query.focus" in matching_source

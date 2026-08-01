@@ -9,7 +9,7 @@ from app.core.context import CurrentUser
 from app.core.database import get_db
 from app.core.deps import get_current_user, get_workspace_id, require_write
 from app.models import TenantFingerprintConfig, Workspace
-from app.services.ai_recognition_client import fingerprint_catalog_with_service
+from app.services.waybill_parser_client import fingerprint_catalog_with_service
 
 
 router = APIRouter(
@@ -33,7 +33,7 @@ def _catalog() -> dict[str, dict[str, Any]]:
     try:
         payload = fingerprint_catalog_with_service()
     except Exception as exc:
-        raise HTTPException(status_code=502, detail="AI 指纹服务暂时不可用。") from exc
+        raise HTTPException(status_code=502, detail="面单指纹服务暂时不可用。") from exc
     return {
         item["code"]: item
         for item in payload.get("fingerprints", [])

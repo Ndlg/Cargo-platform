@@ -19,7 +19,6 @@ os.environ["SECRET_KEY"] = "test-secret"
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from app.api.routes import order_row_drafts as order_row_drafts_route  # noqa: E402
 from app.core.database import SessionLocal  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import (  # noqa: E402
@@ -35,123 +34,6 @@ from service_app.order_row_engine import (  # noqa: E402
     draft_rows_from_waybill_sample,
     order_row_draft_summary,
 )
-
-
-def test_manual_ai_start_isolates_exactly_one_selected_waybill(monkeypatch) -> None:
-    task_id = 8810
-    raw_record_id = 9910
-    with TestClient(app):
-        pass
-    with SessionLocal() as db:
-        db.add(
-            RawCaptureRecord(
-                id=raw_record_id,
-                tenant_id=1,
-                workspace_id=1,
-                task_id=task_id,
-                document_id="batch",
-                source_component="cainiao-cnprint",
-                source_index="1",
-                payload_format="json",
-                raw_payload=json.dumps(
-                    {
-                        "task": {
-                            "documents": [
-                                {"documentID": "FIRST", "contents": [{"data": {"product": "A"}}]},
-                                {"documentID": "SECOND", "contents": [{"data": {"product": "B"}}]},
-                            ]
-                        }
-                    }
-                ),
-                status="pending",
-            )
-        )
-        config = db.query(TenantFingerprintConfig).filter(
-            TenantFingerprintConfig.tenant_id == 1,
-            TenantFingerprintConfig.fingerprint_code == "CLOUD-PRODUCT-INFO",
-        ).first()
-        if config is None:
-            db.add(
-                TenantFingerprintConfig(
-                    tenant_id=1,
-                    fingerprint_code="CLOUD-PRODUCT-INFO",
-                    is_enabled=True,
-                    selected_fields=["product_info", "product_count"],
-                )
-            )
-        else:
-            config.is_enabled = True
-            config.selected_fields = ["product_info", "product_count"]
-        db.commit()
-
-    calls: list[dict] = []
-
-    def fake_parser(**kwargs) -> dict:
-        calls.append(kwargs)
-        return {
-            "contract_version": "order_row_drafts_v1",
-            "task_id": task_id,
-            "status": "model_running",
-            "summary": {
-                "parent_waybill_count": 1,
-                "child_waybill_count": 0,
-                "draft_count": 0,
-                "needs_review_count": 1,
-            },
-            "ai_sessions": [
-                {
-                    "session_id": "manual-session",
-                    "status": "model_running",
-                    "console_url": "http://127.0.0.1:18111/console?session=manual-session",
-                }
-            ],
-            "parents": [],
-            "rows": [],
-        }
-
-    monkeypatch.setattr(
-        order_row_drafts_route,
-        "active_recognition_rule_pack",
-        lambda *_args, **_kwargs: None,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        order_row_drafts_route,
-        "parse_order_row_drafts_with_service",
-        fake_parser,
-        raising=False,
-    )
-
-    with TestClient(app) as client:
-        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin123"})
-        assert login.status_code == 200
-        headers = {
-            "Authorization": f"Bearer {login.json()['access_token']}",
-            "X-Workspace-Id": "1",
-        }
-        response = client.post(
-            f"/api/v1/order-row-drafts/tasks/{task_id}/manual-ai",
-            headers=headers,
-            json={
-                "raw_record_id": raw_record_id,
-                "document_sequence": 2,
-                "parent_sequence": 2,
-            },
-        )
-
-    assert response.status_code == 200
-    assert response.json()["ai_sessions"][0]["session_id"] == "manual-session"
-    assert len(calls) == 1
-    assert calls[0]["allow_ai"] is True
-    assert calls[0]["workspace_id"] == 1
-    assert calls[0]["raw_records"][0]["parent_sequence"] == 2
-    assert calls[0]["raw_records"][0]["document_sequence"] == 2
-    assert calls[0]["raw_records"][0]["ai_field_selections"]["CLOUD-PRODUCT-INFO"] == [
-        "product_info",
-        "product_count",
-    ]
-    documents = calls[0]["raw_records"][0]["payload"]["task"]["documents"]
-    assert [document["documentID"] for document in documents] == ["SECOND"]
 
 
 ACTIVE_RULE_PACK_PAYLOAD = {
@@ -198,7 +80,7 @@ def activate_test_rule_pack() -> None:
         db.commit()
 
 
-def test_business_parse_uses_same_tenant_fingerprint_field_selection(monkeypatch) -> None:
+def test_business_parse_does_not_inject_tenant_learning_fields(monkeypatch) -> None:
     task_id = 8811
     raw_record_id = 9911
     with TestClient(app):
@@ -278,9 +160,7 @@ def test_business_parse_uses_same_tenant_fingerprint_field_selection(monkeypatch
         )
 
     assert response["status"] == "parsed"
-    assert calls[0]["raw_records"][0]["ai_field_selections"][
-        "CLOUD-PRODUCT-INFO"
-    ] == ["product_info", "product_count"]
+    assert "ai_field_selections" not in calls[0]["raw_records"][0]
 
 
 def parser_payload_from_parents(task_id: int, parents: list) -> dict:
@@ -295,14 +175,13 @@ def parser_payload_from_parents(task_id: int, parents: list) -> dict:
 
 def test_parser_source_trace_survives_backend_order_row_contract() -> None:
     compiled_rule = {
-        "source": "confirmed_ai_rule",
-        "learning_session_id": "session-trace",
-        "rule_pack_code": "ai-recognition-main",
+        "source": "confirmed_learning_rule",
+        "learning_record_id": "record-trace",
+        "rule_pack_code": "adaptive-recognition-main",
         "rule_pack_version": "1.0.2",
         "fingerprint": f"sha256:{'a' * 64}",
         "grammar_signature": f"grammar-v1:sha256:{'b' * 64}",
         "strategy": "source_projection_v1",
-        "ai_call_count": 0,
     }
     payload = {
         "parents": [

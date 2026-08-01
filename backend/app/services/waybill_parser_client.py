@@ -26,6 +26,49 @@ def post_waybill_parser_service(path: str, payload: dict[str, Any], *, timeout: 
     return response.json()
 
 
+def get_waybill_parser_service(path: str, *, timeout: float = 30.0) -> dict[str, Any]:
+    base_url = waybill_parser_service_url()
+    if not base_url:
+        raise RuntimeError("WAYBILL_PARSER_URL is not configured.")
+
+    response = httpx.get(f"{base_url}{path}", timeout=timeout)
+    response.raise_for_status()
+    return response.json()
+
+
+def fingerprint_catalog_with_service() -> dict[str, Any]:
+    return get_waybill_parser_service("/api/v1/fingerprints", timeout=10.0)
+
+
+def inspect_waybill_fingerprint_with_service(
+    *,
+    raw_payload: dict[str, Any],
+    source_component: str,
+) -> dict[str, Any]:
+    return post_waybill_parser_service(
+        "/api/v1/fingerprints/inspect",
+        {"raw_payload": raw_payload, "source_component": source_component},
+        timeout=10.0,
+    )
+
+
+def analyze_waybill_with_service(
+    *,
+    raw_payload: dict[str, Any],
+    source_component: str,
+    selected_fields: list[str],
+) -> dict[str, Any]:
+    return post_waybill_parser_service(
+        "/api/v1/analyze",
+        {
+            "raw_payload": raw_payload,
+            "source_component": source_component,
+            "selected_fields": selected_fields,
+        },
+        timeout=10.0,
+    )
+
+
 def validate_rule_pack_with_service(*, rule_pack: dict[str, Any]) -> dict[str, Any]:
     return post_waybill_parser_service(
         "/api/v1/rule-packs/validate",
@@ -101,7 +144,6 @@ def parse_order_row_drafts_with_service(
     raw_records: list[dict[str, Any]],
     waybill_samples: list[dict[str, Any]] | None = None,
     rule_pack: dict[str, Any] | None,
-    allow_ai: bool = False,
 ) -> dict[str, Any]:
     payload = post_waybill_parser_service(
         "/api/v1/parse/batch",
@@ -112,7 +154,6 @@ def parse_order_row_drafts_with_service(
             "raw_records": raw_records,
             "waybill_samples": waybill_samples or [],
             "rule_pack": rule_pack,
-            "allow_ai": allow_ai,
         },
         timeout=180.0,
     )

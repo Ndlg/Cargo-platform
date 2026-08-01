@@ -1,5 +1,3 @@
-from hashlib import sha256
-import json
 import os
 from pathlib import Path
 
@@ -13,12 +11,10 @@ os.environ["AUTO_CREATE_TABLES"] = "true"
 os.environ["SECRET_KEY"] = "workspace-isolation-secret"
 
 from fastapi.testclient import TestClient  # noqa: E402
-import pytest  # noqa: E402
 from sqlalchemy import select  # noqa: E402
 
 from app.core.database import SessionLocal  # noqa: E402
 from app.core.security import hash_password  # noqa: E402
-from app.api.routes import ai_recognition as ai_route  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import Role, Tenant, User, UserWorkspace, Workspace  # noqa: E402
 
@@ -95,7 +91,6 @@ def test_users_only_read_data_from_their_own_workspace() -> None:
         assert alice_created.json()["tenant_id"] != bob_created.json()["tenant_id"]
 
         bob_record_id = bob_created.json()["id"]
-
         alice_list = client.get("/api/v1/export-header-definitions", headers=alice_headers)
         bob_list = client.get("/api/v1/export-header-definitions", headers=bob_headers)
 
@@ -129,8 +124,14 @@ def test_users_only_read_data_from_their_own_workspace() -> None:
             json={"name": "system_admin"},
         )
         deprecated_waybill_modes = client.get("/api/v1/waybill-modes", headers=alice_headers)
-        deprecated_waybill_templates = client.get("/api/v1/waybill-templates", headers=alice_headers)
-        deprecated_waybill_template_fields = client.get("/api/v1/waybill-template-fields", headers=alice_headers)
+        deprecated_waybill_templates = client.get(
+            "/api/v1/waybill-templates",
+            headers=alice_headers,
+        )
+        deprecated_waybill_template_fields = client.get(
+            "/api/v1/waybill-template-fields",
+            headers=alice_headers,
+        )
 
         assert alice_cross_workspace_query.status_code == 403
         assert alice_cross_workspace_create.status_code == 403
@@ -181,9 +182,11 @@ def test_mismatched_role_membership_does_not_grant_permissions() -> None:
             "dana",
             "workspace_d",
         )
-        _other_username, _other_password, _other_workspace_id, other_role_id = _create_user_workspace_pair(
-            "erin",
-            "workspace_e",
+        _other_username, _other_password, _other_workspace_id, other_role_id = (
+            _create_user_workspace_pair(
+                "erin",
+                "workspace_e",
+            )
         )
         with SessionLocal() as db:
             other_role = db.get(Role, other_role_id)
@@ -210,349 +213,6 @@ def test_mismatched_role_membership_does_not_grant_permissions() -> None:
         assert me.json()["workspaces"] == []
         assert tenants.status_code == 403
         assert denied_create.status_code == 403
-
-
-@pytest.mark.parametrize(
-    "has_model_candidate",
-    [True, False],
-)
-def test_ai_session_proxy_enforces_auth_workspace_write_permission_and_actor(
-    monkeypatch,
-    has_model_candidate,
-) -> None:
-    case = "model" if has_model_candidate else "failed"
-    approvals: list[str] = []
-    claim_payloads: list[dict[str, object]] = []
-    session_workspaces: dict[str, int] = {}
-    rows = [
-        {
-            "product": "鞋",
-            "sales_attr1": "",
-            "sales_attr2": "",
-            "quantity": 1,
-            "remark": "",
-        }
-    ]
-    model_candidate = {"parents": [{"rows": rows}]} if has_model_candidate else None
-    sanitized_payload = {
-        "fingerprint_code": "CN-PACKAGE-ITEMS",
-        "selected_fields": ["item_name", "item_quantity"],
-        "evidence_sha256": "e" * 64,
-        "spans": [],
-        "candidate_groups": {},
-    }
-
-    def session_with_service(session_id: str) -> dict[str, object]:
-        return {
-            "session_id": session_id,
-            "workspace_id": session_workspaces[session_id],
-            "task_id": 61,
-            "raw_record_id": 901,
-            "document_sequence": 2,
-            "fingerprint": "v2:CN-PACKAGE-ITEMS:test",
-            "fingerprint_code": "CN-PACKAGE-ITEMS",
-            "status": "ai_rule_pending",
-            "model_candidate": model_candidate,
-            "administrator_rows": rows,
-            "model_input": {"sanitized_payload": sanitized_payload},
-            "compiler_result": None,
-        }
-
-    monkeypatch.setattr(
-        ai_route,
-        "get_ai_recognition_session_with_service",
-        session_with_service,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        ai_route,
-        "feedback_ai_recognition_session_with_service",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("read-only feedback must not reach the AI service")
-        ),
-        raising=False,
-    )
-    monkeypatch.setattr(
-        ai_route,
-        "approve_ai_recognition_session_with_service",
-        lambda session_id, *, approval_claim: approvals.append(approval_claim)
-        or {**session_with_service(session_id), "status": "approved"},
-        raising=False,
-    )
-    monkeypatch.setattr(
-        ai_route,
-        "create_approval_claim",
-        lambda payload: claim_payloads.append(payload) or "opaque-claim",
-        raising=False,
-    )
-    monkeypatch.setattr(
-        ai_route,
-        "revoke_approval_claim",
-        lambda _claim: None,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        ai_route,
-        "reject_ai_recognition_session_with_service",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("read-only rejection must not reach the AI service")
-        ),
-        raising=False,
-    )
-
-    with TestClient(app) as client:
-        alice_username, alice_password, workspace_a_id, alice_role_id = _create_user_workspace_pair(
-            f"proxy_alice_{case}",
-            f"proxy_workspace_a_{case}",
-        )
-        readonly_username, readonly_password, readonly_workspace_id, readonly_role_id = (
-            _create_user_workspace_pair(
-                f"proxy_readonly_{case}",
-                f"proxy_workspace_readonly_{case}",
-            )
-        )
-        session_workspaces.update(
-            {
-                "workspace-a-session": workspace_a_id,
-                "workspace-b-session": readonly_workspace_id,
-            }
-        )
-        with SessionLocal() as db:
-            readonly_role = db.get(Role, readonly_role_id)
-            assert readonly_role is not None
-            readonly_role.name = "readonly"
-            alice_id = db.scalar(select(User.id).where(User.username == alice_username))
-            db.commit()
-
-        alice_headers = _login(client, alice_username, alice_password, workspace_a_id)
-        readonly_headers = _login(
-            client,
-            readonly_username,
-            readonly_password,
-            readonly_workspace_id,
-        )
-
-        missing_auth = client.get("/api/v1/ai-recognition/sessions/workspace-a-session")
-        allowed = client.get(
-            "/api/v1/ai-recognition/sessions/workspace-a-session",
-            headers=alice_headers,
-        )
-        cross_workspace = client.get(
-            "/api/v1/ai-recognition/sessions/workspace-b-session",
-            headers=alice_headers,
-        )
-        readonly_feedback = client.post(
-            "/api/v1/ai-recognition/sessions/workspace-a-session/feedback",
-            headers=readonly_headers,
-            json={
-                "corrected_rows": [
-                    {
-                        "product": "鞋",
-                        "sales_attr1": "",
-                        "sales_attr2": "",
-                        "quantity": 1,
-                        "remark": "",
-                    }
-                ]
-            },
-        )
-        readonly_approve = client.post(
-            "/api/v1/ai-recognition/sessions/workspace-a-session/approve",
-            headers=readonly_headers,
-        )
-        readonly_reject = client.post(
-            "/api/v1/ai-recognition/sessions/workspace-a-session/reject",
-            headers=readonly_headers,
-        )
-        operator_approve = client.post(
-            "/api/v1/ai-recognition/sessions/workspace-a-session/approve",
-            headers=alice_headers,
-        )
-        with SessionLocal() as db:
-            alice_role = db.get(Role, alice_role_id)
-            assert alice_role is not None
-            alice_role.name = "workspace_admin"
-            db.commit()
-        approved = client.post(
-            "/api/v1/ai-recognition/sessions/workspace-a-session/approve",
-            headers=alice_headers,
-        )
-
-    assert missing_auth.status_code == 401
-    assert allowed.status_code == 200
-    assert cross_workspace.status_code == 403
-    assert {
-        readonly_feedback.status_code,
-        readonly_approve.status_code,
-        readonly_reject.status_code,
-    } == {403}
-    assert approved.status_code == 200
-    assert operator_approve.status_code == 403
-    assert approvals == ["opaque-claim"]
-    assert claim_payloads == [
-        {
-            "session_id": "workspace-a-session",
-            "workspace_id": workspace_a_id,
-            "task_id": 61,
-            "raw_record_id": 901,
-            "document_sequence": 2,
-            "fingerprint": "v2:CN-PACKAGE-ITEMS:test",
-            "fingerprint_code": "CN-PACKAGE-ITEMS",
-            "selected_fields": ["item_name", "item_quantity"],
-            "evidence_sha256": "e" * 64,
-            "actor": {
-                "id": alice_id,
-                "username": f"proxy_alice_{case}",
-                "display_name": f"Proxy_Alice_{case}".title(),
-            },
-            "model_candidate_sha256": sha256(
-                json.dumps(
-                    model_candidate,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ).encode("utf-8")
-            ).hexdigest(),
-            "administrator_rows_sha256": sha256(
-                json.dumps(
-                    rows,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ).encode("utf-8")
-            ).hexdigest(),
-        }
-    ]
-
-
-def test_ai_session_proxy_preserves_stale_closed_compiler_and_unavailable_errors(
-    monkeypatch,
-) -> None:
-    from app.services.ai_recognition_client import AiRecognitionServiceError
-
-    rows = [
-        {
-            "product": "鞋",
-            "sales_attr1": "",
-            "sales_attr2": "",
-            "quantity": 1,
-            "remark": "",
-        }
-    ]
-    session = {
-        "session_id": "controlled-error-session",
-        "workspace_id": None,
-        "task_id": 61,
-        "raw_record_id": 902,
-        "document_sequence": 1,
-        "fingerprint": "v2:CN-PACKAGE-ITEMS:error",
-        "fingerprint_code": "CN-PACKAGE-ITEMS",
-        "status": "ai_rule_pending",
-        "model_candidate": {"parents": [{"rows": rows}]},
-        "administrator_rows": rows,
-        "model_input": {
-            "sanitized_payload": {
-                "fingerprint_code": "CN-PACKAGE-ITEMS",
-                "selected_fields": ["item_name", "item_quantity"],
-                "evidence_sha256": "e" * 64,
-                "spans": [],
-                "candidate_groups": {},
-            }
-        },
-        "compiler_result": None,
-    }
-
-    with TestClient(app) as client:
-        username, password, workspace_id, role_id = _create_user_workspace_pair(
-            "proxy_errors",
-            "proxy_errors_workspace",
-        )
-        with SessionLocal() as db:
-            role = db.get(Role, role_id)
-            assert role is not None
-            role.name = "workspace_admin"
-            db.commit()
-        headers = _login(client, username, password, workspace_id)
-        session["workspace_id"] = workspace_id
-
-        monkeypatch.setattr(
-            ai_route,
-            "get_ai_recognition_session_with_service",
-            lambda _session_id: (_ for _ in ()).throw(
-                AiRecognitionServiceError(404, "会话已过期。")
-            ),
-        )
-        stale = client.get(
-            "/api/v1/ai-recognition/sessions/controlled-error-session",
-            headers=headers,
-        )
-
-        monkeypatch.setattr(
-            ai_route,
-            "get_ai_recognition_session_with_service",
-            lambda _session_id: session,
-        )
-        monkeypatch.setattr(
-            ai_route,
-            "feedback_ai_recognition_session_with_service",
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                AiRecognitionServiceError(409, "会话已经关闭。")
-            ),
-        )
-        closed = client.post(
-            "/api/v1/ai-recognition/sessions/controlled-error-session/feedback",
-            headers=headers,
-            json={"corrected_rows": rows},
-        )
-
-        monkeypatch.setattr(
-            ai_route,
-            "create_approval_claim",
-            lambda _payload: "compiler-claim",
-            raising=False,
-        )
-        revoked: list[str] = []
-        monkeypatch.setattr(
-            ai_route,
-            "revoke_approval_claim",
-            revoked.append,
-            raising=False,
-        )
-        monkeypatch.setattr(
-            ai_route,
-            "approve_ai_recognition_session_with_service",
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                AiRecognitionServiceError(422, "规则编译未通过。")
-            ),
-        )
-        compiler_rejected = client.post(
-            "/api/v1/ai-recognition/sessions/controlled-error-session/approve",
-            headers=headers,
-        )
-
-        monkeypatch.setattr(
-            ai_route,
-            "reject_ai_recognition_session_with_service",
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                AiRecognitionServiceError(503, "识别服务暂时不可用。")
-            ),
-        )
-        unavailable = client.post(
-            "/api/v1/ai-recognition/sessions/controlled-error-session/reject",
-            headers=headers,
-        )
-
-    assert (stale.status_code, stale.json()["detail"]) == (404, "会话已过期。")
-    assert (closed.status_code, closed.json()["detail"]) == (409, "会话已经关闭。")
-    assert (compiler_rejected.status_code, compiler_rejected.json()["detail"]) == (
-        422,
-        "规则编译未通过。",
-    )
-    assert (unavailable.status_code, unavailable.json()["detail"]) == (
-        503,
-        "识别服务暂时不可用。",
-    )
-    assert revoked == ["compiler-claim"]
 
 
 def teardown_module() -> None:

@@ -2,20 +2,20 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.models import Base
-from app.services.recognition_rule_packs import save_ai_rule_profile
+from app.services.recognition_rule_packs import save_learned_rule_profile
 
 
-def test_saved_ai_profile_keeps_server_controlled_learning_provenance() -> None:
+def test_saved_profile_keeps_server_controlled_learning_provenance() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
     fingerprint = f"sha256:{'1' * 64}"
 
     with Session(engine) as db:
-        pack = save_ai_rule_profile(
+        pack = save_learned_rule_profile(
             db,
             tenant_id=1,
             workspace_id=1,
-            session_id="session-1",
+            learning_record_id="record-1",
             profile={
                 "fingerprint": fingerprint,
                 "strategy": "structured_items_v1",
@@ -26,6 +26,6 @@ def test_saved_ai_profile_keeps_server_controlled_learning_provenance() -> None:
         )
 
     assert pack.payload["parser_policy"]["format_profiles"][0]["provenance"] == {
-        "source": "confirmed_ai_rule",
-        "learning_session_id": "session-1",
+        "source": "confirmed_learning_rule",
+        "learning_record_id": "record-1",
     }

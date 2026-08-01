@@ -1,7 +1,7 @@
 from app.services import waybill_parser_client
 
 
-def test_batch_parse_allows_local_ai_inference_time(monkeypatch):
+def test_batch_parse_allows_large_capture_round_time(monkeypatch):
     captured: dict[str, float] = {}
 
     def fake_post(_path, _payload, *, timeout):
@@ -19,6 +19,30 @@ def test_batch_parse_allows_local_ai_inference_time(monkeypatch):
     )
 
     assert captured["timeout"] == 180.0
+
+
+def test_fingerprint_inspection_uses_parser_raw_payload_contract(monkeypatch):
+    captured: dict = {}
+
+    def fake_post(path, payload, *, timeout):
+        captured.update(path=path, payload=payload, timeout=timeout)
+        return {"fingerprint_code": "CN-ITEM-INFO"}
+
+    monkeypatch.setattr(waybill_parser_client, "post_waybill_parser_service", fake_post)
+
+    waybill_parser_client.inspect_waybill_fingerprint_with_service(
+        raw_payload={"task": {"documents": []}},
+        source_component="cainiao-cnprint",
+    )
+
+    assert captured == {
+        "path": "/api/v1/fingerprints/inspect",
+        "payload": {
+            "raw_payload": {"task": {"documents": []}},
+            "source_component": "cainiao-cnprint",
+        },
+        "timeout": 10.0,
+    }
 
 
 def test_rule_synthesis_is_forwarded_to_parser_without_changing_rows(monkeypatch):

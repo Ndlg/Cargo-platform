@@ -1027,7 +1027,7 @@ def test_recognition_export_covers_parent_without_generated_order_row(monkeypatc
         return {
             "contract_version": "order_row_drafts_v1",
             "task_id": task_id,
-            "status": "ai_rule_pending",
+            "status": "format_profile_missing",
             "summary": {
                 "parent_waybill_count": 2,
                 "child_waybill_count": 1,
@@ -1041,7 +1041,7 @@ def test_recognition_export_covers_parent_without_generated_order_row(monkeypatc
                 {
                     "raw_record_id": raw_record["raw_record_id"],
                     "parent_label": "第1批-第2单",
-                    "reason": "ai_rule_pending",
+                    "reason": "format_profile_missing",
                 }
             ],
         }

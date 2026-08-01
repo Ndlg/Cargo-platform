@@ -13,13 +13,13 @@ WAYBILL_BATCHES_VIEW = (
     / "workbench"
     / "WaybillBatchesView.vue"
 )
-PROFILE_EDITOR = (
+FORMAT_LEARNING_VIEW = (
     PROJECT_ROOT
     / "frontend"
     / "src"
-    / "components"
-    / "recognition"
-    / "RecognitionProfileEditor.vue"
+    / "views"
+    / "workbench"
+    / "FormatLearningView.vue"
 )
 RULE_PACKS_VIEW = (
     PROJECT_ROOT
@@ -41,13 +41,13 @@ def test_parser_exception_coverage_is_independent_from_status_allowlists() -> No
     assert "parserIssueFor(" in batches_source
 
 
-def test_rule_profile_business_summary_precedes_collapsed_technical_details() -> None:
-    editor_source = PROFILE_EDITOR.read_text(encoding="utf-8")
+def test_format_learning_shows_field_evidence_before_confirmed_business_rows() -> None:
+    learning_source = FORMAT_LEARNING_VIEW.read_text(encoding="utf-8")
     packs_source = RULE_PACKS_VIEW.read_text(encoding="utf-8")
 
-    collapse_index = editor_source.index('<el-collapse v-model="openSections"')
-    assert editor_source.index("确认时的五字段结果") < collapse_index
-    assert editor_source.index("确认时的脱敏字段样本") > collapse_index
-    assert editor_source.index("技术来源") > collapse_index
-    assert "learningRecordFor(profile)?.source_component" not in packs_source
-    assert "profileValidationLabel(profile)" in packs_source
+    assert learning_source.index("用于生成规则的脱敏字段") < learning_source.index(
+        "管理员确认的商品行"
+    )
+    assert "expected_evidence_sha256: prepared.value.evidence_sha256" in learning_source
+    assert "学习记录只读" in packs_source
+    assert "RecognitionProfileEditor" not in packs_source

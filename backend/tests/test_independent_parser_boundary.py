@@ -31,7 +31,6 @@ def test_backend_runtime_does_not_import_embedded_order_row_parser() -> None:
                 "services.order_row_drafts",
                 "service_app.declarative_rules",
                 "service_app.rule_synthesizer",
-                "services.ai-recognition.service_app",
                 "services.waybill-parser.service_app",
             )
         ):

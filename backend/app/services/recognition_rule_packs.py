@@ -14,8 +14,8 @@ from app.services.order_row_contract import ORDER_ROW_DRAFTS_CONTRACT_VERSION
 RECOGNITION_RULE_PACK_CONTRACT_VERSION = "recognition_rule_pack_v1"
 RULE_PACK_MISSING_STATUS = "rule_pack_missing"
 SUPPORTED_ORDER_ROW_PARSERS = {"declarative_v1", "shoe_waybill_v1"}
-AI_RULE_PACK_CODE = "ai-recognition-main"
-AI_RULE_PACK_NAME = "AI识别规则包"
+ADAPTIVE_RULE_PACK_CODE = "adaptive-recognition-main"
+ADAPTIVE_RULE_PACK_NAME = "自适应识别规则包"
 
 
 def utc_now_iso() -> str:
@@ -171,19 +171,19 @@ def activate_recognition_rule_pack(
     return pack
 
 
-def save_ai_rule_profile(
+def save_learned_rule_profile(
     db: Session,
     *,
     tenant_id: int | None,
     workspace_id: int,
-    session_id: str,
+    learning_record_id: str,
     profile: dict[str, Any],
     validate: Any,
     learning_record: dict[str, Any] | None = None,
 ) -> RecognitionRulePack:
     fingerprint = text_value(profile.get("fingerprint"))
     if not fingerprint:
-        raise ValueError("AI candidate rule requires a format fingerprint.")
+        raise ValueError("Learned rule requires a format fingerprint.")
     grammar_signature = text_value(profile.get("grammar_signature"))
     strategy = text_value(profile.get("strategy"))
     selected_fields = tuple(profile.get("selected_fields") or ())
@@ -212,7 +212,7 @@ def save_ai_rule_profile(
     pack = db.scalar(
         select(RecognitionRulePack).where(
             RecognitionRulePack.workspace_id == workspace_id,
-            RecognitionRulePack.code == AI_RULE_PACK_CODE,
+            RecognitionRulePack.code == ADAPTIVE_RULE_PACK_CODE,
         )
     )
     current_payload = (
@@ -231,15 +231,16 @@ def save_ai_rule_profile(
         {
             **deepcopy(profile),
             "provenance": {
-                "source": "confirmed_ai_rule",
-                "learning_session_id": session_id,
+                "source": "confirmed_learning_rule",
+                "learning_record_id": learning_record_id,
             },
         }
     )
     learning_records = [
         deepcopy(item)
-        for item in list_value(current_payload.get("ai_learning_records"))
-        if isinstance(item, dict) and text_value(item.get("session_id")) != session_id
+        for item in list_value(current_payload.get("learning_records"))
+        if isinstance(item, dict)
+        and text_value(item.get("learning_record_id")) != learning_record_id
     ]
     if learning_record is not None:
         learning_records.append(
@@ -253,7 +254,7 @@ def save_ai_rule_profile(
         db.scalar(
             select(func.max(RecognitionRulePackRevision.revision)).where(
                 RecognitionRulePackRevision.workspace_id == workspace_id,
-                RecognitionRulePackRevision.code == AI_RULE_PACK_CODE,
+                RecognitionRulePackRevision.code == ADAPTIVE_RULE_PACK_CODE,
             )
         )
         or 0
@@ -263,7 +264,7 @@ def save_ai_rule_profile(
             RecognitionRulePackRevision(
                 tenant_id=tenant_id,
                 workspace_id=workspace_id,
-                code=AI_RULE_PACK_CODE,
+                code=ADAPTIVE_RULE_PACK_CODE,
                 revision=1,
                 version=text_value(object_value(current_payload.get("pack")).get("version"))
                 or (pack.version if pack is not None else "1.0.0"),
@@ -279,8 +280,8 @@ def save_ai_rule_profile(
             "contract_version": RECOGNITION_RULE_PACK_CONTRACT_VERSION,
             "pack": {
                 **object_value(current_payload.get("pack")),
-                "code": AI_RULE_PACK_CODE,
-                "name": AI_RULE_PACK_NAME,
+                "code": ADAPTIVE_RULE_PACK_CODE,
+                "name": ADAPTIVE_RULE_PACK_NAME,
                 "version": version,
             },
             "parser_policy": {
@@ -289,20 +290,20 @@ def save_ai_rule_profile(
                 "fingerprint_strategy": "business_shape_v2",
                 "format_profiles": profiles,
             },
-            "ai_learning_records": learning_records,
+            "learning_records": learning_records,
         }
     )
     validation = validate(payload)
     if validation.get("status") != "valid":
         errors = validation.get("errors")
-        raise ValueError(f"AI candidate rule is invalid: {errors or 'unknown validation error'}")
+        raise ValueError(f"Learned rule is invalid: {errors or 'unknown validation error'}")
 
     if pack is None:
         pack = RecognitionRulePack(
             tenant_id=tenant_id,
             workspace_id=workspace_id,
-            name=AI_RULE_PACK_NAME,
-            code=AI_RULE_PACK_CODE,
+            name=ADAPTIVE_RULE_PACK_NAME,
+            code=ADAPTIVE_RULE_PACK_CODE,
             version=version,
             payload=payload,
             status="draft",
@@ -311,20 +312,20 @@ def save_ai_rule_profile(
         db.add(pack)
     else:
         pack.is_deleted = False
-        pack.name = AI_RULE_PACK_NAME
+        pack.name = ADAPTIVE_RULE_PACK_NAME
         pack.version = version
         pack.payload = payload
     db.add(
         RecognitionRulePackRevision(
             tenant_id=tenant_id,
             workspace_id=workspace_id,
-            code=AI_RULE_PACK_CODE,
+            code=ADAPTIVE_RULE_PACK_CODE,
             revision=revision,
             version=version,
             payload=deepcopy(payload),
         )
     )
-    pack.description = f"管理员最后确认 AI 会话 {session_id} 后更新。"
+    pack.description = f"管理员确认学习记录 {learning_record_id} 后更新。"
     activate_recognition_rule_pack(db, workspace_id=workspace_id, pack=pack)
     return pack
 
