@@ -1,3 +1,5 @@
+import type { LocationQueryRaw, RouteLocationRaw } from 'vue-router'
+
 export type CaptureRound = {
   id: number
 }
@@ -21,4 +23,18 @@ export function selectCaptureRoundId(
     (latestId, round) => latestId === null || round.id > latestId ? round.id : latestId,
     null,
   )
+}
+
+export function captureRoundRoute(
+  path: string,
+  taskId: number | null,
+  currentQuery: LocationQueryRaw = {},
+): RouteLocationRaw {
+  const query = { ...currentQuery }
+  if (taskId) {
+    query.task_id = String(taskId)
+  } else {
+    delete query.task_id
+  }
+  return { path, query }
 }

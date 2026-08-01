@@ -14,6 +14,11 @@ import {
 } from '../../services/api'
 import { useSessionStore } from '../../stores/session'
 import {
+  captureRoundRoute,
+  queryPositiveInt,
+  selectCaptureRoundId,
+} from './captureRoundSelection'
+import {
   parserIssueFor,
   parserIssueRoute,
   type ParserIssueDefinition,
@@ -103,8 +108,6 @@ const router = useRouter()
 const route = useRoute()
 const session = useSessionStore()
 
-const SELECTED_TASK_STORAGE_KEY = 'cargo-platform-exceptions-task-id'
-
 const captureTasks = ref<CaptureTaskRecord[]>([])
 const selectedTaskId = ref<number | null>(null)
 const recognitionPreview = ref<RecognitionPreviewResponse | null>(null)
@@ -184,52 +187,13 @@ function taskLabel(task: CaptureTaskRecord, index = 0): string {
   return `${round}：${formatTaskTime(task.started_at)} ${taskStatusLabel(task.status)}`
 }
 
-function selectedTaskFromSavedState(): number | null {
-  const queryValue = Array.isArray(route.query.task_id)
-    ? route.query.task_id[0]
-    : route.query.task_id
-  const rawValue = queryValue ?? localStorage.getItem(SELECTED_TASK_STORAGE_KEY)
-  const parsed = Number(rawValue)
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : null
-}
-
-function persistSelectedTask(taskId: number | null) {
-  const nextQuery = { ...route.query }
-
-  if (!taskId) {
-    localStorage.removeItem(SELECTED_TASK_STORAGE_KEY)
-    if ('task_id' in nextQuery) {
-      delete nextQuery.task_id
-      void router.replace({ query: nextQuery })
-    }
-    return
-  }
-
-  localStorage.setItem(SELECTED_TASK_STORAGE_KEY, String(taskId))
-  const queryTaskId = Array.isArray(route.query.task_id)
-    ? route.query.task_id[0]
-    : route.query.task_id
-  if (queryTaskId === String(taskId)) return
-
-  void router.replace({
-    query: {
-      ...nextQuery,
-      task_id: String(taskId),
-    },
-  })
-}
-
 function ensureSelectedTask() {
-  const taskIds = new Set(sortedTasks.value.map((task) => task.id))
-  if (selectedTaskId.value && taskIds.has(selectedTaskId.value)) return
+  selectedTaskId.value = selectCaptureRoundId(sortedTasks.value, route.query.task_id)
+}
 
-  const savedTaskId = selectedTaskFromSavedState()
-  if (savedTaskId && taskIds.has(savedTaskId)) {
-    selectedTaskId.value = savedTaskId
-    return
-  }
-
-  selectedTaskId.value = sortedTasks.value[0]?.id ?? null
+function syncSelectedTaskRoute(taskId: number | null) {
+  if (queryPositiveInt(route.query.task_id) === taskId) return
+  void router.replace(captureRoundRoute(route.path, taskId, route.query))
 }
 
 function exceptionCountByStatus(status: ExceptionStatus): number {
@@ -400,10 +364,18 @@ watch(
 )
 
 watch(selectedTaskId, () => {
-  persistSelectedTask(selectedTaskId.value)
+  syncSelectedTaskRoute(selectedTaskId.value)
   recognitionPreview.value = null
   void loadRecognitionPreview()
 })
+
+watch(
+  () => route.query.task_id,
+  (queryTaskId) => {
+    const nextTaskId = selectCaptureRoundId(sortedTasks.value, queryTaskId)
+    if (nextTaskId !== selectedTaskId.value) selectedTaskId.value = nextTaskId
+  },
+)
 
 onMounted(load)
 </script>
@@ -416,7 +388,11 @@ onMounted(load)
     </div>
     <div class="header-actions">
       <el-button :icon="Refresh" :loading="loading" plain @click="load">刷新</el-button>
-      <el-button :icon="Right" type="primary" @click="router.push('/exports')">
+      <el-button
+        :icon="Right"
+        type="primary"
+        @click="router.push(captureRoundRoute('/exports', selectedTaskId))"
+      >
         下一步：导出中心
       </el-button>
     </div>

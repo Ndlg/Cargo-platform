@@ -14,6 +14,11 @@ import {
 } from '../../services/api'
 import { useSessionStore } from '../../stores/session'
 import {
+  captureRoundRoute,
+  queryPositiveInt,
+  selectCaptureRoundId,
+} from './captureRoundSelection'
+import {
   parserIssueFor,
   parserIssueRoute,
   type ParserIssueDefinition,
@@ -136,13 +141,6 @@ function waybillCountForTask(task?: CaptureTaskRecord | null): number {
   return numericCount(task.waybill_count ?? task.parent_waybill_count) ?? 0
 }
 
-function queryPositiveInt(value: unknown): number | null {
-  const rawValue = Array.isArray(value) ? value[0] : value
-  if (rawValue === undefined || rawValue === null || rawValue === '') return null
-  const parsed = Number(rawValue)
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : null
-}
-
 function sourceLabel(row: OrderRowDraftRecord): string {
   if (row.source_component === 'cloud-print-client') return '抖店 / CloudPrint'
   if (row.source_component === 'cainiao-cnprint') return '菜鸟组件'
@@ -207,15 +205,12 @@ function emptyText(value: string | number | null | undefined): string {
 async function loadTasks() {
   const records = await getRecords('/capture-tasks?limit=2000&include_waybill_counts=false')
   captureTasks.value = records as CaptureTaskRecord[]
-  const taskIds = new Set(captureTasks.value.map((task) => task.id))
-  const routeTaskId = queryPositiveInt(route.query.task_id)
-  if (!selectedTaskId.value && routeTaskId && taskIds.has(routeTaskId)) {
-    selectedTaskId.value = routeTaskId
-    return
-  }
-  if (!selectedTaskId.value || !taskIds.has(selectedTaskId.value)) {
-    selectedTaskId.value = sortedTasks.value[0]?.id ?? null
-  }
+  selectedTaskId.value = selectCaptureRoundId(captureTasks.value, route.query.task_id)
+}
+
+function syncSelectedTaskRoute(taskId: number | null) {
+  if (queryPositiveInt(route.query.task_id) === taskId) return
+  void router.replace(captureRoundRoute(route.path, taskId, route.query))
 }
 
 async function loadDrafts() {
@@ -281,9 +276,18 @@ watch(
 )
 
 watch(selectedTaskId, () => {
+  syncSelectedTaskRoute(selectedTaskId.value)
   currentPage.value = 1
   void loadDrafts()
 })
+
+watch(
+  () => route.query.task_id,
+  (queryTaskId) => {
+    const nextTaskId = selectCaptureRoundId(captureTasks.value, queryTaskId)
+    if (nextTaskId !== selectedTaskId.value) selectedTaskId.value = nextTaskId
+  },
+)
 
 watch([keyword, sourceFilter, statusFilter, pageSize], () => {
   currentPage.value = 1
@@ -333,8 +337,12 @@ onMounted(load)
       >
         下载整理文档
       </el-button>
-      <el-button :icon="Right" type="primary" @click="router.push('/exports')">
-        查看导出中心
+      <el-button
+        :icon="Right"
+        type="primary"
+        @click="router.push(captureRoundRoute('/exceptions', selectedTaskId))"
+      >
+        下一步：异常处理
       </el-button>
     </div>
   </section>

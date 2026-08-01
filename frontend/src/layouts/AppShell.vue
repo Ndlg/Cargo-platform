@@ -4,6 +4,10 @@ import { useRoute, useRouter } from 'vue-router'
 import { DataLine, Grid, Tickets } from '@element-plus/icons-vue'
 
 import { useSessionStore } from '../stores/session'
+import {
+  captureRoundRoute,
+  queryPositiveInt,
+} from '../views/workbench/captureRoundSelection'
 
 interface ShellNavItem {
   label: string
@@ -68,6 +72,11 @@ function logout() {
   session.clearSession()
   router.push('/login')
 }
+
+function navRoute(path: string) {
+  if (!router.resolve(path).meta.captureRoundContext) return { path }
+  return captureRoundRoute(path, queryPositiveInt(route.query.task_id))
+}
 </script>
 
 <template>
@@ -93,7 +102,12 @@ function logout() {
       </div>
       <el-scrollbar class="nav-scroll">
         <el-menu :default-active="route.path" router>
-          <el-menu-item v-for="item in navItems" :key="item.path" :index="item.path">
+          <el-menu-item
+            v-for="item in navItems"
+            :key="item.path"
+            :index="item.path"
+            :route="navRoute(item.path)"
+          >
             <el-icon><Grid /></el-icon>
             <span>{{ item.label }}</span>
           </el-menu-item>

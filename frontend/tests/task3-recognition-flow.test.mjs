@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 
 import {
+  captureRoundRoute,
   selectCaptureRoundId,
 } from '../src/views/workbench/captureRoundSelection.ts'
 import {
@@ -14,6 +15,18 @@ assert.equal(selectCaptureRoundId(rounds, '14'), 14)
 assert.equal(selectCaptureRoundId(rounds, 'not-a-number'), 91)
 assert.equal(selectCaptureRoundId(rounds, '999'), 91)
 assert.equal(selectCaptureRoundId([], '14'), null)
+assert.deepEqual(captureRoundRoute('/exceptions', 14), {
+  path: '/exceptions',
+  query: { task_id: '14' },
+})
+assert.deepEqual(captureRoundRoute('/exports', 14, { status: 'pending' }), {
+  path: '/exports',
+  query: { status: 'pending', task_id: '14' },
+})
+assert.deepEqual(captureRoundRoute('/exports', null, { task_id: '14' }), {
+  path: '/exports',
+  query: {},
+})
 
 const missingPack = parserIssueFor('rule_pack_missing')
 assert.equal(missingPack?.action, 'format-learning')

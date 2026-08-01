@@ -20,7 +20,7 @@ export const clientRoutes: RouteRecordRaw = {
     {
       path: 'waybill-batches',
       component: WaybillBatchesView,
-      meta: { title: '面单解析' },
+      meta: { title: '面单解析', captureRoundContext: true },
     },
     {
       path: 'order-rows',
@@ -30,7 +30,15 @@ export const clientRoutes: RouteRecordRaw = {
       path: 'product-matching',
       redirect: '/exceptions',
     },
-    { path: 'exceptions', component: ExceptionsView, meta: { title: '异常处理' } },
-    { path: 'exports', component: ExportCenterView, meta: { title: '导出中心' } },
+    {
+      path: 'exceptions',
+      component: ExceptionsView,
+      meta: { title: '异常处理', captureRoundContext: true },
+    },
+    {
+      path: 'exports',
+      component: ExportCenterView,
+      meta: { title: '导出中心', captureRoundContext: true },
+    },
   ],
 }

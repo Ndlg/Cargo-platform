@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { Download, Refresh, View } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 
@@ -15,6 +16,11 @@ import {
 } from '../../services/api'
 import { useSessionStore } from '../../stores/session'
 import {
+  captureRoundRoute,
+  queryPositiveInt,
+  selectCaptureRoundId,
+} from './captureRoundSelection'
+import {
   buildReportRows,
   loadReportLayout,
   reportCellText,
@@ -27,6 +33,8 @@ import {
 } from './reportExportLayout'
 
 const session = useSessionStore()
+const route = useRoute()
+const router = useRouter()
 const captureTasks = ref<CaptureTaskRecord[]>([])
 const selectedTaskId = ref<number | null>(null)
 const recognitionPreview = ref<RecognitionPreviewResponse | null>(null)
@@ -98,9 +106,12 @@ function taskLabel(task: CaptureTaskRecord, index = 0): string {
 }
 
 function ensureSelectedTask() {
-  const taskIds = new Set(sortedTasks.value.map((task) => task.id))
-  if (selectedTaskId.value && taskIds.has(selectedTaskId.value)) return
-  selectedTaskId.value = sortedTasks.value[0]?.id ?? null
+  selectedTaskId.value = selectCaptureRoundId(sortedTasks.value, route.query.task_id)
+}
+
+function syncSelectedTaskRoute(taskId: number | null) {
+  if (queryPositiveInt(route.query.task_id) === taskId) return
+  void router.replace(captureRoundRoute(route.path, taskId, route.query))
 }
 
 function summaryValue(key: string): number {
@@ -251,9 +262,18 @@ watch(
 )
 
 watch(selectedTaskId, () => {
+  syncSelectedTaskRoute(selectedTaskId.value)
   recognitionPreview.value = null
   void loadRecognitionPreview()
 })
+
+watch(
+  () => route.query.task_id,
+  (queryTaskId) => {
+    const nextTaskId = selectCaptureRoundId(sortedTasks.value, queryTaskId)
+    if (nextTaskId !== selectedTaskId.value) selectedTaskId.value = nextTaskId
+  },
+)
 
 watch(reportRows, () => {
   void loadSkuImagePreviews()
