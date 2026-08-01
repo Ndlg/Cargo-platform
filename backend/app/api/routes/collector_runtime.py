@@ -1774,10 +1774,16 @@ def zip_stream_response(buffer: BytesIO, filename: str) -> StreamingResponse:
     )
 
 
+def safe_xlsx_cell_value(value: Any) -> Any:
+    if isinstance(value, str) and value.lstrip(" \t\r\n")[:1] in {"=", "+", "-", "@"}:
+        return f"'{value}"
+    return value
+
+
 def append_xlsx_rows(sheet, headers: list[str], rows: list[list[Any]]) -> None:
-    sheet.append(headers)
+    sheet.append([safe_xlsx_cell_value(value) for value in headers])
     for row in rows:
-        sheet.append(row)
+        sheet.append([safe_xlsx_cell_value(value) for value in row])
     sheet.freeze_panes = "A2"
     for column_cells in sheet.columns:
         column_letter = column_cells[0].column_letter

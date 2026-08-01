@@ -359,6 +359,30 @@ def test_recognition_exception_sheet_is_created_even_when_empty() -> None:
     assert loaded[RECOGNITION_EXCEPTION_SHEET_TITLE].max_row == 1
 
 
+def test_all_xlsx_exports_neutralize_formula_like_external_text() -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    append_xlsx_rows(
+        sheet,
+        ["商品", "销售属性1", "销售属性2", "数量"],
+        [["=HYPERLINK(\"https://example.test\")", "+cmd", "  @SUM(A1:A2)", -2]],
+    )
+    buffer = BytesIO()
+    workbook.save(buffer)
+    buffer.seek(0)
+
+    loaded = load_workbook(buffer, data_only=False)
+    values = [loaded.active.cell(2, index).value for index in range(1, 5)]
+
+    assert values == [
+        "'=HYPERLINK(\"https://example.test\")",
+        "'+cmd",
+        "'  @SUM(A1:A2)",
+        -2,
+    ]
+    assert all(loaded.active.cell(2, index).data_type != "f" for index in range(1, 4))
+
+
 def test_report_quantity_value_accepts_common_text_formats() -> None:
     assert report_quantity_value("*2") == 2
     assert report_quantity_value("2件") == 2

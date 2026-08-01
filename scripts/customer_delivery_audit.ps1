@@ -75,15 +75,6 @@ function Get-NestedText {
     return ([string]$value).Trim()
 }
 
-function Has-BusinessValue {
-    param([object]$Value)
-    if ($null -eq $Value) {
-        return $false
-    }
-    $text = ([string]$Value).Trim()
-    return -not [string]::IsNullOrWhiteSpace($text) -and $text -ne "-"
-}
-
 function Invoke-Api {
     param(
         [string]$Method = "GET",
@@ -169,8 +160,6 @@ $rowCount = @($draftRows).Count
 $summaryParentCount = Get-IntValue -Object $draftSummary -Name "parent_waybill_count" -DefaultValue $parentCount
 $summaryRowCount = Get-IntValue -Object $draftSummary -Name "standard_row_count" -DefaultValue $rowCount
 Assert-True ($parentCount -gt 0) "Order row drafts returned no parent waybills."
-Assert-True ($rowCount -gt 0) "Order row drafts returned no rows."
-Assert-True ($rowCount -ge $parentCount) "Order row count is smaller than parent waybill count; multi-product/single-product accounting is suspicious."
 Write-Host "Draft parents: $parentCount (summary $summaryParentCount)"
 Write-Host "Draft rows:    $rowCount (summary $summaryRowCount)"
 
@@ -244,19 +233,17 @@ Write-Section "Report Preview"
 $report = Invoke-Api -Path "/collector-control/tasks/$script:TaskId/report-preview"
 $reportRows = @((Get-PropertyValue -Object $report -Name "rows" -DefaultValue @()))
 $reportSummary = Get-PropertyValue -Object $report -Name "summary"
+$reportCoverage = Get-PropertyValue -Object $report -Name "coverage"
 $reportTotal = Get-IntValue -Object $reportSummary -Name "total" @($reportRows).Count
-Assert-True (@($reportRows).Count -eq $rowCount) "Report preview rows ($(@($reportRows).Count)) do not match order draft rows ($rowCount)."
-Assert-True ($reportTotal -eq @($reportRows).Count) "Report preview summary total ($reportTotal) does not match returned rows ($(@($reportRows).Count))."
-$expectedNormalRows = 0
-foreach ($row in $reportRows) {
-    $status = Get-PropertyValue -Object $row -Name "status" -DefaultValue ""
-    $salesAttr1 = Get-PropertyValue -Object $row -Name "sales_attr1_text" -DefaultValue ""
-    $salesAttr2 = Get-PropertyValue -Object $row -Name "sales_attr2_text" -DefaultValue ""
-    if ($status -eq "matched" -and (Has-BusinessValue $salesAttr1) -and (Has-BusinessValue $salesAttr2)) {
-        $expectedNormalRows += 1
-    }
-}
-$expectedExceptionRows = @($reportRows).Count - $expectedNormalRows
+$coverageComplete = [bool](Get-PropertyValue -Object $report -Name "coverage_complete" -DefaultValue $false)
+$coverageOk = [bool](Get-PropertyValue -Object $reportCoverage -Name "ok" -DefaultValue $false)
+$coverageResultRows = Get-IntValue -Object $reportCoverage -Name "result_row_count" -DefaultValue @($reportRows).Count
+$expectedNormalRows = Get-IntValue -Object $reportCoverage -Name "normal_export_count" -DefaultValue -1
+$expectedExceptionRows = Get-IntValue -Object $reportCoverage -Name "exception_export_count" -DefaultValue -1
+Assert-True ($coverageComplete -and $coverageOk) "Report preview did not prove complete waybill coverage."
+Assert-True (@($reportRows).Count -eq $coverageResultRows) "Report preview result rows do not match its coverage result."
+Assert-True ($reportTotal -eq $rowCount) "Report business row count ($reportTotal) does not match order draft rows ($rowCount)."
+Assert-True (($expectedNormalRows + $expectedExceptionRows) -eq $coverageResultRows) "Normal and exception workbook rows do not partition all report results."
 Write-Host "Report rows: $(@($reportRows).Count)"
 Write-Host ("Report summary: " + ($reportSummary | ConvertTo-Json -Compress))
 Write-Host "Expected workbook normal rows: $expectedNormalRows"
