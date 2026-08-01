@@ -590,7 +590,6 @@ def _gold_samples_for_fingerprint(
                 RawCaptureRecord.id == raw_record_id,
                 RawCaptureRecord.workspace_id == workspace_id,
                 RawCaptureRecord.is_deleted.is_(False),
-                RawCaptureRecord.archived_at.is_(None),
             )
         )
         if record is None:

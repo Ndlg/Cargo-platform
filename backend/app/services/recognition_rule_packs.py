@@ -197,17 +197,11 @@ def save_learned_rule_profile(
             return False
         if strategy == "structured_items_v1":
             return True
-        if strategy == "source_projection_v1":
-            return text_value(item.get("grammar_signature")) == grammar_signature
-        return (
-            text_value(item.get("grammar_signature")) == grammar_signature
-            and {
-                key: value for key, value in item.items() if key != "provenance"
-            }
-            == {
-                key: value for key, value in profile.items() if key != "provenance"
-            }
-        )
+        return text_value(item.get("grammar_signature")) == grammar_signature
+
+    def belongs_to_learning_record(item: dict[str, Any]) -> bool:
+        provenance = object_value(item.get("provenance"))
+        return text_value(provenance.get("learning_record_id")) == learning_record_id
 
     pack = db.scalar(
         select(RecognitionRulePack).where(
@@ -225,6 +219,7 @@ def save_learned_rule_profile(
         deepcopy(item)
         for item in list_value(parser_policy.get("format_profiles"))
         if isinstance(item, dict)
+        and not belongs_to_learning_record(item)
         and not same_profile_slot(item)
     ]
     profiles.append(

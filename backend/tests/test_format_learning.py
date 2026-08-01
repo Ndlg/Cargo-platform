@@ -331,6 +331,56 @@ def test_relearning_same_waybill_replaces_wrong_sample_instead_of_keeping_confli
     db.close()
 
 
+def test_archived_learning_sample_remains_available_for_rule_replay() -> None:
+    from app.api.routes import format_learning as route
+
+    db = seeded_db()
+    record = db.get(RawCaptureRecord, 100)
+    assert record is not None
+    record.archived_at = "2026-08-01T00:00:00Z"
+    db.add(
+        RecognitionRulePack(
+            tenant_id=1,
+            workspace_id=1,
+            code="adaptive-recognition-main",
+            name="自适应识别规则包",
+            payload={
+                "learning_records": [
+                    {
+                        "learning_record_id": "archived-sample",
+                        "fingerprint": f"v2:CN-ITEM-INFO:sha256:{'a' * 64}",
+                        "raw_record_id": 100,
+                        "document_sequence": 2,
+                        "confirmed_rows": [
+                            {
+                                "product": "商品乙",
+                                "sales_attr1": "蓝色",
+                                "sales_attr2": "40",
+                                "quantity": 2,
+                                "remark": "",
+                            }
+                        ],
+                    }
+                ]
+            },
+            status="active",
+            is_enabled=True,
+        )
+    )
+    db.commit()
+
+    samples = route._gold_samples_for_fingerprint(
+        db,
+        workspace_id=1,
+        fingerprint=f"v2:CN-ITEM-INFO:sha256:{'a' * 64}",
+        current_learning_record_id="new-sample",
+    )
+
+    assert samples[0]["rows"][0]["product"] == "商品乙"
+    assert samples[0]["raw_payload"]["task"]["documents"][0]["documentID"] == "SECOND"
+    db.close()
+
+
 def test_learn_rejects_stale_prepared_evidence_before_rule_synthesis(monkeypatch) -> None:
     from fastapi import HTTPException
 
