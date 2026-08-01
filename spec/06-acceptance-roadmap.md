@@ -11,7 +11,7 @@ Acceptance:
 - parser outputs order rows
 - multi-product waybills create multiple child rows
 - special orders are visible
-- confirmed rows enter product matching
+- rule-generated rows enter product matching automatically
 - matched rows and exception rows add up
 - Excel normal sheet and `异常面单` sheet are generated
 

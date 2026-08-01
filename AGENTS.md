@@ -24,6 +24,14 @@ One capture task is one complete collection round from `开始采集` to `结束
 
 Do not rebuild or improve the retired technical mapping/workbench route as the primary product.
 
+The recognition path is deterministic. Do not add a local/remote AI model,
+model-session service, model fallback, or model-generated executable rule. For
+an unknown format, an administrator may label the five business fields on a
+sample; the parser compiles that sample into a declarative rule and must replay
+the sample successfully before the new immutable rule-pack revision is
+activated. The labeled sample teaches a reusable rule and is never stored as a
+manual override of a live business row.
+
 The platform should work like this:
 
 1. Collect raw records from collector clients.

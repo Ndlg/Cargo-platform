@@ -9,9 +9,9 @@ The current route is:
 1. Collect raw records.
 2. Require an active recognition rule pack.
 3. Send raw records plus the active rule pack to the independent recognition engine service.
-4. Receive editable business order rows from the engine.
-5. Let the user review, correct, confirm, or exclude rows.
-6. Match confirmed rows to product, SKU, and image assets.
+4. Receive read-only rule-generated business order rows from the engine.
+5. Match those rows to product, SKU, and image assets.
+6. Route unresolved results to rule or asset maintenance.
 7. Export normal rows plus reviewable exceptions.
 
 Current independent recognition runtime:
@@ -46,7 +46,6 @@ The system must not hide multiple products in one field. A multi-product waybill
 - `05-multi-item-and-exceptions.md`: multi-product and exception model.
 - `06-acceptance-roadmap.md`: practical acceptance plan.
 - `07-recognition-rule-packs.md`: switchable recognition rule pack contract and lifecycle.
-- `08-usability-audit-and-remediation-plan.md`: usability audit, system risks, target data flow, page responsibilities, and staged remediation plan.
 - `09-independent-recognition-engine.md`: independent recognition engine boundary, API contract, rule-pack editor direction, migration plan, and acceptance criteria.
 - `10-windows-installer-control-panel.md`: Windows installer and local control panel design for non-technical users, including Docker dependency handling, port configuration, service control, diagnostics, and data preservation.
 - `11-structured-item-source-mapping.md`: declarative rule-pack mapping for structured item arrays from printing applications, including precedence, traceability, compatibility, and acceptance tests.

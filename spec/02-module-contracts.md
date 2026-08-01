@@ -36,15 +36,15 @@ Output:
 
 Order row fields:
 
-- `product_text`
-- `sales_attr1_text`
-- `sales_attr2_text`
-- `quantity_text`
-- `remark_text`
+- `product`
+- `sales_attr1`
+- `sales_attr2`
+- `quantity`
+- `remark`
 - `image_match_text`
-- `source_label`
-- `item_index`
-- `item_count`
+- `parent_label`
+- `child_index`
+- `child_count`
 - `status`
 
 Must:
@@ -60,7 +60,7 @@ Must not:
 - choose SKU assets
 - export Excel
 
-## Order Row Review Module
+## 面单解析结果模块
 
 Input:
 
@@ -68,22 +68,25 @@ Input:
 
 Output:
 
-- confirmed order rows
-- excluded rows
-- correction records
+- rule-generated order rows ready for matching
+- actionable parse exceptions
 
 Must:
 
-- make row status obvious
-- let users edit business values directly
-- let users confirm rows in bulk
+- make row status and source trace obvious
 - keep rejected or uncertain rows reviewable
+
+Must not:
+
+- edit, confirm, exclude, or approve individual order rows
+- store manual row overrides
+- repair parsing outside a rule-pack revision
 
 ## 商品匹配模块
 
 Input:
 
-- confirmed order rows
+- rule-generated order rows
 - product/SKU/image assets
 - active matching rules
 

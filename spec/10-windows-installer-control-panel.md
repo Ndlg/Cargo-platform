@@ -105,7 +105,6 @@ The installer-managed product still runs the current service set:
 - tenant/business UI
 - platform admin UI
 - independent waybill parser service
-- Redis
 - persisted data volume or data directory
 
 Current container names may remain:
@@ -114,7 +113,6 @@ Current container names may remain:
 - `cargo-platform-tenant-ui`
 - `cargo-platform-admin-ui`
 - `cargo-platform-waybill-parser`
-- `cargo-platform-redis`
 
 But these names are diagnostics only. Normal users should not need to know them.
 
@@ -128,8 +126,6 @@ The control panel should expose editable ports:
 | Admin page | `5174` | 管理页面端口 |
 | Backend API | `8000` | 后端服务端口 |
 | Parser service | `8010` | 识别服务端口 |
-
-Redis does not need a user-facing port by default.
 
 Port rules:
 

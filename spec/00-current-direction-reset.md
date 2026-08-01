@@ -14,7 +14,7 @@ The system should expose a simple business flow:
 collector payload
   -> raw capture record
   -> independent recognition engine + active rule pack
-  -> editable order rows
+  -> read-only rule-generated order rows
   -> product/SKU/image matching
   -> supplier Excel
 ```
@@ -23,9 +23,10 @@ collector payload
 
 - If no recognition rule pack is active, parsing must stop with a clear message telling the user to import or enable a rule pack.
 - Recognition behavior must be provided by an independent engine service that receives raw records plus a rule pack and returns order rows. The main platform must not hide business-specific parser functions as default behavior.
-- The user should mainly work with editable rows, not technical blocks or internal IDs.
-- The parser may suggest and split, but uncertain output must be reviewable.
-- User corrections should become visible learning records or rule-pack revisions.
+- Business users inspect rule-generated rows; they do not edit or approve live order rows.
+- Uncertain output must remain a reviewable exception.
+- An administrator corrects an unknown format by labeling the five business fields on a sample; the parser compiles and replays a declarative rule before activation.
+- Corrections become visible learning records and immutable rule-pack revisions, never row overrides.
 - Different product businesses should be handled by switching rule packs, not by changing hidden code.
 
 ## Non-Negotiables

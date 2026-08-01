@@ -63,3 +63,5 @@ if ($args.Count -eq 0) {
 else {
     & $venvPython -m pytest @args
 }
+
+exit $LASTEXITCODE
