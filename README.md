@@ -58,6 +58,20 @@ docker compose --env-file .env -f docker-compose.release.yml up -d
 On the first visit, enter `INITIAL_SETUP_TOKEN` and choose the administrator
 password. The images contain no default administrator password.
 
+For an existing Docker volume, `scripts/deploy_business_containers.ps1`
+creates and verifies an online SQLite snapshot before recreating containers.
+Manual backup and stopped-database restore use the same guarded command:
+
+```powershell
+pwsh.exe -File scripts/sqlite_volume_snapshot.ps1 -Action Backup
+pwsh.exe -File scripts/sqlite_volume_snapshot.ps1 -Action Restore `
+  -BackupFile C:\path\cargo-platform-data-20260801-230000.db `
+  -ExpectedSha256 <recorded-sha256> -ConfirmRestore
+```
+
+Restore is refused while any container still mounts the data volume. The
+restore command also keeps a verified pre-restore database inside the volume.
+
 The release publishes four version-matched images: backend, tenant UI,
 admin UI, and waybill parser. Recognition is performed by declarative rules;
 unsupported formats remain reviewable exceptions. See `CHANGELOG.md`.

@@ -44,7 +44,20 @@ def test_sqlite_upgrade_only_requires_legacy_admin_reset(tmp_path, monkeypatch) 
         rows = connection.exec_driver_sql(
             "SELECT username, password_initialized FROM users ORDER BY id"
         ).all()
+        schema_version = connection.exec_driver_sql("PRAGMA user_version").scalar_one()
     assert rows == [("admin", 0), ("clerk", 1)]
+    assert schema_version == database.SQLITE_SCHEMA_VERSION
+
+
+def test_sqlite_upgrade_rejects_database_from_newer_release(tmp_path, monkeypatch) -> None:
+    migration_engine = create_engine(f"sqlite:///{tmp_path / 'newer.db'}")
+    with migration_engine.begin() as connection:
+        connection.exec_driver_sql("CREATE TABLE workspaces (id INTEGER PRIMARY KEY, tenant_id INTEGER)")
+        connection.exec_driver_sql("PRAGMA user_version = 999")
+
+    monkeypatch.setattr(database, "engine", migration_engine)
+    with pytest.raises(RuntimeError, match="newer schema version"):
+        database._run_sqlite_compat_migrations()
 
 
 def test_runtime_security_settings_reject_missing_or_placeholder_keys() -> None:

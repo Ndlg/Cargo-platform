@@ -7,6 +7,9 @@ from app.core.config import get_settings
 from app.models.base import Base
 
 
+SQLITE_SCHEMA_VERSION = 1
+
+
 def _connect_args(database_url: str) -> dict[str, object]:
     if database_url.startswith("sqlite"):
         return {"check_same_thread": False}
@@ -64,6 +67,12 @@ def _run_sqlite_compat_migrations() -> None:
     ]
 
     with engine.begin() as connection:
+        current_version = int(connection.exec_driver_sql("PRAGMA user_version").scalar_one())
+        if current_version > SQLITE_SCHEMA_VERSION:
+            raise RuntimeError(
+                f"Database uses newer schema version {current_version}; "
+                f"this release supports up to {SQLITE_SCHEMA_VERSION}."
+            )
         inspector = inspect(connection)
         table_names = set(inspector.get_table_names())
         if "workspaces" not in table_names:
@@ -164,3 +173,5 @@ def _run_sqlite_compat_migrations() -> None:
                   AND workspace_id IS NOT NULL
                 """
             )
+
+        connection.exec_driver_sql(f"PRAGMA user_version = {SQLITE_SCHEMA_VERSION}")
