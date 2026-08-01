@@ -1,0 +1,63 @@
+name: cargo-platform-validation
+
+services:
+  waybill-parser:
+    image: cargo-platform-validation-parser:${RELEASE_TAG:?set RELEASE_TAG}
+    container_name: cargo-platform-validation-parser
+    environment:
+      APP_VERSION: ${RELEASE_TAG}
+    ports:
+      - "127.0.0.1:18010:8010"
+    restart: unless-stopped
+
+  backend:
+    image: cargo-platform-validation-backend:${RELEASE_TAG:?set RELEASE_TAG}
+    container_name: cargo-platform-validation-backend
+    depends_on:
+      - waybill-parser
+    environment:
+      APP_NAME: Cargo Platform Validation
+      APP_VERSION: ${RELEASE_TAG}
+      API_PREFIX: /api/v1
+      CORS_ORIGINS: http://127.0.0.1:6173,http://localhost:6173,http://127.0.0.1:6174,http://localhost:6174
+      DATABASE_URL: sqlite:////data/cargo-platform.db
+      STORAGE_ROOT: /data/workspaces
+      DEFAULT_WORKSPACE_ID: 1
+      SECRET_KEY: ${VALIDATION_SECRET_KEY:?set VALIDATION_SECRET_KEY}
+      ACCESS_TOKEN_EXPIRE_MINUTES: 480
+      AUTO_CREATE_TABLES: "true"
+      WAYBILL_PARSER_URL: http://waybill-parser:8010
+    ports:
+      - "127.0.0.1:18001:8000"
+    volumes:
+      - validation-data:/data
+    restart: unless-stopped
+
+  ui:
+    image: cargo-platform-validation-ui:${RELEASE_TAG:?set RELEASE_TAG}
+    container_name: cargo-platform-validation-ui
+    depends_on:
+      - backend
+    environment:
+      API_PROXY_PASS: http://backend:8000
+      SPA_FALLBACK: /index.html
+    ports:
+      - "127.0.0.1:6173:80"
+    restart: unless-stopped
+
+  platform-admin-ui:
+    image: cargo-platform-validation-admin-ui:${RELEASE_TAG:?set RELEASE_TAG}
+    container_name: cargo-platform-validation-admin-ui
+    depends_on:
+      - backend
+    environment:
+      API_PROXY_PASS: http://backend:8000
+      SPA_FALLBACK: /server-admin.html
+    ports:
+      - "127.0.0.1:6174:80"
+    restart: unless-stopped
+
+volumes:
+  validation-data:
+    external: true
+    name: ${VALIDATION_DATA_VOLUME:?set VALIDATION_DATA_VOLUME}

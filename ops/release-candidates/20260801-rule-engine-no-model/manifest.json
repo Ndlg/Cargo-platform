@@ -1,0 +1,119 @@
+{
+  "release": "6173-rule-engine-no-model",
+  "date": "2026-08-01",
+  "source_commit": "00a58e20",
+  "branch": "codex/local-ai-waybill-recognition",
+  "runtime": {
+    "backend": {
+      "container_id": "1d11969590413e58f74d4d0d6fdf8a2257969bbc4ddc0b3b1e1bb666514c7963",
+      "image": "cargo-platform-validation-backend:no-model-00a58e20",
+      "image_digest": "sha256:9cf468c2e7e1dbeceaff0acb70b712f48054057437f63eec84f643036bcda3e1",
+      "restart_count": 0
+    },
+    "parser": {
+      "container_id": "32b525298035b75381e7403c2ab290a0c9992150fc4600452a8e59b57b496f5c",
+      "image": "cargo-platform-validation-parser:no-model-00a58e20",
+      "image_digest": "sha256:f0c5ec997675deb2c18166db168d2e397185a89e3a98855f3292ad8b5627183f",
+      "restart_count": 0
+    },
+    "tenant_ui": {
+      "container_id": "41caf24999befe185676b06c7a08ede95531a75988b3e17620ebb53d7ca92246",
+      "image": "cargo-platform-validation-ui:no-model-00a58e20",
+      "image_digest": "sha256:94a59a8eb203a7b89b879982342e50fa7713e30aab16688096ebd17a03badf15",
+      "restart_count": 0
+    },
+    "admin_ui": {
+      "container_id": "29f344e58bc56afbf8151ffad4c52a4c4ac6888a011b06f4dfde39f8aeb5bb40",
+      "image": "cargo-platform-validation-admin-ui:no-model-00a58e20",
+      "image_digest": "sha256:88b014ee162174dddab0322c9e4309a76036960c39d942bafd662e9c61111dbc",
+      "restart_count": 0
+    }
+  },
+  "removed_runtime_services": [
+    "ai-recognition",
+    "local-model",
+    "redis"
+  ],
+  "database": {
+    "volume": "cargo-platform-validation-no-model-20260801-153819",
+    "pre_learning_sha256": "af70b2221ba8c0d6367950fc15c4154377239a08af0efc72ad972bc293408a1a",
+    "post_learning_snapshot_sha256": "00f7ae1c5765d37b2f2b33daf35d76ca5fa58d557f25b7b5fa805effcd24311d",
+    "integrity_check": "ok",
+    "capture_tasks": 3,
+    "raw_capture_records": 102,
+    "recognition_rule_packs": 1,
+    "recognition_rule_pack_revisions": 24,
+    "learning_records": 24,
+    "active_format_profiles": 21,
+    "legacy_ai_learning_records": 0
+  },
+  "zero_rule_learning_trial": {
+    "initial_rule_packs": 0,
+    "administrator_confirmations_replayed": 25,
+    "learn_requests_succeeded": 25,
+    "learn_requests_failed": 0,
+    "unique_learning_records": 24,
+    "explicit_missing_order_row_parents": 5,
+    "silent_drops": 0,
+    "normal_export_rows": 266,
+    "exception_status_rows": 27
+  },
+  "task_coverage": [
+    {
+      "task_id": 64,
+      "collected_parents": 94,
+      "covered_parents": 94,
+      "normal_rows": 88,
+      "exception_status_rows": 9,
+      "workbook_bytes": 1073460
+    },
+    {
+      "task_id": 65,
+      "collected_parents": 96,
+      "covered_parents": 96,
+      "normal_rows": 94,
+      "exception_status_rows": 5,
+      "workbook_bytes": 1161612
+    },
+    {
+      "task_id": 66,
+      "collected_parents": 93,
+      "covered_parents": 93,
+      "normal_rows": 84,
+      "exception_status_rows": 13,
+      "workbook_bytes": 1060830
+    }
+  ],
+  "verification": {
+    "backend_tests": "306 passed",
+    "frontend_tests": "2 passed",
+    "frontend_typecheck": "passed",
+    "frontend_tenant_build": "passed",
+    "frontend_server_admin_build": "passed",
+    "compose_services": 4,
+    "ui_6173_http_status": 200,
+    "admin_ui_6174_http_status": 200,
+    "backend_health": "ok",
+    "parser_health": "ok",
+    "supplier_workbooks": "3/3 downloaded"
+  },
+  "rollback": {
+    "source_tag": "rollback/ai-enabled-20260801",
+    "source_commit": "8c8427d060f87a9ff287d715d84ea1c978bc621d",
+    "platform_volume": "cargo-platform-validation-zero-platform-20260731-172907",
+    "platform_volume_sha256": "4067f244c0da4d462a0767f99de905c73fdfc3f7dc0a1355483d5831808eb367",
+    "backend_image": "cargo-platform-validation-backend:release-a44af95",
+    "parser_image": "cargo-platform-validation-parser:release-a44af95",
+    "ui_image": "cargo-platform-validation-ui:release-74c58c6",
+    "ai_image": "cargo-platform-ai-recognition:release-a44af95"
+  },
+  "field_5173_frozen": {
+    "backend": "eb42223185ae60de5c9b24c1752e23f2e5e63f12db1b48b9e9ba5591fe64b05c",
+    "tenant_ui": "5ed09f8a74fc36a65eaf68f222998620487b1cb73c63ac66ae2aac414f069d07",
+    "parser": "5d76b24c504043c44da77962a50ca2dc42744550ec4a1666ecc8af63fc452bec",
+    "admin_ui": "ea7b3ad8827d28f363e03ff0bc169c942b09eeb68b92e8ab16c1a18ea4f533ed",
+    "redis": "d702409461c6c1a1991a5af843330ce4cb0a53f1a51f77cd29e78dd52ea12905",
+    "restart_count": 0,
+    "health": "ok"
+  }
+}
