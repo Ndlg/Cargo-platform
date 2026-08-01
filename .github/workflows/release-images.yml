@@ -14,6 +14,10 @@ permissions:
   contents: read
   packages: write
 
+concurrency:
+  group: cargo-platform-release-images
+  cancel-in-progress: false
+
 env:
   REGISTRY: ghcr.io
   IMAGE_OWNER: ndlg
@@ -26,9 +30,11 @@ jobs:
     steps:
       - id: version
         shell: bash
+        env:
+          REQUESTED_VERSION: ${{ github.event.inputs.version }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ github.event.inputs.version }}"
+            VERSION="$REQUESTED_VERSION"
           else
             VERSION="${GITHUB_REF_NAME#v}"
           fi
@@ -126,8 +132,12 @@ jobs:
         run: |
           for image in cargo-platform-backend cargo-platform-tenant-ui cargo-platform-admin-ui cargo-platform-waybill-parser; do
             tag="${REGISTRY}/${IMAGE_OWNER}/${image}:${{ needs.version.outputs.value }}"
-            if docker manifest inspect "$tag" >/dev/null 2>&1; then
+            if output="$(docker manifest inspect "$tag" 2>&1)"; then
               echo "Refusing to overwrite existing release tag: $tag" >&2
+              exit 1
+            fi
+            if ! grep -Eqi 'manifest unknown|no such manifest' <<<"$output"; then
+              echo "Unable to verify release tag; refusing publish: $tag" >&2
               exit 1
             fi
           done

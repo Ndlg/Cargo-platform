@@ -65,8 +65,15 @@ def test_release_builds_four_immutable_images_after_quality_gate() -> None:
     assert ":latest" not in script
     assert "Parameter(Mandatory = $true)" in script
     assert "needs: [version, collector, quality, immutable-tags]" in workflow
+    assert "group: cargo-platform-release-images" in workflow
+    assert 'VERSION="${{ github.event.inputs.version }}"' not in workflow
+    assert "REQUESTED_VERSION:" in workflow
     assert "Refusing to overwrite existing release tag" in script
     assert "Refusing to overwrite existing release tag" in workflow
+    assert "manifest unknown|no such manifest" in script
+    assert "manifest unknown|no such manifest" in workflow
+    assert "Unable to verify release tag" in script
+    assert "Unable to verify release tag" in workflow
     assert "python -m pytest backend/tests -q" in workflow
     assert "npm audit --omit=dev --audit-level=high" in workflow
     assert ":latest" not in workflow

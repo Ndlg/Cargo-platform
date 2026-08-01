@@ -21,15 +21,6 @@ if (-not $GitSha) {
     throw "Unable to resolve the current Git SHA."
   }
 }
-$collectorBuildArgs = @{
-  Version = $Version
-  GitSha = $GitSha
-}
-if ($CollectorPython) {
-  $collectorBuildArgs.PythonExe = $CollectorPython
-}
-& (Join-Path $PSScriptRoot "build_collector_release.ps1") @collectorBuildArgs
-
 $images = @(
   @{
     Name = "cargo-platform-backend"
@@ -60,12 +51,25 @@ $images = @(
 if ($Push) {
   foreach ($image in $images) {
     $versionTag = "$Registry/$($image.Name):$Version"
-    & docker manifest inspect $versionTag *> $null
-    if ($LASTEXITCODE -eq 0) {
+    $manifestOutput = @(& docker manifest inspect $versionTag 2>&1)
+    $manifestExitCode = $LASTEXITCODE
+    if ($manifestExitCode -eq 0) {
       throw "Refusing to overwrite existing release tag: $versionTag"
+    }
+    if (($manifestOutput -join "`n") -notmatch '(?i)manifest unknown|no such manifest') {
+      throw "Unable to verify release tag; refusing publish: $versionTag"
     }
   }
 }
+
+$collectorBuildArgs = @{
+  Version = $Version
+  GitSha = $GitSha
+}
+if ($CollectorPython) {
+  $collectorBuildArgs.PythonExe = $CollectorPython
+}
+& (Join-Path $PSScriptRoot "build_collector_release.ps1") @collectorBuildArgs
 
 foreach ($image in $images) {
   $versionTag = "$Registry/$($image.Name):$Version"
