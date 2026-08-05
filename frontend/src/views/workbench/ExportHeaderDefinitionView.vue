@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { ArrowLeft, ArrowRight, Check, Delete, Plus, Refresh, RefreshLeft } from '@element-plus/icons-vue'
+import { ArrowLeft, ArrowRight, Check, Delete, Hide, Plus, Refresh, RefreshLeft } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 import {
@@ -13,6 +13,7 @@ import {
 } from '../../services/api'
 import { useSessionStore } from '../../stores/session'
 import {
+  REPORT_FIELD_DEFINITIONS,
   REPORT_LAYOUT_PRESETS,
   REPORT_OUTPUT_MODE_OPTIONS,
   buildReportRows,
@@ -59,6 +60,7 @@ const selectedTask = computed(
 const recognitionRows = computed<RecognitionPreviewRow[]>(() => recognitionPreview.value?.rows ?? [])
 const reportRows = computed<ReportPreviewRow[]>(() => buildReportRows(recognitionRows.value, layout.value))
 const visibleColumns = computed(() => layout.value.columns.filter((column) => column.visible))
+const hiddenColumns = computed(() => layout.value.columns.filter((column) => !column.visible))
 const exceptionCount = computed(
   () =>
     Number(recognitionPreview.value?.summary.product_unmatched ?? 0)
@@ -109,6 +111,14 @@ function ensureSelectedTask() {
   selectedTaskId.value = sortedTasks.value[0]?.id ?? null
 }
 
+function fieldDescription(key: ReportFieldKey): string {
+  return REPORT_FIELD_DEFINITIONS.find((field) => field.key === key)?.description ?? ''
+}
+
+function fieldLabel(key: ReportFieldKey): string {
+  return REPORT_FIELD_DEFINITIONS.find((field) => field.key === key)?.label ?? key
+}
+
 function columnIndex(key: ReportFieldKey): number {
   return layout.value.columns.findIndex((column) => column.key === key)
 }
@@ -121,6 +131,21 @@ function moveColumnByKey(key: ReportFieldKey, direction: -1 | 1) {
   const nextColumns = [...layout.value.columns]
   const [column] = nextColumns.splice(index, 1)
   nextColumns.splice(nextIndex, 0, column)
+  layout.value = {
+    ...layout.value,
+    presetId: 'custom',
+    columns: nextColumns,
+  }
+}
+
+function setColumnVisible(key: ReportFieldKey, visible: boolean) {
+  const index = columnIndex(key)
+  if (index < 0) return
+  const nextColumns = [...layout.value.columns]
+  nextColumns[index] = {
+    ...nextColumns[index],
+    visible,
+  }
   layout.value = {
     ...layout.value,
     presetId: 'custom',
@@ -708,6 +733,20 @@ onBeforeUnmount(() => {
       type="warning"
     />
 
+    <div v-if="hiddenColumns.length" class="hidden-column-row">
+      <span>隐藏字段</span>
+      <el-tooltip
+        v-for="column in hiddenColumns"
+        :key="column.key"
+        :content="fieldDescription(column.key)"
+        placement="top"
+      >
+        <el-button size="small" @click="setColumnVisible(column.key, true)">
+          {{ fieldLabel(column.key) }}
+        </el-button>
+      </el-tooltip>
+    </div>
+
     <el-table
       v-if="reportRows.length"
       v-loading="previewLoading"
@@ -754,6 +793,15 @@ onBeforeUnmount(() => {
                   circle
                   size="small"
                   @click.stop="moveColumnByKey(column.key, 1)"
+                />
+              </el-tooltip>
+              <el-tooltip content="隐藏" placement="top">
+                <el-button
+                  :disabled="visibleColumns.length <= 1"
+                  :icon="Hide"
+                  circle
+                  size="small"
+                  @click.stop="setColumnVisible(column.key, false)"
                 />
               </el-tooltip>
             </div>

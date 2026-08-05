@@ -751,11 +751,7 @@ def normalize_recognition_report_layout(raw_layout: Any | None = None) -> dict[s
             {
                 "key": key,
                 "label": label[:40],
-                "visible": (
-                    True
-                    if key in RECOGNITION_REPORT_DEFAULT_FIELD_ORDER
-                    else source_column.get("visible") is not False
-                ),
+                "visible": source_column.get("visible") is not False,
                 "width": bounded_int(source_column.get("width"), int(definition["width"]), 8, 60),
             }
         )

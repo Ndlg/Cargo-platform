@@ -210,7 +210,7 @@ def test_normal_export_requires_a_real_matched_product() -> None:
     ) == [["商品未命中"]]
 
 
-def test_normal_report_always_keeps_all_seven_business_columns() -> None:
+def test_normal_report_can_hide_a_business_column() -> None:
     hidden_columns = [
         {"key": "product_name", "label": "商品", "visible": True},
         {"key": "sales_attr1", "label": "销售属性1", "visible": True},
@@ -228,7 +228,20 @@ def test_normal_report_always_keeps_all_seven_business_columns() -> None:
         "销售属性2",
         "数量",
         "备注",
-        "图片匹配文本",
+    ]
+
+    row = {
+        "status": "matched",
+        "product_id": 1,
+        "product_name": "鞋款A",
+        "sales_attr1_text": "黑色",
+        "sales_attr2_text": "42",
+        "quantity_text": "1",
+        "remark_text": "",
+        "image_match_text": "鞋款A 黑色 42",
+    }
+    assert recognition_report_export_rows([row], {"columns": hidden_columns}) == [
+        ["鞋款A", "黑色", "", "42", 1, ""],
     ]
 
 

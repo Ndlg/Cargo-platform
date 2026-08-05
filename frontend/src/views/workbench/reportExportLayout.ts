@@ -209,7 +209,7 @@ export function normalizeReportLayout(raw: Partial<ReportLayout> | null | undefi
     columns.push({
       key,
       label: LEGACY_DEFAULT_LABELS[key]?.includes(rawLabel) ? field.label : rawLabel,
-      visible: true,
+      visible: column.visible !== false,
       width: clampNumber(column.width, field.defaultWidth, 8, 60),
     })
   })
