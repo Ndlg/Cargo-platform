@@ -54,6 +54,9 @@ def test_business_deploy_takes_verified_snapshot_before_recreate() -> None:
     assert "docker volume create cargo-platform-data" not in source
     assert "disable: true" not in source
     assert "http://127.0.0.1:8000/api/v1/health" in source
+    assert "$snapshotArgs = @{" in source
+    assert 'Action = "Backup"' in source
+    assert 'VolumeName = "cargo-platform-data"' in source
 
 
 def test_release_compose_requires_one_version_and_runtime_guards() -> None:

@@ -135,13 +135,13 @@ if ($databaseProbeExitCode -ne 0) {
 }
 
 Write-Host "Creating verified online database snapshot..."
-$snapshotArgs = @(
-    "-Action", "Backup",
-    "-VolumeName", "cargo-platform-data",
-    "-BackendImage", $backendImage
-)
+$snapshotArgs = @{
+    Action = "Backup"
+    VolumeName = "cargo-platform-data"
+    BackendImage = $backendImage
+}
 if (-not [string]::IsNullOrWhiteSpace($BackupDirectory)) {
-    $snapshotArgs += @("-BackupDirectory", $BackupDirectory)
+    $snapshotArgs.BackupDirectory = $BackupDirectory
 }
 $snapshotOutput = & (Join-Path $PSScriptRoot "sqlite_volume_snapshot.ps1") @snapshotArgs
 if ($LASTEXITCODE -ne 0) {
