@@ -2306,9 +2306,10 @@ def enroll_collector(
         collector is None
         or status_payload.get("runtime_status") != "enrollment_pending"
         or expires_at is None
-        or expires_at < datetime.now(timezone.utc)
     ):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid enrollment token.")
+    if expires_at < datetime.now(timezone.utc):
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail="Enrollment token expired.")
 
     collector_identity = clean_optional_text(payload.collector_id) or collector.collector_id
     if not collector_identity_is_available(

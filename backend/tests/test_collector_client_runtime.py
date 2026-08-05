@@ -37,6 +37,7 @@ if str(COLLECTOR_CLIENT_PATH) not in sys.path:
 import client as collector_client  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from openpyxl import load_workbook  # noqa: E402
+import pytest  # noqa: E402
 
 from app.api.routes import collector_runtime as collector_runtime_route  # noqa: E402
 from app.main import app  # noqa: E402
@@ -248,18 +249,50 @@ def test_collector_status_does_not_revoke_stale_collector_credentials() -> None:
             assert collector.token_hash == expected_token_hash
 
 
-def test_connection_code_uses_compact_versioned_urlsafe_payload() -> None:
+@pytest.mark.parametrize(
+    ("base_url", "expected_origin"),
+    [
+        ("http://10.0.0.5:5173/", "http://10.0.0.5:5173"),
+        ("https://collector.example.com", "https://collector.example.com"),
+        ("http://[2001:db8::1]:8010/", "http://[2001:db8::1]:8010"),
+    ],
+)
+def test_connection_code_uses_compact_versioned_urlsafe_origin_payload(
+    base_url: str,
+    expected_origin: str,
+) -> None:
     from app.services.collector_enrollment import build_connection_code
 
-    connection_code = build_connection_code("http://10.0.0.5:5173", "one-time-token")
+    connection_code = build_connection_code(base_url, "one-time-token")
 
     assert connection_code.startswith("CP1.")
     assert "=" not in connection_code
     assert decode_connection_code(connection_code) == {
         "v": 1,
-        "base_url": "http://10.0.0.5:5173",
+        "base_url": expected_origin,
         "token": "one-time-token",
     }
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "ftp://collector.example.com",
+        "https://",
+        "https://user@collector.example.com",
+        "https://user:password@collector.example.com",
+        "https://collector.example.com:invalid",
+        "https://collector.example.com:65536",
+        "https://collector.example.com/api",
+        "https://collector.example.com?next=https://evil.example",
+        "https://collector.example.com#fragment",
+    ],
+)
+def test_connection_code_rejects_non_origin_public_base_urls(base_url: str) -> None:
+    from app.services.collector_enrollment import build_connection_code
+
+    with pytest.raises(ValueError):
+        build_connection_code(base_url, "one-time-token")
 
 
 def test_connection_code_enrollment_is_single_use_and_heartbeats_with_rotated_token() -> None:
@@ -357,7 +390,7 @@ def test_enrollment_expiry_rejects_exchange_without_rotating_stored_credential()
                 "source_machine": "expired-enrollment-machine",
             },
         )
-        assert enrollment.status_code == 401
+        assert enrollment.status_code == 410
 
         with SessionLocal() as db:
             collector = db.get(Collector, collector_id)
