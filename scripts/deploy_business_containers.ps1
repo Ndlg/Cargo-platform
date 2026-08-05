@@ -118,39 +118,37 @@ foreach ($service in $previousImages.Keys) {
 
 $snapshotRecord = $null
 & docker volume inspect cargo-platform-data *> $null
-if ($LASTEXITCODE -eq 0) {
-    & docker run --rm --entrypoint python `
-        --mount "type=volume,src=cargo-platform-data,dst=/data,readonly" `
-        $backendImage `
-        -c "import os; raise SystemExit(0 if os.path.isfile('/data/cargo-platform.db') else 3)"
-    $databaseProbeExitCode = $LASTEXITCODE
-    if ($databaseProbeExitCode -eq 0) {
-        Write-Host "Creating verified online database snapshot..."
-        $snapshotArgs = @(
-            "-Action", "Backup",
-            "-VolumeName", "cargo-platform-data",
-            "-BackendImage", $backendImage
-        )
-        if (-not [string]::IsNullOrWhiteSpace($BackupDirectory)) {
-            $snapshotArgs += @("-BackupDirectory", $BackupDirectory)
-        }
-        $snapshotOutput = & (Join-Path $PSScriptRoot "sqlite_volume_snapshot.ps1") @snapshotArgs
-        if ($LASTEXITCODE -ne 0) {
-            throw "Verified database snapshot failed; containers were not recreated."
-        }
-        $snapshotRecord = $snapshotOutput | Select-Object -Last 1 | ConvertFrom-Json
-        Write-Host ($snapshotRecord | ConvertTo-Json -Compress)
-    }
-    elseif ($databaseProbeExitCode -ne 3) {
-        throw "Failed to inspect the existing release database."
-    }
+if ($LASTEXITCODE -ne 0) {
+    throw "Production data volume cargo-platform-data does not exist; refusing deployment."
 }
-else {
-    & docker volume create cargo-platform-data | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to create the external data volume."
-    }
+
+& docker run --rm --entrypoint python `
+    --mount "type=volume,src=cargo-platform-data,dst=/data,readonly" `
+    $backendImage `
+    -c "import os; raise SystemExit(0 if os.path.isfile('/data/cargo-platform.db') else 3)"
+$databaseProbeExitCode = $LASTEXITCODE
+if ($databaseProbeExitCode -eq 3) {
+    throw "Production database cargo-platform.db does not exist; refusing deployment."
 }
+if ($databaseProbeExitCode -ne 0) {
+    throw "Failed to inspect the existing release database."
+}
+
+Write-Host "Creating verified online database snapshot..."
+$snapshotArgs = @(
+    "-Action", "Backup",
+    "-VolumeName", "cargo-platform-data",
+    "-BackendImage", $backendImage
+)
+if (-not [string]::IsNullOrWhiteSpace($BackupDirectory)) {
+    $snapshotArgs += @("-BackupDirectory", $BackupDirectory)
+}
+$snapshotOutput = & (Join-Path $PSScriptRoot "sqlite_volume_snapshot.ps1") @snapshotArgs
+if ($LASTEXITCODE -ne 0) {
+    throw "Verified database snapshot failed; containers were not recreated."
+}
+$snapshotRecord = $snapshotOutput | Select-Object -Last 1 | ConvertFrom-Json
+Write-Host ($snapshotRecord | ConvertTo-Json -Compress)
 
 $deploymentManifest = [ordered]@{
     created_at = (Get-Date).ToUniversalTime().ToString("o")
