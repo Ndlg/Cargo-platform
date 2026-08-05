@@ -222,7 +222,10 @@ import sqlite3
 import tempfile
 import urllib.request
 
-database = sqlite3.connect("/data/cargo-platform.db")
+database_path = Path("/data/cargo-platform.db")
+if not database_path.is_file():
+    raise RuntimeError("production database is missing")
+database = sqlite3.connect("file:/data/cargo-platform.db?mode=ro", uri=True)
 if database.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
     raise RuntimeError("database integrity check failed")
 database.execute("SELECT count(*) FROM users").fetchone()

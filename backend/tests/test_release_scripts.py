@@ -44,6 +44,8 @@ def test_business_deploy_takes_verified_snapshot_before_recreate() -> None:
     assert "Existing release is incomplete" in source
     assert "rollback verification failed" in source
     assert "PRAGMA integrity_check" in source
+    assert "file:/data/cargo-platform.db?mode=ro" in source
+    assert "database_path.is_file()" in source
     assert "NamedTemporaryFile" in source
     assert "http://waybill-parser:8010/health" in source
     assert "Rollback readiness verification failed" in source
