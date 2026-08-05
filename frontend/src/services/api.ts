@@ -983,10 +983,10 @@ export function deleteArchivedCaptureData(payload: {
   })
 }
 
-export async function downloadCollectorClientZip(): Promise<void> {
+export async function downloadCollectorClientExe(): Promise<void> {
   const token = localStorage.getItem('cargo-platform-token')
   const workspaceId = getCurrentWorkspaceId()
-  const response = await fetch(`${API_BASE_URL}/collector-client/download`, {
+  const response = await fetch(`${API_BASE_URL}/collector-client/download?mode=exe`, {
     headers: {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(workspaceId ? { 'X-Workspace-Id': String(workspaceId) } : {}),
@@ -1004,7 +1004,7 @@ export async function downloadCollectorClientZip(): Promise<void> {
   link.href = url
   link.download = filenameFromDisposition(
     response.headers.get('Content-Disposition'),
-    '订单整理系统采集器.zip',
+    'Cargo Platform 采集器.exe',
   )
   document.body.appendChild(link)
   link.click()

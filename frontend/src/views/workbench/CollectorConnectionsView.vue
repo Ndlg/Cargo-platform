@@ -5,7 +5,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 
 import {
   deleteRecord,
-  downloadCollectorClientZip,
+  downloadCollectorClientExe,
   getCollectorControlStatus,
   repairCollectorConnection,
   registerCollector,
@@ -202,7 +202,7 @@ async function downloadCollectorClient() {
   downloadingClient.value = true
   error.value = ''
   try {
-    await downloadCollectorClientZip()
+    await downloadCollectorClientExe()
     ElMessage.success('采集器下载已开始')
   } catch (err) {
     error.value = err instanceof Error ? err.message : '采集器下载失败'

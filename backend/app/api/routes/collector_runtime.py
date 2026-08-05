@@ -271,56 +271,15 @@ def write_collector_client_version(zip_file: ZipFile, manifest: dict[str, Any], 
 
 def collector_client_parameter_guide() -> str:
     return (
-        "Cargo Platform 采集器参数说明\n"
+        "Cargo Platform 采集器安装说明\n"
         "\n"
         "文件：Cargo Platform 采集器.exe\n"
         "\n"
-        "复制前只需要替换两处：\n"
-        "1. <TOKEN> 换成网页后台生成的采集器 token。\n"
-        "2. <服务器地址> 换成系统访问地址，例如 http://服务器IP:5173；不要填写 8000 端口。\n"
+        "1. 双击 Cargo Platform 采集器.exe。\n"
+        "2. 在安装器中粘贴管理页面生成的 CP1 连接码。\n"
+        "3. 等待安装器提示登记完成。\n"
         "\n"
-        "常用启动方式：\n"
-        "\n"
-        "1. 正式后台监听（最常用）\n"
-        "\"Cargo Platform 采集器.exe\" --base-url \"<服务器地址>\" --token \"<TOKEN>\" --collector-name \"%COMPUTERNAME%\" --loop\n"
-        "\n"
-        "2. 指定后台显示名称（正常 CMD 中建议直接使用本机机器名）\n"
-        "\"Cargo Platform 采集器.exe\" --base-url \"<服务器地址>\" --token \"<TOKEN>\" --collector-name \"%COMPUTERNAME%\" --loop\n"
-        "\n"
-        "3. 先保存配置，再后台启动（后续启动命令最短）\n"
-        "\"Cargo Platform 采集器.exe\" --base-url \"<服务器地址>\" --token \"<TOKEN>\" --collector-name \"%COMPUTERNAME%\" --save-config\n"
-        "\"Cargo Platform 采集器.exe\" --loop\n"
-        "\n"
-        "4. 指定日志文件位置\n"
-        "\"Cargo Platform 采集器.exe\" --base-url \"<服务器地址>\" --token \"<TOKEN>\" --collector-name \"%COMPUTERNAME%\" --loop --log-file \"%LOCALAPPDATA%\\CargoPlatformCollector\\collector.log\"\n"
-        "\n"
-        "5. 只检查连接和本机打印组件，不持续监听\n"
-        "\"Cargo Platform 采集器.exe\" --base-url \"<服务器地址>\" --token \"<TOKEN>\" --collector-name \"%COMPUTERNAME%\" --check --log-file \"%LOCALAPPDATA%\\CargoPlatformCollector\\collector-check.log\"\n"
-        "\n"
-        "常用参数：\n"
-        "--base-url        系统访问地址；不要填写 8000 端口。例如 http://服务器IP:5173。\n"
-        "--token           后台生成的采集器 token，必填。业务机不再输入系统账号密码。\n"
-        "--loop            持续后台监听；服务器断开或重启时不会退出，会继续等待恢复。\n"
-        "--collector-name  后台显示名称；留空或使用旧默认名时，系统会自动改成本机 Windows 机器名。\n"
-        "--interval        心跳和采集轮询间隔，默认 3 秒。\n"
-        "--config          可选配置文件路径，默认保存在当前 Windows 用户的 LocalAppData。\n"
-        "--state           可选状态文件路径，默认和配置文件同目录。\n"
-        "--log-file        可选日志文件路径，默认和配置文件同目录 collector.log。\n"
-        "--save-config     保存当前 base-url/token/名称等配置后退出；以后可直接用 \"Cargo Platform 采集器.exe\" --loop。\n"
-        "--check           检查本机打印组件和服务器心跳后退出；不进入持续监听。\n"
-        "\n"
-        "设备标识说明：\n"
-        "用户不需要填写设备标识。采集器会自动读取业务机 Windows 机器名作为设备标识并上传。\n"
-        "\n"
-        "后台运行说明：\n"
-        "这个 exe 是无控制台窗口版本，按参数启动后不会弹黑框。日志默认写入：\n"
-        "%LOCALAPPDATA%\\CargoPlatformCollector\\collector.log\n"
-        "\n"
-        "不要使用的旧方式：\n"
-        "不要在业务机运行 Python，不要用 bat/vbs，不要输入系统账号密码，不要填写后端 8000 端口。\n"
-        "\n"
-        "token 失效时：\n"
-        "在系统后台移除旧采集器并重新生成 token，再用同一条启动命令替换 token。不要在业务机保存或输入系统登录密码。\n"
+        "连接码仅用于本次登记；不要在业务机输入或保存系统账号密码。\n"
     )
 
 
@@ -2249,6 +2208,19 @@ def download_collector_client(
     mode: str = Query(default="cli", pattern="^(cli|script|exe)$"),
     _current_user: CurrentUser = Depends(get_current_user),
 ) -> Response:
+    if mode == "exe":
+        exe_path, _, _ = require_collector_client_release(collector_client_source_dir())
+        content = exe_path.read_bytes()
+        filename = quote("Cargo Platform 采集器.exe")
+        return Response(
+            content=content,
+            media_type="application/vnd.microsoft.portable-executable",
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{filename}",
+                "Content-Length": str(len(content)),
+            },
+        )
+
     archive = build_collector_client_archive(mode)
     content = archive.getvalue()
     filename = quote("订单整理系统采集器.zip")

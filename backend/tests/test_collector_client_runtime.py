@@ -1390,20 +1390,47 @@ def test_collector_client_download_contains_single_exe_package(tmp_path, monkeyp
             assert "token-only" in version_text
 
             guide_text = archive.read("Cargo Platform 采集器/参数说明.txt").decode("utf-8")
-            assert '"Cargo Platform 采集器.exe" --base-url' in guide_text
-            assert '--collector-name "%COMPUTERNAME%"' in guide_text
-            assert "业务机不再输入系统账号密码" in guide_text
-            assert "不要填写 8000 端口" in guide_text
+            assert "双击" in guide_text
+            assert "CP1" in guide_text
+            assert "--token" not in guide_text
+            assert "--base-url" not in guide_text
+            assert "<TOKEN>" not in guide_text
 
 
-def test_collector_client_download_rejects_hash_mismatch(tmp_path, monkeypatch) -> None:
+def test_collector_client_download_exe_returns_validated_executable(tmp_path, monkeypatch) -> None:
+    source_dir = tmp_path / "collector-client"
+    exe_content = b"MZcollector installer stub"
+    write_test_collector_release(source_dir, exe_content=exe_content)
+    monkeypatch.setattr(collector_runtime_route, "collector_client_source_dir", lambda: source_dir)
+
+    with TestClient(app) as client:
+        headers = login_headers(client)
+        response = client.get(
+            "/api/v1/collector-client/download?mode=exe",
+            headers=headers,
+        )
+
+    assert response.status_code == 200
+    assert response.content == exe_content
+    assert response.headers["content-type"] == "application/vnd.microsoft.portable-executable"
+    assert response.headers["content-length"] == str(len(exe_content))
+    assert "Cargo%20Platform%20%E9%87%87%E9%9B%86%E5%99%A8.exe" in response.headers[
+        "content-disposition"
+    ]
+
+
+@pytest.mark.parametrize("mode", ["cli", "exe"])
+def test_collector_client_download_rejects_hash_mismatch(tmp_path, monkeypatch, mode: str) -> None:
     source_dir = tmp_path / "collector-client"
     write_test_collector_release(source_dir, sha256="0" * 64)
     monkeypatch.setattr(collector_runtime_route, "collector_client_source_dir", lambda: source_dir)
 
     with TestClient(app) as client:
         headers = login_headers(client)
-        response = client.get("/api/v1/collector-client/download", headers=headers)
+        response = client.get(
+            f"/api/v1/collector-client/download?mode={mode}",
+            headers=headers,
+        )
 
     assert response.status_code == 503
     assert "SHA-256" in response.json()["detail"]
