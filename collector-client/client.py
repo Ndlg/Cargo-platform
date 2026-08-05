@@ -19,6 +19,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+import windows_host
+
 try:
     from collector_build_info import CLIENT_VERSION
 except ModuleNotFoundError:
@@ -224,9 +226,12 @@ class CollectorConfig:
         payload = read_json(path)
         if not payload:
             return cls()
+        token = str(payload.get("token") or "")
+        if token.startswith("dpapi:"):
+            token = windows_host.unprotect_secret(token)
         return cls(
             base_url=normalize_base_url(str(payload.get("base_url") or DEFAULT_BASE_URL)),
-            token=str(payload.get("token") or ""),
+            token=token,
             workspace_id=int(payload["workspace_id"]) if payload.get("workspace_id") else None,
             collector_id=str(payload.get("collector_id") or default_collector_id()),
             collector_name=normalize_collector_name(payload.get("collector_name")),
@@ -266,7 +271,10 @@ class CollectorConfig:
         }
 
     def save(self, path: Path) -> None:
-        write_json(path, self.to_dict())
+        payload = self.to_dict()
+        if self.token and windows_host.is_machine_config_path(path):
+            payload["token"] = windows_host.protect_secret(self.token)
+        write_json(path, payload)
 
 
 @dataclass(frozen=True)
@@ -1562,14 +1570,74 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--check", action="store_true", help="Check local adapters and server heartbeat, then exit.")
     parser.add_argument("--log-file", default="", help="Log file path. Default: config directory collector.log.")
     parser.add_argument("--no-log-file", action="store_true", help="Only log to the console.")
+    parser.add_argument("--install-code-file", default="", help="Install using a CP1 connection-code file.")
+    parser.add_argument("--install-existing", action="store_true", help="Install and copy existing per-user state.")
+    parser.add_argument("--managed-run", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--uninstall", action="store_true", help="Uninstall the managed collector.")
+    parser.add_argument("--quiet", action="store_true", help="Suppress setup dialogs.")
     return parser
 
 
+def show_setup_ui() -> int:
+    import tkinter as tk
+    from tkinter import messagebox
+
+    root = tk.Tk()
+    root.title("Cargo Platform 采集器安装")
+    root.resizable(False, False)
+    tk.Label(root, text="粘贴连接码：").pack(anchor="w", padx=16, pady=(16, 4))
+    code = tk.Entry(root, width=64)
+    code.pack(fill="x", padx=16)
+    status = tk.StringVar(value="等待安装")
+    tk.Label(root, textvariable=status).pack(anchor="w", padx=16, pady=8)
+
+    def install() -> None:
+        value = code.get().strip()
+        if not value:
+            messagebox.showerror("安装失败", "请输入连接码")
+            return
+        status.set("正在安装…")
+        root.update_idletasks()
+        result = windows_host.install_collector(
+            windows_host.current_executable(),
+            connection_code=value,
+            migrate_existing=True,
+        )
+        status.set(result.message)
+        (messagebox.showinfo if result.success else messagebox.showerror)("采集器安装", result.message)
+
+    tk.Button(root, text="安装", command=install, width=16).pack(pady=(0, 16))
+    root.mainloop()
+    return 0
+
+
 def main() -> int:
+    if len(sys.argv) == 1:
+        return show_setup_ui()
     parser = build_parser()
     args = parser.parse_args()
 
-    config_path = Path(args.config)
+    if args.uninstall:
+        result = windows_host.uninstall_collector()
+        if not args.quiet:
+            print(result.message)
+        return 0 if result.success else 1
+
+    if args.install_code_file or args.install_existing:
+        connection_code = None
+        if args.install_code_file:
+            connection_code = Path(args.install_code_file).read_text(encoding="utf-8-sig").strip()
+        result = windows_host.install_collector(
+            windows_host.current_executable(),
+            connection_code=connection_code,
+            migrate_existing=args.install_existing,
+        )
+        if not args.quiet:
+            print(result.message)
+        return 0 if result.success else 1
+
+    managed_paths = windows_host.machine_paths() if args.managed_run else None
+    config_path = managed_paths.config_path if managed_paths else Path(args.config)
     state_path = Path(args.state) if args.state else default_state_path(config_path)
     existing_config = CollectorConfig.load(config_path)
     config = existing_config.apply_args(args)
@@ -1617,7 +1685,7 @@ def main() -> int:
             finally:
                 save_state_safely(state, state_path, reconnect_notice)
 
-            if not args.loop:
+            if not (args.loop or args.managed_run):
                 break
             sequence += 1
             time.sleep(config.interval)

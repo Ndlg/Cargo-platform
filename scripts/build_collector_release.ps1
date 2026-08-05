@@ -25,6 +25,7 @@ $ManifestPath = Join-Path $DistDir "collector-manifest.json"
 $IconPath = Join-Path $CollectorDir "assets\cargo-platform-collector.ico"
 $LockPath = Join-Path $CollectorDir "requirements-build.lock"
 $ClientPath = Join-Path $CollectorDir "client.py"
+$WindowsHostPath = Join-Path $CollectorDir "windows_host.py"
 $RequiredPythonVersion = "3.12.13"
 
 function Resolve-BasePython {
@@ -66,7 +67,7 @@ function Invoke-Checked {
   }
 }
 
-foreach ($requiredPath in @($IconPath, $LockPath, $ClientPath)) {
+foreach ($requiredPath in @($IconPath, $LockPath, $ClientPath, $WindowsHostPath)) {
   if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
     throw "Required collector build input was not found: $requiredPath"
   }
@@ -113,6 +114,7 @@ Invoke-Checked $BuildPython -m PyInstaller `
   --specpath $SpecDir `
   --paths $GeneratedDir `
   --hidden-import collector_build_info `
+  --hidden-import windows_host `
   $ClientPath
 
 if (-not (Test-Path -LiteralPath $ExePath -PathType Leaf)) {
