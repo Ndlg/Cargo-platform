@@ -210,6 +210,145 @@ def test_failed_install_restores_previous_exe_config_and_state(monkeypatch, tmp_
     assert json.loads(paths.state_path.read_text(encoding="utf-8"))["idle_watermarks"]["printer"] == 88
 
 
+def test_failed_install_preserves_rotated_connection_credential(monkeypatch, tmp_path) -> None:
+    paths = paths_for(tmp_path)
+    source_exe = tmp_path / "release.exe"
+    source_exe.write_bytes(b"MZnew collector")
+    paths.exe_path.parent.mkdir(parents=True)
+    paths.exe_path.write_bytes(b"MZold collector")
+    write_json(paths.config_path, {"base_url": "http://old/api/v1", "token": "old-token"})
+    write_json(paths.state_path, {"idle_watermarks": {"printer": 88}})
+    monkeypatch.setattr(windows_host, "machine_paths", lambda: paths)
+    monkeypatch.setattr(windows_host, "protect_secret", lambda value: f"dpapi:cipher-{value}")
+    monkeypatch.setattr(
+        windows_host,
+        "exchange_connection_code",
+        lambda _code: ("http://new/api/v1", "new-token"),
+    )
+
+    def failing_health_runner(command, **_kwargs):
+        if str(command[0]).lower().endswith(".exe") and "--check" in command:
+            raise subprocess.CalledProcessError(1, command)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    result = windows_host.install_collector(
+        source_exe,
+        connection_code="CP1.code",
+        runner=failing_health_runner,
+    )
+
+    config = json.loads(paths.config_path.read_text(encoding="utf-8"))
+    assert result.success is False
+    assert result.rolled_back is True
+    assert config["base_url"] == "http://new/api/v1"
+    assert config["token"] == "dpapi:cipher-new-token"
+    assert json.loads(paths.state_path.read_text(encoding="utf-8"))["idle_watermarks"]["printer"] == 88
+
+
+def test_failed_install_restores_and_restarts_previous_task(monkeypatch, tmp_path) -> None:
+    paths = paths_for(tmp_path)
+    source_exe = tmp_path / "release.exe"
+    source_exe.write_bytes(b"MZnew collector")
+    paths.exe_path.parent.mkdir(parents=True)
+    paths.exe_path.write_bytes(b"MZold collector")
+    write_json(paths.config_path, {"base_url": "http://old", "token": "old-token"})
+    monkeypatch.setattr(windows_host, "machine_paths", lambda: paths)
+    monkeypatch.setattr(windows_host, "protect_secret", lambda _value: "dpapi:cipher")
+    commands: list[list[str]] = []
+
+    def runner(command, **_kwargs):
+        command = [str(part) for part in command]
+        commands.append(command)
+        if command[:3] == ["schtasks.exe", "/Query", "/TN"]:
+            return subprocess.CompletedProcess(command, 0, stdout="<Task />", stderr="")
+        if command[0].lower().endswith(".exe") and "--check" in command:
+            raise subprocess.CalledProcessError(1, command)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    result = windows_host.install_collector(source_exe, runner=runner)
+
+    assert result.rolled_back is True
+    assert commands[-1] == ["schtasks.exe", "/Run", "/TN", "CargoPlatformCollector"]
+
+
+def test_failed_install_reports_incomplete_rollback_when_previous_task_will_not_restart(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    paths = paths_for(tmp_path)
+    source_exe = tmp_path / "release.exe"
+    source_exe.write_bytes(b"MZnew collector")
+    write_json(paths.config_path, {"base_url": "http://old", "token": "old-token"})
+    monkeypatch.setattr(windows_host, "machine_paths", lambda: paths)
+    monkeypatch.setattr(windows_host, "protect_secret", lambda _value: "dpapi:cipher")
+
+    def runner(command, **_kwargs):
+        command = [str(part) for part in command]
+        if command[:3] == ["schtasks.exe", "/Query", "/TN"]:
+            return subprocess.CompletedProcess(command, 0, stdout="<Task />", stderr="")
+        if command[0].lower().endswith(".exe") and "--check" in command:
+            raise subprocess.CalledProcessError(1, command)
+        if command[:2] == ["schtasks.exe", "/Run"]:
+            raise subprocess.CalledProcessError(1, command)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    result = windows_host.install_collector(source_exe, runner=runner)
+
+    assert result.success is False
+    assert result.rolled_back is False
+    assert "回滚失败" in result.message
+
+
+def test_install_stops_task_before_snapshotting_state(monkeypatch, tmp_path) -> None:
+    paths = paths_for(tmp_path)
+    source_exe = tmp_path / "release.exe"
+    source_exe.write_bytes(b"MZcollector")
+    write_json(paths.config_path, {"base_url": "http://server", "token": "device-token"})
+    monkeypatch.setattr(windows_host, "machine_paths", lambda: paths)
+    monkeypatch.setattr(windows_host, "protect_secret", lambda _value: "dpapi:cipher")
+    events: list[str] = []
+    real_snapshot = windows_host._snapshot_files
+
+    def snapshot(*args, **kwargs):
+        events.append("snapshot")
+        return real_snapshot(*args, **kwargs)
+
+    def runner(command, **_kwargs):
+        command = [str(part) for part in command]
+        if command[:2] == ["schtasks.exe", "/End"]:
+            events.append("end")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(windows_host, "_snapshot_files", snapshot)
+
+    result = windows_host.install_collector(source_exe, runner=runner)
+
+    assert result.success is True
+    assert events.index("end") < events.index("snapshot")
+
+
+def test_successful_install_encrypts_config_in_every_backup(monkeypatch, tmp_path) -> None:
+    paths = paths_for(tmp_path)
+    source_exe = tmp_path / "release.exe"
+    source_exe.write_bytes(b"MZcollector")
+    write_json(paths.config_path, {"base_url": "http://server", "token": "plain-secret"})
+    monkeypatch.setattr(windows_host, "machine_paths", lambda: paths)
+    monkeypatch.setattr(windows_host, "protect_secret", lambda _value: "dpapi:ciphertext")
+
+    def runner(command, **_kwargs):
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    result = windows_host.install_collector(source_exe, migrate_existing=True, runner=runner)
+
+    assert result.success is True
+    configs = list((paths.data_dir / "backups").rglob("collector-config.json"))
+    assert configs
+    assert all(
+        json.loads(path.read_text(encoding="utf-8"))["token"] == "dpapi:ciphertext"
+        for path in configs
+    )
+
+
 def test_install_registers_and_starts_only_named_managed_task(monkeypatch, tmp_path) -> None:
     paths = paths_for(tmp_path)
     source_exe = tmp_path / "release.exe"

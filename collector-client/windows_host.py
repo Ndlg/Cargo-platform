@@ -154,6 +154,24 @@ def _atomic_write_json(path: Path, payload: dict[str, object]) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _atomic_write_bytes(path: Path, content: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_bytes(content)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _protect_config_copy(path: Path) -> None:
+    payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    token = str(payload.get("token") or "")
+    if token and not token.startswith("dpapi:"):
+        payload["token"] = protect_secret(token)
+        _atomic_write_json(path, payload)
+
+
 def _backup_directory(data_dir: Path, prefix: str) -> Path:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
     path = data_dir / "backups" / f"{prefix}-{stamp}"
@@ -175,6 +193,8 @@ def migrate_legacy_home(paths: WindowsCollectorPaths) -> MigrationResult:
         if not source.is_file():
             continue
         _atomic_copy(source, backup_path / name)
+        if name == "collector-config.json":
+            _protect_config_copy(backup_path / name)
         if destination.exists():
             skipped.append(name)
             continue
@@ -250,6 +270,8 @@ def _snapshot_files(paths: WindowsCollectorPaths, backup_path: Path) -> dict[Pat
         if path.exists():
             backup = backup_path / path.name
             _atomic_copy(path, backup)
+            if path == paths.config_path:
+                _protect_config_copy(backup)
             snapshots[path] = backup
         else:
             snapshots[path] = None
@@ -278,17 +300,22 @@ def install_collector(
             raise ValueError("采集器安装包不是有效的 Windows EXE")
     paths = machine_paths()
     backup_path = _backup_directory(paths.data_dir, "install")
-    snapshots = _snapshot_files(paths, backup_path)
     task_backup = backup_path / "scheduled-task.xml"
-    try:
-        queried = _run(runner, ["schtasks.exe", "/Query", "/TN", TASK_NAME, "/XML"], check=False)
-        if getattr(queried, "returncode", 1) == 0 and str(getattr(queried, "stdout", "")).strip():
-            task_backup.write_text(str(queried.stdout), encoding="utf-16")
-    except Exception:
-        pass
+    queried = _run(runner, ["schtasks.exe", "/Query", "/TN", TASK_NAME, "/XML"], check=False)
+    task_existed = (
+        getattr(queried, "returncode", 1) == 0
+        and bool(str(getattr(queried, "stdout", "")).strip())
+    )
+    if task_existed:
+        task_backup.write_text(str(queried.stdout), encoding="utf-16")
 
+    snapshots: dict[Path, Path | None] = {}
+    original_config: bytes | None = None
+    rotated_config: dict[str, object] | None = None
     try:
         _run(runner, ["schtasks.exe", "/End", "/TN", TASK_NAME], check=False)
+        original_config = paths.config_path.read_bytes() if paths.config_path.exists() else None
+        snapshots = _snapshot_files(paths, backup_path)
         if migrate_existing:
             migrate_legacy_home(paths)
         if source_exe != paths.exe_path.resolve():
@@ -299,6 +326,7 @@ def install_collector(
             config = json.loads(paths.config_path.read_text(encoding="utf-8-sig"))
         if connection_code:
             config["base_url"], config["token"] = exchange_connection_code(connection_code)
+            rotated_config = dict(config)
         token = str(config.get("token") or "")
         if token.startswith("dpapi:"):
             unprotect_secret(token)
@@ -317,14 +345,24 @@ def install_collector(
     except Exception as exc:
         try:
             _run(runner, ["schtasks.exe", "/End", "/TN", TASK_NAME], check=False)
-            if task_backup.exists():
+            if snapshots:
+                _restore_files(snapshots)
+            if rotated_config is not None:
+                token = str(rotated_config.get("token") or "")
+                if token and not token.startswith("dpapi:"):
+                    rotated_config["token"] = protect_secret(token)
+                _atomic_write_json(paths.config_path, rotated_config)
+            elif original_config is not None:
+                _atomic_write_bytes(paths.config_path, original_config)
+            if task_existed:
                 _run(runner, ["schtasks.exe", "/Create", "/TN", TASK_NAME, "/XML", str(task_backup), "/F"])
+                _run(runner, ["schtasks.exe", "/Run", "/TN", TASK_NAME])
             else:
                 _run(runner, ["schtasks.exe", "/Delete", "/TN", TASK_NAME, "/F"], check=False)
-            _restore_files(snapshots)
         except Exception as rollback_exc:
             return InstallResult(False, False, backup_path, f"安装失败且回滚失败：{exc}; {rollback_exc}")
-        return InstallResult(False, True, backup_path, f"安装失败，已回滚：{exc}")
+        suffix = "；新连接凭据已保留，可重试安装" if rotated_config is not None else ""
+        return InstallResult(False, True, backup_path, f"安装失败，已回滚{suffix}：{exc}")
 
 
 def uninstall_collector(
