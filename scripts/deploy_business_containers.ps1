@@ -214,6 +214,38 @@ catch {
                 throw "Deployment failed and rollback verification failed for service ${service}. Original error: $deploymentError"
             }
         }
+        $rollbackProbe = @'
+import json
+import os
+from pathlib import Path
+import sqlite3
+import tempfile
+import urllib.request
+
+database = sqlite3.connect("/data/cargo-platform.db")
+if database.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+    raise RuntimeError("database integrity check failed")
+database.execute("SELECT count(*) FROM users").fetchone()
+database.execute("SELECT count(*) FROM collectors").fetchone()
+database.close()
+
+storage = Path(os.environ.get("STORAGE_ROOT", "/data/workspaces"))
+storage.mkdir(parents=True, exist_ok=True)
+with tempfile.NamedTemporaryFile(dir=storage, prefix=".rollback-ready-", delete=True) as probe:
+    probe.write(b"ok")
+    probe.flush()
+
+with urllib.request.urlopen("http://waybill-parser:8010/health", timeout=5) as response:
+    parser = json.load(response)
+if parser.get("status") != "ok":
+    raise RuntimeError("parser health check failed")
+'@
+        $rollbackProbeBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($rollbackProbe))
+        & docker exec -e "ROLLBACK_READINESS_PROBE=$rollbackProbeBase64" cargo-platform-backend `
+            python -c "import base64, os; exec(base64.b64decode(os.environ['ROLLBACK_READINESS_PROBE']))"
+        if ($LASTEXITCODE -ne 0) {
+            throw "Rollback readiness verification failed. Original error: $deploymentError"
+        }
     }
     else {
         & docker compose @composeFiles down --remove-orphans

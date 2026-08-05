@@ -43,6 +43,10 @@ def test_business_deploy_takes_verified_snapshot_before_recreate() -> None:
     assert "target_image_ids" in source
     assert "Existing release is incomplete" in source
     assert "rollback verification failed" in source
+    assert "PRAGMA integrity_check" in source
+    assert "NamedTemporaryFile" in source
+    assert "http://waybill-parser:8010/health" in source
+    assert "Rollback readiness verification failed" in source
     assert "Production data volume cargo-platform-data does not exist" in source
     assert "Production database cargo-platform.db does not exist" in source
     assert "docker volume create cargo-platform-data" not in source
