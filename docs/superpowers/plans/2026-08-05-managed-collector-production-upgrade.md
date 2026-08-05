@@ -4,7 +4,7 @@
 
 **Goal:** Ship a one-code Windows managed collector, upgrade the 5173 production stack to the validated 6173 protocol-v2 baseline, upgrade all three business-machine collectors, and remove obsolete collector launch paths without losing print events.
 
-**Architecture:** Keep the existing protocol-v2 capture engine and add only the missing lifecycle shell. The backend issues single-use enrollment codes and never revokes stale collectors automatically; one PyInstaller EXE installs itself machine-wide, protects the device token with DPAPI, and registers a SYSTEM startup task. Production is upgraded server-first for backward compatibility, then collectors are upgraded one at a time with machine-local rollback backups.
+**Architecture:** Keep the existing protocol-v2 capture engine and add only the missing lifecycle shell. The backend issues single-use enrollment codes and never revokes stale collectors automatically; one PyInstaller EXE installs itself for the current business user, protects the device token with DPAPI, and registers a hidden logon task with restart-on-failure. Production is upgraded server-first for backward compatibility, then collectors are upgraded one at a time with local rollback backups.
 
 **Tech Stack:** FastAPI, SQLAlchemy, Vue 3/TypeScript/Element Plus, Python 3.12 stdlib, PyInstaller, Windows DPAPI via `ctypes`, Windows Task Scheduler via `schtasks.exe`, Docker Compose, SQLite online backup.
 
@@ -18,6 +18,7 @@
 - Back up each machine's EXE, config, state, logs, scheduled-task XML, startup entries, and hashes before replacement.
 - Use npm/package-lock for frontend and `scripts/backend_test.ps1` for backend tests.
 - No MSI, Windows Service wrapper, third-party updater, PowerShell startup script, or new runtime dependency.
+- Do not require administrator credentials: the three field accounts are standard users and their print clients run only after logon.
 - All code changes follow red-green-refactor; each deployment checkpoint is independently reversible.
 
 ---
@@ -112,7 +113,7 @@ git add backend/app/services/collector_enrollment.py backend/app/api/routes/coll
 git commit -m "feat: add one-time collector enrollment"
 ```
 
-### Task 3: Add protected Windows configuration and machine-wide migration
+### Task 3: Add protected Windows configuration and per-user migration
 
 **Files:**
 - Create: `collector-client/windows_host.py`
@@ -121,8 +122,8 @@ git commit -m "feat: add one-time collector enrollment"
 
 **Interfaces:**
 - Produces: `decode_connection_code(code: str) -> tuple[str, str]`.
-- Produces: `protect_secret(value: str) -> str` and `unprotect_secret(value: str) -> str` using DPAPI machine scope on Windows.
-- Produces: `machine_paths() -> WindowsCollectorPaths` for Program Files/ProgramData locations.
+- Produces: `protect_secret(value: str) -> str` and `unprotect_secret(value: str) -> str` using current-user DPAPI on Windows.
+- Produces: `managed_paths() -> WindowsCollectorPaths` for the stable `%LOCALAPPDATA%\CargoPlatformCollector` location.
 - Produces: `migrate_legacy_home(paths) -> MigrationResult` that copies, never deletes, legacy state.
 
 - [ ] **Step 1: Write failing tests for decoding, malformed codes, protected round-trip, and migration preservation**
@@ -132,15 +133,15 @@ def test_connection_code_decoder_rejects_wrong_prefix() -> None:
     with pytest.raises(ValueError, match="连接码"):
         windows_host.decode_connection_code("TOKEN abc")
 
-def test_legacy_state_migration_never_overwrites_newer_machine_state(tmp_path) -> None:
+def test_legacy_state_migration_never_overwrites_newer_managed_state(tmp_path) -> None:
     legacy = write_state(tmp_path / "legacy", rowid=41)
-    machine = write_state(tmp_path / "machine", rowid=55)
-    result = windows_host.migrate_legacy_home(paths_for(legacy, machine))
-    assert read_rowid(machine) == 55
+    managed = write_state(tmp_path / "managed", rowid=55)
+    result = windows_host.migrate_legacy_home(paths_for(legacy, managed))
+    assert read_rowid(managed) == 55
     assert result.backup_path.exists()
 ```
 
-On Windows, add a real DPAPI round-trip test. On non-Windows, the function must reject machine protection rather than silently storing plaintext.
+On Windows, add a real DPAPI round-trip test. On non-Windows, the function must reject DPAPI protection rather than silently storing plaintext.
 
 - [ ] **Step 2: Run tests and verify the module is missing**
 
@@ -154,7 +155,7 @@ Use `ctypes.windll.crypt32.CryptProtectData`/`CryptUnprotectData`, `CRYPTPROTECT
 
 - [ ] **Step 4: Make `CollectorConfig.load/save` understand `dpapi:` tokens while preserving legacy plaintext reads**
 
-New machine-wide writes must use `dpapi:`. Legacy plaintext is accepted only for migration and rewritten encrypted during install.
+New managed writes must use `dpapi:`. Legacy plaintext is accepted only for migration and rewritten encrypted during install.
 
 - [ ] **Step 5: Run targeted collector tests and commit**
 
@@ -175,16 +176,17 @@ git commit -m "feat: protect managed collector state"
 **Interfaces:**
 - Produces: `install_collector(exe_path, connection_code=None, migrate_existing=False, runner=subprocess.run) -> InstallResult`.
 - Produces: CLI flags `--install-code-file`, `--install-existing`, `--uninstall`, `--managed-run`, and `--quiet`.
-- Produces: task name `CargoPlatformCollector` with SYSTEM boot trigger, `RestartOnFailure=PT1M`, and `MultipleInstancesPolicy=IgnoreNew`.
+- Produces: task name `CargoPlatformCollector` for the current interactive user with a logon trigger, `RestartOnFailure=PT1M`, and `MultipleInstancesPolicy=IgnoreNew`.
 
 - [ ] **Step 1: Write failing tests for task XML, backup-before-replace, rollback, and state preservation**
 
 ```python
 def test_managed_task_restarts_and_forbids_parallel_instances() -> None:
-    xml = windows_host.managed_task_xml(r"C:\Program Files\CargoPlatformCollector\collector.exe")
+    xml = windows_host.managed_task_xml(r"C:\Users\operator\AppData\Local\CargoPlatformCollector\collector.exe", "MACHINE\\operator")
     assert "<RestartOnFailure>" in xml
     assert "<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>" in xml
-    assert "S-1-5-18" in xml
+    assert "<LogonTrigger>" in xml
+    assert "MACHINE\\operator" in xml
 
 def test_failed_install_restores_previous_exe_and_state(tmp_path) -> None:
     result = install_with_failing_health_check(tmp_path)
@@ -199,7 +201,7 @@ Run: `scripts/backend_test.ps1 backend/tests/test_collector_client_runtime.py -k
 
 - [ ] **Step 3: Implement minimal installer**
 
-The installer stops only the named managed task/known collector executable, backs up files and task XML, installs to Program Files, writes ProgramData config, registers and starts the task, then calls the existing `--check`. Any failure restores backups.
+The installer stops only the named managed task/known collector executable, backs up files and task XML, installs to the stable LocalAppData directory, rewrites the legacy plaintext token with current-user DPAPI, registers and starts the task, then calls the existing `--check`. Any failure restores backups.
 
 - [ ] **Step 4: Add default double-click setup UI**
 
@@ -320,7 +322,7 @@ Check 5173/5174 HTTP 200, backend/parser version, image IDs, DB integrity, no ac
 
 **Artifacts:**
 - Local release: verified collector EXE and manifest
-- Remote backup: set `$stamp = Get-Date -Format "yyyyMMdd-HHmmss"` and use `C:\ProgramData\CargoPlatformCollector\rollback\$stamp` on each machine.
+- Remote backup: set `$stamp = Get-Date -Format "yyyyMMdd-HHmmss"` and use `%LOCALAPPDATA%\CargoPlatformCollector\rollback\$stamp` on each machine.
 
 - [ ] **Step 1: Read-only inventory `biz-right`, `biz-middle`, and `biz-left`**
 
@@ -340,7 +342,7 @@ Use the same pre-check, backup, install, health, and rollback gates.
 
 - [ ] **Step 5: Clean obsolete collector launch paths**
 
-After all three are healthy, export and remove only collector-related old task/startup entries. Move old executables/scripts/config copies into the rollback directory; do not delete the new ProgramData state.
+After all three are healthy, export and remove only collector-related old task/startup entries. Move old executables/scripts/config copies into the rollback directory; do not delete the new LocalAppData state.
 
 - [ ] **Step 6: Run production closure checks**
 
