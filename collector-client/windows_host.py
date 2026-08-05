@@ -21,6 +21,7 @@ import urllib.request
 
 TASK_NAME = "CargoPlatformCollector"
 APP_DIR_NAME = "CargoPlatformCollector"
+TRUSTED_UPGRADE_EPOCH = "__trusted_upgrade_pending__"
 
 
 @dataclass(frozen=True)
@@ -203,6 +204,24 @@ def migrate_legacy_home(paths: WindowsCollectorPaths) -> MigrationResult:
     return MigrationResult(backup_path=backup_path, copied=tuple(copied), skipped=tuple(skipped))
 
 
+def mark_trusted_legacy_state(path: Path) -> None:
+    if not path.is_file():
+        return
+    payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    source_epochs = dict(payload.get("source_epochs") or {})
+    components = set(dict(payload.get("idle_watermarks") or {}))
+    components.update(
+        component
+        for key in dict(payload.get("capture_watermarks") or {})
+        if (component := str(key).partition(":")[2])
+    )
+    pending = [component for component in components if component not in source_epochs]
+    if pending:
+        source_epochs.update({component: TRUSTED_UPGRADE_EPOCH for component in pending})
+        payload["source_epochs"] = source_epochs
+        _atomic_write_json(path, payload)
+
+
 def managed_task_xml(exe_path: str | Path) -> str:
     command = html.escape(str(exe_path))
     domain = str(os.environ.get("USERDOMAIN") or "").strip()
@@ -318,6 +337,7 @@ def install_collector(
         snapshots = _snapshot_files(paths, backup_path)
         if migrate_existing:
             migrate_legacy_home(paths)
+            mark_trusted_legacy_state(paths.state_path)
         if source_exe != paths.exe_path.resolve():
             _atomic_copy(source_exe, paths.exe_path)
 

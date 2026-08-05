@@ -690,7 +690,10 @@ class CollectorState:
         self.idle_watermarks[adapter.source_component] = adapter.max_rowid() if rowid is None else rowid
 
     def source_cursor(self, adapter: PrintDbAdapter) -> int | None:
-        if adapter.source_component in self.source_epochs:
+        if (
+            adapter.source_component in self.source_epochs
+            and self.source_epochs[adapter.source_component] != windows_host.TRUSTED_UPGRADE_EPOCH
+        ):
             return self.idle_watermark(adapter)
         suffix = f":{adapter.source_component}"
         legacy = [value for key, value in self.capture_watermarks.items() if key.endswith(suffix)]
@@ -802,6 +805,11 @@ class CollectorState:
     ) -> None:
         component = adapter.source_component
         cursor = self.source_cursor(adapter)
+        trusted_upgrade = (
+            self.source_epochs.get(component) == windows_host.TRUSTED_UPGRADE_EPOCH
+        )
+        if trusted_upgrade:
+            del self.source_epochs[component]
         snapshot = snapshot or adapter.snapshot(cursor or 0, 0)
         if snapshot is None or snapshot.generation is None:
             return
@@ -816,6 +824,39 @@ class CollectorState:
         expected_prefix = self.prefix_fingerprints.get(component)
         expected_origin = self.origin_fingerprints.get(component)
         current_origin = snapshot.origin_fingerprint
+        if trusted_upgrade:
+            trusted_cursor = cursor is not None and cursor >= 0 and cursor <= max_rowid
+            trusted_cursor = bool(
+                trusted_cursor and (cursor == 0 or snapshot.cursor_fingerprint is not None)
+            )
+            trusted_cursor = bool(
+                trusted_cursor
+                and (
+                    not expected_fingerprint
+                    or expected_fingerprint == current_fingerprint
+                )
+                and (not expected_origin or expected_origin == current_origin)
+            )
+            if trusted_cursor:
+                self.idle_watermarks[component] = cursor
+                self.source_epochs[component] = snapshot.logical_epoch()
+                if current_fingerprint:
+                    self.cursor_fingerprints[component] = current_fingerprint
+                else:
+                    self.cursor_fingerprints.pop(component, None)
+                if current_origin:
+                    self.origin_fingerprints[component] = current_origin
+                else:
+                    self.origin_fingerprints.pop(component, None)
+                self.prefix_start_rowids[component] = cursor
+                self.prefix_fingerprints[component] = EMPTY_PREFIX_FINGERPRINT
+                self.ambiguous_replay_until.pop(component, None)
+                self.db_generations[component] = generation
+                self.db_change_tokens[component] = snapshot.change_token
+                if audit_prefix:
+                    self.audited_sources.add(component)
+                return
+            cursor = self.source_cursor(adapter)
         if component not in self.source_epochs:
             has_legacy_cursor = component in self.idle_watermarks or any(
                 key.endswith(f":{component}") for key in self.capture_watermarks
@@ -1378,6 +1419,13 @@ def run_sqlite_once(
     collector_id: str | None = None,
     collector_name: str | None = None,
 ) -> None:
+    configured_components = {adapter.source_component for adapter in adapters}
+    for component, epoch in list(state.source_epochs.items()):
+        if (
+            epoch == windows_host.TRUSTED_UPGRADE_EPOCH
+            and component not in configured_components
+        ):
+            del state.source_epochs[component]
     for adapter in adapters:
         state.sync_db_generation(
             adapter,

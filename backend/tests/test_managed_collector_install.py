@@ -148,6 +148,225 @@ def test_same_directory_migration_only_backs_up_existing_state(tmp_path) -> None
     assert (result.backup_path / "collector-state.json").exists()
 
 
+def test_install_existing_adopts_trusted_legacy_cursor_without_replaying_history(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    paths = paths_for(tmp_path)
+    source_exe = tmp_path / "release.exe"
+    source_exe.write_bytes(b"MZcollector")
+    db_path = tmp_path / "cloud-print.db"
+    with collector_client.sqlite3.connect(db_path) as connection:
+        connection.execute("create table task (taskID text, msg text, time text)")
+        connection.executemany(
+            "insert into task (rowid, taskID, msg, time) values (?, ?, ?, ?)",
+            [
+                (1, "first", '{"task":"first"}', "2026-08-01 10:00:00"),
+                (2885, "uploaded", '{"task":"uploaded"}', "2026-08-05 10:00:00"),
+                (2886, "new", '{"task":"new"}', "2026-08-05 10:01:00"),
+            ],
+        )
+    write_json(paths.config_path, {"base_url": "http://server", "token": "device-token"})
+    write_json(
+        paths.state_path,
+        {
+            "idle_watermarks": {
+                "cainiao-cnprint": 7580,
+                "cloud-print-client": 2885,
+            }
+        },
+    )
+    monkeypatch.setattr(windows_host, "machine_paths", lambda: paths)
+    monkeypatch.setattr(windows_host, "protect_secret", lambda value: f"dpapi:{value}")
+
+    def runner(command, **_kwargs):
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    result = windows_host.install_collector(source_exe, migrate_existing=True, runner=runner)
+    adapter = collector_client.PrintDbAdapter(
+        "cloud-print-client",
+        "CloudPrintClient",
+        db_path,
+    )
+    state = collector_client.CollectorState.load(paths.state_path)
+    state.sync_db_generation(adapter, audit_prefix=True)
+
+    assert result.success is True
+    assert state.source_cursor(adapter) == 2885
+    assert state.pending_count([adapter]) == 1
+    assert state.source_epochs[adapter.source_component]
+    assert state.cursor_fingerprints[adapter.source_component] == adapter.row_fingerprint(2885)
+    assert state.last_reconnect_reason != "source_history_ambiguous"
+
+
+def test_trusted_upgrade_does_not_mark_source_with_existing_epoch(tmp_path) -> None:
+    paths = paths_for(tmp_path)
+    write_json(
+        paths.state_path,
+        {
+            "idle_watermarks": {"cloud-print-client": 2885},
+            "source_epochs": {"cloud-print-client": "established-epoch"},
+        },
+    )
+
+    windows_host.mark_trusted_legacy_state(paths.state_path)
+
+    payload = json.loads(paths.state_path.read_text(encoding="utf-8"))
+    assert payload["source_epochs"] == {"cloud-print-client": "established-epoch"}
+
+
+def test_trusted_upgrade_adopts_capture_only_legacy_cursor(tmp_path) -> None:
+    paths = paths_for(tmp_path)
+    db_path = tmp_path / "cloud-print.db"
+    with collector_client.sqlite3.connect(db_path) as connection:
+        connection.execute("create table task (taskID text, msg text, time text)")
+        connection.executemany(
+            "insert into task (rowid, taskID, msg, time) values (?, ?, ?, ?)",
+            [
+                (1, "first", '{"task":"first"}', "2026-08-01 10:00:00"),
+                (2885, "uploaded", '{"task":"uploaded"}', "2026-08-05 10:00:00"),
+                (2886, "new", '{"task":"new"}', "2026-08-05 10:01:00"),
+            ],
+        )
+    write_json(
+        paths.state_path,
+        {"capture_watermarks": {"58:cloud-print-client": 2885}},
+    )
+    windows_host.mark_trusted_legacy_state(paths.state_path)
+    adapter = collector_client.PrintDbAdapter("cloud-print-client", "CloudPrintClient", db_path)
+    state = collector_client.CollectorState.load(paths.state_path)
+
+    state.sync_db_generation(adapter, audit_prefix=True)
+
+    assert state.source_cursor(adapter) == 2885
+    assert state.pending_count([adapter]) == 1
+    assert state.source_epochs[adapter.source_component] != windows_host.TRUSTED_UPGRADE_EPOCH
+    assert state.last_reconnect_reason != "source_history_ambiguous"
+
+
+def test_trusted_upgrade_replays_conservatively_when_cursor_row_is_missing(tmp_path) -> None:
+    paths = paths_for(tmp_path)
+    db_path = tmp_path / "cloud-print.db"
+    with collector_client.sqlite3.connect(db_path) as connection:
+        connection.execute("create table task (taskID text, msg text, time text)")
+        connection.executemany(
+            "insert into task (rowid, taskID, msg, time) values (?, ?, ?, ?)",
+            [
+                (1, "first", '{"task":"first"}', "2026-08-05 10:00:00"),
+                (3, "third", '{"task":"third"}', "2026-08-05 10:02:00"),
+            ],
+        )
+    write_json(paths.state_path, {"idle_watermarks": {"cloud-print-client": 2}})
+    windows_host.mark_trusted_legacy_state(paths.state_path)
+    adapter = collector_client.PrintDbAdapter("cloud-print-client", "CloudPrintClient", db_path)
+    state = collector_client.CollectorState.load(paths.state_path)
+
+    state.sync_db_generation(adapter, audit_prefix=True)
+
+    assert state.source_cursor(adapter) == 0
+    assert state.last_reconnect_reason == "source_history_ambiguous"
+    assert state.source_epochs[adapter.source_component] != windows_host.TRUSTED_UPGRADE_EPOCH
+
+
+def test_trusted_upgrade_replays_conservatively_when_saved_fingerprint_does_not_match(
+    tmp_path,
+) -> None:
+    paths = paths_for(tmp_path)
+    db_path = tmp_path / "cloud-print.db"
+    with collector_client.sqlite3.connect(db_path) as connection:
+        connection.execute("create table task (taskID text, msg text, time text)")
+        connection.executemany(
+            "insert into task (taskID, msg, time) values (?, ?, ?)",
+            [
+                ("first", '{"task":"first"}', "2026-08-05 10:00:00"),
+                ("changed", '{"task":"changed"}', "2026-08-05 10:01:00"),
+            ],
+        )
+    write_json(
+        paths.state_path,
+        {
+            "idle_watermarks": {"cloud-print-client": 2},
+            "cursor_fingerprints": {"cloud-print-client": "saved-before-upgrade"},
+        },
+    )
+    windows_host.mark_trusted_legacy_state(paths.state_path)
+    adapter = collector_client.PrintDbAdapter("cloud-print-client", "CloudPrintClient", db_path)
+    state = collector_client.CollectorState.load(paths.state_path)
+
+    state.sync_db_generation(adapter, audit_prefix=True)
+
+    assert state.source_cursor(adapter) == 0
+    assert state.last_reconnect_reason == "source_history_ambiguous"
+    assert state.source_epochs[adapter.source_component] != windows_host.TRUSTED_UPGRADE_EPOCH
+
+
+def test_trusted_upgrade_marker_is_consumed_when_snapshot_is_unavailable(tmp_path) -> None:
+    paths = paths_for(tmp_path)
+    write_json(paths.state_path, {"idle_watermarks": {"cloud-print-client": 2885}})
+    windows_host.mark_trusted_legacy_state(paths.state_path)
+    adapter = collector_client.PrintDbAdapter(
+        "cloud-print-client",
+        "CloudPrintClient",
+        tmp_path / "missing.db",
+    )
+    state = collector_client.CollectorState.load(paths.state_path)
+
+    state.sync_db_generation(adapter, audit_prefix=True)
+
+    assert adapter.source_component not in state.source_epochs
+
+
+def test_trusted_upgrade_marker_is_consumed_when_snapshot_raises(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    paths = paths_for(tmp_path)
+    write_json(paths.state_path, {"idle_watermarks": {"cloud-print-client": 2885}})
+    windows_host.mark_trusted_legacy_state(paths.state_path)
+    adapter = collector_client.PrintDbAdapter(
+        "cloud-print-client",
+        "CloudPrintClient",
+        tmp_path / "cloud-print.db",
+    )
+    state = collector_client.CollectorState.load(paths.state_path)
+
+    def fail_snapshot(*_args, **_kwargs):
+        raise collector_client.sqlite3.Error("database is locked")
+
+    monkeypatch.setattr(collector_client.PrintDbAdapter, "snapshot", fail_snapshot)
+
+    with pytest.raises(collector_client.sqlite3.Error, match="database is locked"):
+        state.sync_db_generation(adapter, audit_prefix=True)
+    state.save(paths.state_path)
+
+    reloaded = collector_client.CollectorState.load(paths.state_path)
+    assert adapter.source_component not in reloaded.source_epochs
+
+
+def test_first_run_consumes_trusted_upgrade_marker_for_unconfigured_source(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    paths = paths_for(tmp_path)
+    write_json(paths.state_path, {"idle_watermarks": {"cloud-print-client": 2885}})
+    windows_host.mark_trusted_legacy_state(paths.state_path)
+    state = collector_client.CollectorState.load(paths.state_path)
+    monkeypatch.setattr(
+        collector_client,
+        "heartbeat",
+        lambda *_args, **_kwargs: {
+            "assignment_protocol_version": 2,
+            "task_windows": [],
+            "window_coverage_complete": True,
+        },
+    )
+
+    collector_client.run_sqlite_once("http://collector.test", "token", state, [], 100)
+
+    reloaded = collector_client.CollectorState.load(paths.state_path)
+    assert "cloud-print-client" not in reloaded.source_epochs
+
+
 def test_machine_config_writes_dpapi_token_and_loads_it(monkeypatch, tmp_path) -> None:
     paths = paths_for(tmp_path)
     monkeypatch.setattr(windows_host, "machine_paths", lambda: paths)
@@ -192,6 +411,7 @@ def test_failed_install_restores_previous_exe_config_and_state(monkeypatch, tmp_
     paths.exe_path.write_bytes(b"MZold collector")
     write_json(paths.config_path, {"base_url": "http://old", "token": "old-token"})
     write_json(paths.state_path, {"idle_watermarks": {"printer": 88}})
+    original_state = paths.state_path.read_bytes()
     old_hash = hashlib.sha256(paths.exe_path.read_bytes()).hexdigest()
     monkeypatch.setattr(windows_host, "machine_paths", lambda: paths)
     monkeypatch.setattr(windows_host, "protect_secret", lambda value: f"dpapi:{value}")
@@ -201,13 +421,17 @@ def test_failed_install_restores_previous_exe_config_and_state(monkeypatch, tmp_
             raise subprocess.CalledProcessError(1, command)
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
-    result = windows_host.install_collector(source_exe, runner=failing_health_runner)
+    result = windows_host.install_collector(
+        source_exe,
+        migrate_existing=True,
+        runner=failing_health_runner,
+    )
 
     assert result.success is False
     assert result.rolled_back is True
     assert hashlib.sha256(paths.exe_path.read_bytes()).hexdigest() == old_hash
     assert json.loads(paths.config_path.read_text(encoding="utf-8"))["token"] == "old-token"
-    assert json.loads(paths.state_path.read_text(encoding="utf-8"))["idle_watermarks"]["printer"] == 88
+    assert paths.state_path.read_bytes() == original_state
 
 
 def test_failed_install_preserves_rotated_connection_credential(monkeypatch, tmp_path) -> None:
