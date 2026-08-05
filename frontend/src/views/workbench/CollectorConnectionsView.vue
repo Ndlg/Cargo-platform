@@ -118,8 +118,42 @@ function runtimeStatusType(status: unknown) {
 function collectorNeedsRepair(collector: CollectorRecord): boolean {
   const status = collector.status_payload
   return status?.last_reconnect_reason === 'auth'
+    || status?.runtime_status === 'enrollment_pending'
     || status?.runtime_status === 'cleaned'
     || status?.stale_reason === 'heartbeat_cleanup'
+}
+
+async function collectorPublicBaseUrl(): Promise<string | null> {
+  const currentUrl = new URL(window.location.origin)
+  const loopbackHost = /^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])$/i
+  if (!loopbackHost.test(currentUrl.hostname)) return currentUrl.origin
+
+  try {
+    const { value } = await ElMessageBox.prompt(
+      '当前页面地址仅本机可用，请填写业务机能够访问的系统地址。',
+      '填写业务机可达地址',
+      {
+        confirmButtonText: '继续',
+        cancelButtonText: '取消',
+        inputValue: 'http://服务器IP:5173',
+        inputValidator: (input) => {
+          const candidate = input.trim()
+          if (!candidate || candidate.includes('服务器IP')) return '请将“服务器IP”替换为实际服务器地址'
+          try {
+            const parsed = new URL(candidate)
+            if (!['http:', 'https:'].includes(parsed.protocol)) return '地址必须以 http:// 或 https:// 开头'
+            if (loopbackHost.test(parsed.hostname)) return '请填写业务机能够访问的地址，不能使用本机回环地址'
+            return true
+          } catch {
+            return '请输入完整的 HTTP(S) 地址'
+          }
+        },
+      },
+    )
+    return value.trim()
+  } catch {
+    return null
+  }
 }
 
 async function load() {
@@ -181,10 +215,12 @@ async function addCollector() {
   registeringCollector.value = true
   error.value = ''
   try {
+    const publicBaseUrl = await collectorPublicBaseUrl()
+    if (!publicBaseUrl) return
     const result = await registerCollector({
       collector_name: '',
       client_version: 'single-exe-token-collector-20260614',
-      public_base_url: window.location.origin,
+      public_base_url: publicBaseUrl,
     })
     connectionCode.value = result.connection_code
     installDialogVisible.value = true
@@ -200,7 +236,7 @@ async function addCollector() {
 async function repairCollector(row: CollectorRecord) {
   try {
     await ElMessageBox.confirm(
-      `为“${row.collector_name}”生成新的连接码会使旧凭证失效。仅在凭证失效或采集器已被清理时修复，网络暂时离线不需要修复。`,
+      `为“${row.collector_name}”生成新的连接码会使旧凭证失效。仅在连接码丢失、凭证失效或采集器已被清理时修复，网络暂时离线不需要修复。`,
       '修复连接',
       { type: 'warning', confirmButtonText: '生成新连接码', cancelButtonText: '取消' },
     )
@@ -208,10 +244,12 @@ async function repairCollector(row: CollectorRecord) {
     return
   }
 
+  const publicBaseUrl = await collectorPublicBaseUrl()
+  if (!publicBaseUrl) return
   repairingCollectorId.value = row.id
   error.value = ''
   try {
-    const result = await repairCollectorConnection(row.id, { public_base_url: window.location.origin })
+    const result = await repairCollectorConnection(row.id, { public_base_url: publicBaseUrl })
     connectionCode.value = result.connection_code
     installDialogVisible.value = true
     ElMessage.success('新的连接码已生成')
