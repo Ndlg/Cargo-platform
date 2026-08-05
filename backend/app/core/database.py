@@ -96,6 +96,23 @@ def _run_sqlite_compat_migrations() -> None:
             connection.exec_driver_sql(
                 "UPDATE users SET password_initialized = 1 WHERE username <> 'admin'"
             )
+        if (
+            "users" in table_columns
+            and "password_hash" in table_columns["users"]
+        ):
+            connection.exec_driver_sql(
+                """
+                UPDATE users
+                SET password_initialized = 1
+                WHERE username = 'admin'
+                  AND password_initialized = 0
+                  AND length(password_hash) = 111
+                  AND substr(password_hash, 1, 14) = 'pbkdf2_sha256$'
+                  AND substr(password_hash, 47, 1) = '$'
+                  AND substr(password_hash, 15, 32) NOT GLOB '*[^0-9a-f]*'
+                  AND substr(password_hash, 48, 64) NOT GLOB '*[^0-9a-f]*'
+                """
+            )
         if "collectors" in table_columns:
             if "token_hash" not in table_columns["collectors"]:
                 connection.exec_driver_sql("ALTER TABLE collectors ADD COLUMN token_hash VARCHAR(255)")

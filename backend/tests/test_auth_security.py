@@ -14,7 +14,7 @@ os.environ.setdefault("BOOTSTRAP_ADMIN_PASSWORD", "Test-Admin-Password-2026!")
 from app.core.config import Settings, validate_security_settings
 from app.core import database
 from app.core.database import SessionLocal
-from app.core.security import hash_password
+from app.core.security import hash_password, verify_password
 from app.main import app
 from app.models import User, UserWorkspace
 
@@ -47,6 +47,80 @@ def test_sqlite_upgrade_only_requires_legacy_admin_reset(tmp_path, monkeypatch) 
         schema_version = connection.exec_driver_sql("PRAGMA user_version").scalar_one()
     assert rows == [("admin", 0), ("clerk", 1)]
     assert schema_version == database.SQLITE_SCHEMA_VERSION
+
+
+def test_sqlite_upgrade_preserves_existing_legacy_admin_password(tmp_path, monkeypatch) -> None:
+    existing_password = "Existing-Admin-Password-2026!"
+    migration_engine = create_engine(f"sqlite:///{tmp_path / 'configured-legacy.db'}")
+    with migration_engine.begin() as connection:
+        connection.exec_driver_sql(
+            "CREATE TABLE workspaces (id INTEGER PRIMARY KEY, tenant_id INTEGER)"
+        )
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE users (
+                id INTEGER PRIMARY KEY,
+                username VARCHAR(64) NOT NULL,
+                password_hash VARCHAR(255) NOT NULL,
+                password_initialized BOOLEAN DEFAULT 0 NOT NULL
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO users (id, username, password_hash) VALUES (1, 'admin', ?)",
+            (hash_password(existing_password),),
+        )
+
+    monkeypatch.setattr(database, "engine", migration_engine)
+    database._run_sqlite_compat_migrations()
+
+    with migration_engine.connect() as connection:
+        password_hash, initialized = connection.exec_driver_sql(
+            "SELECT password_hash, password_initialized FROM users WHERE username = 'admin'"
+        ).one()
+    assert initialized == 1
+    assert verify_password(existing_password, password_hash)
+
+
+@pytest.mark.parametrize(
+    "invalid_hash",
+    (
+        "pbkdf2_sha256$broken",
+        "PBKDF2_SHA256$" + "a" * 32 + "$" + "b" * 64,
+        "pbkdf2Xsha256$" + "a" * 32 + "$" + "b" * 64,
+    ),
+)
+def test_sqlite_upgrade_does_not_initialize_admin_with_invalid_hash(
+    tmp_path, monkeypatch, invalid_hash
+) -> None:
+    migration_engine = create_engine(f"sqlite:///{tmp_path / 'broken-legacy.db'}")
+    with migration_engine.begin() as connection:
+        connection.exec_driver_sql(
+            "CREATE TABLE workspaces (id INTEGER PRIMARY KEY, tenant_id INTEGER)"
+        )
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE users (
+                id INTEGER PRIMARY KEY,
+                username VARCHAR(64) NOT NULL,
+                password_hash VARCHAR(255) NOT NULL,
+                password_initialized BOOLEAN DEFAULT 0 NOT NULL
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO users (id, username, password_hash) VALUES (1, 'admin', ?)",
+            (invalid_hash,),
+        )
+
+    monkeypatch.setattr(database, "engine", migration_engine)
+    database._run_sqlite_compat_migrations()
+
+    with migration_engine.connect() as connection:
+        initialized = connection.exec_driver_sql(
+            "SELECT password_initialized FROM users WHERE username = 'admin'"
+        ).scalar_one()
+    assert initialized == 0
 
 
 def test_sqlite_upgrade_rejects_database_from_newer_release(tmp_path, monkeypatch) -> None:
