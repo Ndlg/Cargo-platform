@@ -51,6 +51,7 @@ from app.api.routes.product_sku_linking import (
 from app.services.collection_contract import (
     build_raw_capture_record,
 )
+from app.services.collector_enrollment import build_connection_code, normalize_public_base_url
 from app.services.order_row_reader import (
     order_row_sample_inputs_from_records,
     raw_records_for_task,
@@ -72,7 +73,7 @@ from app.services.waybill_reading import read_waybill_samples
 router = APIRouter()
 
 COLLECTOR_HEARTBEAT_TIMEOUT = timedelta(seconds=60)
-COLLECTOR_CLEANUP_TIMEOUT = timedelta(hours=24)
+COLLECTOR_ENROLLMENT_TIMEOUT = timedelta(minutes=10)
 COLLECTOR_TASK_WINDOW_PROTOCOL = 2
 COLLECTOR_TASK_WINDOW_LEASE = timedelta(seconds=30)
 COLLECTOR_PROTOCOL_LEASE = timedelta(seconds=60)
@@ -170,55 +171,6 @@ def collector_heartbeat_is_stale(collector: Collector) -> bool:
     if last_heartbeat_at is None:
         return True
     return datetime.now(timezone.utc) - last_heartbeat_at > COLLECTOR_HEARTBEAT_TIMEOUT
-
-
-def collector_should_be_cleaned(collector: Collector) -> bool:
-    if collector.online_status != "online":
-        return False
-    last_heartbeat_at = parse_utc_datetime(collector.last_heartbeat_at)
-    if last_heartbeat_at is None:
-        return True
-    return datetime.now(timezone.utc) - last_heartbeat_at > COLLECTOR_CLEANUP_TIMEOUT
-
-
-def cleanup_collector(collector: Collector, *, user_id: int | None = None) -> None:
-    status_payload = collector.status_payload if isinstance(collector.status_payload, dict) else {}
-    collector.status_payload = {
-        **status_payload,
-        "runtime_status": "cleaned",
-        "stale_reason": "heartbeat_cleanup",
-        "heartbeat_cleanup_hours": int(COLLECTOR_CLEANUP_TIMEOUT.total_seconds() // 3600),
-        "cleaned_at": utc_now(),
-    }
-    collector.online_status = "offline"
-    collector.is_enabled = False
-    collector.token_hash = None
-    collector.is_deleted = True
-    collector.updated_by = user_id
-
-
-def cleanup_expired_collectors(
-    db: Session,
-    *,
-    workspace_id: int | None = None,
-    user_id: int | None = None,
-) -> int:
-    statement = select(Collector).where(
-        Collector.is_deleted.is_(False),
-        Collector.is_enabled.is_(True),
-        Collector.online_status == "online",
-    )
-    if workspace_id is not None:
-        statement = statement.where(Collector.workspace_id == workspace_id)
-
-    cleaned_count = 0
-    for collector in db.scalars(statement).all():
-        if collector_should_be_cleaned(collector):
-            cleanup_collector(collector, user_id=user_id)
-            cleaned_count += 1
-    if cleaned_count:
-        db.commit()
-    return cleaned_count
 
 
 def get_workspace_tenant_id(db: Session, workspace_id: int) -> int | None:
@@ -428,6 +380,29 @@ class CollectorRegisterRequest(BaseModel):
     source_machine: str | None = Field(default=None, max_length=128)
     client_version: str | None = Field(default=None, max_length=64)
     remark: str | None = None
+    public_base_url: str = Field(min_length=1, max_length=2048)
+
+    @field_validator("public_base_url")
+    @classmethod
+    def public_base_url_must_be_http(cls, value: str) -> str:
+        return normalize_public_base_url(value)
+
+
+class CollectorEnrollmentRequest(BaseModel):
+    token: str = Field(min_length=1, max_length=512)
+    collector_id: str | None = Field(default=None, max_length=128)
+    collector_name: str = Field(default="", max_length=128)
+    source_machine: str | None = Field(default=None, max_length=128)
+    client_version: str | None = Field(default=None, max_length=64)
+
+
+class CollectorRepairCodeRequest(BaseModel):
+    public_base_url: str = Field(min_length=1, max_length=2048)
+
+    @field_validator("public_base_url")
+    @classmethod
+    def public_base_url_must_be_http(cls, value: str) -> str:
+        return normalize_public_base_url(value)
 
 
 class CaptureStartRequest(BaseModel):
@@ -2064,7 +2039,10 @@ def get_collector_from_token(
         if collector is not None:
             collector.token_hash = token_hash
             db.flush()
-    if collector is None:
+    if collector is None or (
+        isinstance(collector.status_payload, dict)
+        and collector.status_payload.get("runtime_status") == "enrollment_pending"
+    ):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid collector token.")
     return collector
 
@@ -2178,6 +2156,21 @@ def collector_v2_protocol_lease_active(collector: Collector) -> bool:
     return expires_at is not None and expires_at >= datetime.now(timezone.utc)
 
 
+def start_collector_enrollment(collector: Collector) -> str:
+    token = create_collector_token()
+    status_payload = collector.status_payload if isinstance(collector.status_payload, dict) else {}
+    collector.token_hash = hash_collector_token(token)
+    collector.online_status = "offline"
+    collector.status_payload = {
+        **status_payload,
+        "runtime_status": "enrollment_pending",
+        "enrollment_expires_at": (
+            datetime.now(timezone.utc) + COLLECTOR_ENROLLMENT_TIMEOUT
+        ).isoformat(),
+    }
+    return token
+
+
 def upsert_collector(
     db: Session,
     *,
@@ -2186,9 +2179,8 @@ def upsert_collector(
     payload: CollectorRegisterRequest,
     user_id: int | None,
 ) -> tuple[Collector, str]:
-    token = create_collector_token()
-    token_hash = hash_collector_token(token)
-    collector_identity = clean_optional_text(payload.collector_id) or f"collector-{token[:12]}"
+    identity_token = create_collector_token()
+    collector_identity = clean_optional_text(payload.collector_id) or f"collector-{identity_token[:12]}"
     source_machine = clean_optional_text(payload.source_machine) or None
     display_name = collector_display_name(
         payload.collector_name,
@@ -2209,7 +2201,6 @@ def upsert_collector(
             workspace_id=workspace_id,
             collector_id=collector_identity,
             collector_name=display_name,
-            token_hash=token_hash,
             source_machine=source_machine,
             client_version=payload.client_version,
             online_status="offline",
@@ -2223,13 +2214,13 @@ def upsert_collector(
             payload.collector_name
         ):
             collector.collector_name = display_name
-        collector.token_hash = token_hash
         collector.source_machine = source_machine
         collector.client_version = payload.client_version
         collector.is_enabled = True
         collector.remark = payload.remark
         collector.updated_by = user_id
 
+    token = start_collector_enrollment(collector)
     db.commit()
     db.refresh(collector)
     return collector, token
@@ -2273,7 +2264,7 @@ def download_collector_client(
 
 @router.post("/collector-control/register", status_code=status.HTTP_201_CREATED)
 def register_collector(
-    payload: CollectorRegisterRequest = Body(default_factory=CollectorRegisterRequest),
+    payload: CollectorRegisterRequest,
     db: Session = Depends(get_db),
     current_user: CurrentUser = Depends(require_write),
     workspace_id: int = Depends(get_workspace_id),
@@ -2286,16 +2277,121 @@ def register_collector(
         payload=payload,
         user_id=current_user.id,
     )
-    return {"collector": public_collector(collector), "collector_token": token}
+    return {
+        "collector": public_collector(collector),
+        "connection_code": build_connection_code(payload.public_base_url, token),
+    }
+
+
+@router.post("/collector-runtime/enroll")
+def enroll_collector(
+    payload: CollectorEnrollmentRequest,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    pending_hash = hash_collector_token(payload.token)
+    collector = db.scalars(
+        select(Collector).where(
+            Collector.token_hash == pending_hash,
+            Collector.is_enabled.is_(True),
+            Collector.is_deleted.is_(False),
+        )
+    ).first()
+    status_payload = (
+        dict(collector.status_payload)
+        if collector is not None and isinstance(collector.status_payload, dict)
+        else {}
+    )
+    expires_at = parse_utc_datetime(str(status_payload.get("enrollment_expires_at") or ""))
+    if (
+        collector is None
+        or status_payload.get("runtime_status") != "enrollment_pending"
+        or expires_at is None
+        or expires_at < datetime.now(timezone.utc)
+    ):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid enrollment token.")
+
+    collector_identity = clean_optional_text(payload.collector_id) or collector.collector_id
+    if not collector_identity_is_available(
+        db,
+        workspace_id=collector.workspace_id,
+        collector_identity=collector_identity,
+        current_collector_id=collector.id,
+    ):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Collector identity is already in use.")
+
+    source_machine = clean_optional_text(payload.source_machine) or collector.source_machine
+    collector_name = collector.collector_name
+    reported_name = collector_display_name(
+        payload.collector_name,
+        source_machine=source_machine,
+        collector_id=collector_identity,
+    )
+    if is_default_collector_display_name(collector_name) or not is_default_collector_display_name(
+        payload.collector_name
+    ):
+        collector_name = reported_name
+
+    status_payload.pop("enrollment_expires_at", None)
+    status_payload["runtime_status"] = "enrolled"
+    status_payload["enrolled_at"] = utc_now()
+    device_token = create_collector_token()
+    result = db.execute(
+        update(Collector)
+        .where(
+            Collector.id == collector.id,
+            Collector.token_hash == pending_hash,
+            Collector.is_enabled.is_(True),
+            Collector.is_deleted.is_(False),
+        )
+        .values(
+            token_hash=hash_collector_token(device_token),
+            collector_id=collector_identity,
+            collector_name=collector_name,
+            source_machine=source_machine,
+            client_version=payload.client_version or collector.client_version,
+            status_payload=status_payload,
+        )
+    )
+    if result.rowcount != 1:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid enrollment token.")
+    collector_id = collector.id
+    db.commit()
+    db.expire_all()
+    enrolled = db.get(Collector, collector_id)
+    if enrolled is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid enrollment token.")
+    return {"collector": public_collector(enrolled), "collector_token": device_token}
+
+
+@router.post("/collector-control/{collector_id}/repair-code")
+def repair_collector_connection_code(
+    collector_id: int,
+    payload: CollectorRepairCodeRequest,
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(require_write),
+    workspace_id: int = Depends(get_workspace_id),
+) -> dict[str, Any]:
+    collector = db.get(Collector, collector_id)
+    if collector is None or collector.workspace_id != workspace_id or collector.is_deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collector not found.")
+    token = start_collector_enrollment(collector)
+    collector.is_enabled = True
+    collector.updated_by = current_user.id
+    db.commit()
+    db.refresh(collector)
+    return {
+        "collector": public_collector(collector),
+        "connection_code": build_connection_code(payload.public_base_url, token),
+    }
 
 
 @router.get("/collector-control/status")
 def collector_status(
     db: Session = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+    _current_user: CurrentUser = Depends(get_current_user),
     workspace_id: int = Depends(get_workspace_id),
 ) -> dict[str, Any]:
-    cleanup_expired_collectors(db, workspace_id=workspace_id, user_id=current_user.id)
     collectors = db.scalars(
         select(Collector)
         .where(Collector.workspace_id == workspace_id, Collector.is_deleted.is_(False))

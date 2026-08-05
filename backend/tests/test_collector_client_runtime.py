@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import http.client
@@ -87,10 +88,35 @@ def register_collector(client: TestClient, headers: dict[str, str], identity: st
             "collector_name": f"Collector {identity}",
             "source_machine": identity,
             "client_version": "test-client",
+            "public_base_url": "http://10.0.0.5:5173",
         },
     )
     assert response.status_code == 201
-    return response.json()
+    registration = response.json()
+    enrollment_token = decode_connection_code(registration["connection_code"])["token"]
+    enrollment = client.post(
+        "/api/v1/collector-runtime/enroll",
+        json={
+            "token": enrollment_token,
+            "collector_id": identity,
+            "collector_name": f"Collector {identity}",
+            "source_machine": identity,
+            "client_version": "test-client",
+        },
+    )
+    assert enrollment.status_code == 200
+    return {
+        "collector": enrollment.json()["collector"],
+        "collector_token": enrollment.json()["collector_token"],
+        "connection_code": registration["connection_code"],
+    }
+
+
+def decode_connection_code(connection_code: str) -> dict[str, object]:
+    assert connection_code.startswith("CP1.")
+    encoded = connection_code.removeprefix("CP1.")
+    payload = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+    return json.loads(payload.decode("utf-8"))
 
 
 def activate_v2_lease(client: TestClient, token: str) -> None:
@@ -169,6 +195,7 @@ def test_register_collector_replaces_generic_name_with_source_machine() -> None:
                 "collector_name": "Cargo Platform 采集器",
                 "source_machine": "WAREHOUSE-PC-08",
                 "client_version": "test-client",
+                "public_base_url": "http://10.0.0.5:5173",
             },
         )
 
@@ -177,21 +204,245 @@ def test_register_collector_replaces_generic_name_with_source_machine() -> None:
     assert response.json()["collector"]["source_machine"] == "WAREHOUSE-PC-08"
 
 
-def test_heartbeat_replaces_existing_generic_name_with_source_machine() -> None:
+def test_collector_status_does_not_revoke_stale_collector_credentials() -> None:
     with TestClient(app) as client:
         headers = login_headers(client)
         registration = client.post(
             "/api/v1/collector-control/register",
             headers=headers,
             json={
-                "collector_id": "legacy-generic-collector",
-                "collector_name": "Cargo Platform 采集器",
+                "collector_id": "stale-status-projection-machine",
+                "collector_name": "Stale status projection machine",
+                "source_machine": "stale-status-projection-machine",
                 "client_version": "test-client",
+                "public_base_url": "http://10.0.0.5:5173",
             },
         )
         assert registration.status_code == 201
-        token = registration.json()["collector_token"]
-        collector_db_id = int(registration.json()["collector"]["id"])
+        collector_id = int(registration.json()["collector"]["id"])
+
+        with SessionLocal() as db:
+            collector = db.get(Collector, collector_id)
+            assert collector is not None
+            collector.online_status = "online"
+            collector.last_heartbeat_at = (
+                datetime.now(timezone.utc) - timedelta(hours=25)
+            ).isoformat()
+            db.commit()
+            expected_enabled = collector.is_enabled
+            expected_deleted = collector.is_deleted
+            expected_token_hash = collector.token_hash
+
+        response = client.get("/api/v1/collector-control/status", headers=headers)
+        assert response.status_code == 200
+        projected = next(
+            item for item in response.json()["collectors"] if int(item["id"]) == collector_id
+        )
+
+        with SessionLocal() as db:
+            collector = db.get(Collector, collector_id)
+            assert collector is not None
+            assert projected["online_status"] == "offline"
+            assert collector.is_enabled == expected_enabled
+            assert collector.is_deleted == expected_deleted
+            assert collector.token_hash == expected_token_hash
+
+
+def test_connection_code_uses_compact_versioned_urlsafe_payload() -> None:
+    from app.services.collector_enrollment import build_connection_code
+
+    connection_code = build_connection_code("http://10.0.0.5:5173", "one-time-token")
+
+    assert connection_code.startswith("CP1.")
+    assert "=" not in connection_code
+    assert decode_connection_code(connection_code) == {
+        "v": 1,
+        "base_url": "http://10.0.0.5:5173",
+        "token": "one-time-token",
+    }
+
+
+def test_connection_code_enrollment_is_single_use_and_heartbeats_with_rotated_token() -> None:
+    with TestClient(app) as client:
+        headers = login_headers(client)
+        registration = client.post(
+            "/api/v1/collector-control/register",
+            headers=headers,
+            json={
+                "collector_name": "Cargo Platform 采集器",
+                "client_version": "installer",
+                "public_base_url": "http://10.0.0.5:5173",
+            },
+        )
+        assert registration.status_code == 201
+        registration_body = registration.json()
+        assert set(registration_body) == {"collector", "connection_code"}
+        connection_payload = decode_connection_code(registration_body["connection_code"])
+        assert connection_payload["v"] == 1
+        assert connection_payload["base_url"] == "http://10.0.0.5:5173"
+        enrollment_token = str(connection_payload["token"])
+
+        pending_heartbeat = client.post(
+            "/api/v1/collector-runtime/heartbeat",
+            headers={"X-Collector-Token": enrollment_token},
+            json={},
+        )
+        assert pending_heartbeat.status_code == 401
+
+        enrollment_payload = {
+            "token": enrollment_token,
+            "collector_id": "WAREHOUSE-PC-10",
+            "collector_name": "Cargo Platform 采集器",
+            "source_machine": "WAREHOUSE-PC-10",
+            "client_version": "test-client",
+        }
+        enrollment = client.post(
+            "/api/v1/collector-runtime/enroll",
+            json=enrollment_payload,
+        )
+        assert enrollment.status_code == 200
+        device_token = enrollment.json()["collector_token"]
+        assert device_token != enrollment_token
+        assert enrollment.json()["collector"]["collector_id"] == "WAREHOUSE-PC-10"
+        assert enrollment.json()["collector"]["collector_name"] == "WAREHOUSE-PC-10"
+
+        heartbeat = client.post(
+            "/api/v1/collector-runtime/heartbeat",
+            headers={"X-Collector-Token": device_token},
+            json={"collector_id": "WAREHOUSE-PC-10"},
+        )
+        assert heartbeat.status_code == 200
+
+        replay = client.post(
+            "/api/v1/collector-runtime/enroll",
+            json=enrollment_payload,
+        )
+        assert replay.status_code == 401
+
+
+def test_enrollment_expiry_rejects_exchange_without_rotating_stored_credential() -> None:
+    with TestClient(app) as client:
+        headers = login_headers(client)
+        registration = client.post(
+            "/api/v1/collector-control/register",
+            headers=headers,
+            json={
+                "collector_id": "expired-enrollment-machine",
+                "collector_name": "Expired enrollment machine",
+                "public_base_url": "http://10.0.0.5:5173",
+            },
+        )
+        assert registration.status_code == 201
+        collector_id = int(registration.json()["collector"]["id"])
+        enrollment_token = str(
+            decode_connection_code(registration.json()["connection_code"])["token"]
+        )
+
+        with SessionLocal() as db:
+            collector = db.get(Collector, collector_id)
+            assert collector is not None
+            status_payload = dict(collector.status_payload or {})
+            status_payload["enrollment_expires_at"] = (
+                datetime.now(timezone.utc) - timedelta(seconds=1)
+            ).isoformat()
+            collector.status_payload = status_payload
+            db.commit()
+            expected_token_hash = collector.token_hash
+
+        enrollment = client.post(
+            "/api/v1/collector-runtime/enroll",
+            json={
+                "token": enrollment_token,
+                "collector_id": "expired-enrollment-machine",
+                "source_machine": "expired-enrollment-machine",
+            },
+        )
+        assert enrollment.status_code == 401
+
+        with SessionLocal() as db:
+            collector = db.get(Collector, collector_id)
+            assert collector is not None
+            assert collector.token_hash == expected_token_hash
+            assert collector.status_payload["runtime_status"] == "enrollment_pending"
+
+
+def test_repair_code_replaces_device_token_with_new_single_use_enrollment() -> None:
+    with TestClient(app) as client:
+        headers = login_headers(client)
+        registration = register_collector(client, headers, "repair-enrollment-machine")
+        old_device_token = str(registration["collector_token"])
+        collector_id = int(registration["collector"]["id"])
+
+        repair = client.post(
+            f"/api/v1/collector-control/{collector_id}/repair-code",
+            headers=headers,
+            json={"public_base_url": "http://10.0.0.6:5173"},
+        )
+        assert repair.status_code == 200
+        assert set(repair.json()) == {"collector", "connection_code"}
+        repair_payload = decode_connection_code(repair.json()["connection_code"])
+        assert repair_payload["base_url"] == "http://10.0.0.6:5173"
+        repair_token = str(repair_payload["token"])
+
+        old_heartbeat = client.post(
+            "/api/v1/collector-runtime/heartbeat",
+            headers={"X-Collector-Token": old_device_token},
+            json={},
+        )
+        pending_heartbeat = client.post(
+            "/api/v1/collector-runtime/heartbeat",
+            headers={"X-Collector-Token": repair_token},
+            json={},
+        )
+        assert old_heartbeat.status_code == 401
+        assert pending_heartbeat.status_code == 401
+
+        enrollment = client.post(
+            "/api/v1/collector-runtime/enroll",
+            json={
+                "token": repair_token,
+                "collector_id": "repair-enrollment-machine",
+                "collector_name": "Collector repair-enrollment-machine",
+                "source_machine": "repair-enrollment-machine",
+                "client_version": "test-client",
+            },
+        )
+        assert enrollment.status_code == 200
+        repaired_heartbeat = client.post(
+            "/api/v1/collector-runtime/heartbeat",
+            headers={"X-Collector-Token": enrollment.json()["collector_token"]},
+            json={},
+        )
+        assert repaired_heartbeat.status_code == 200
+
+
+def test_legacy_collector_token_without_enrollment_status_can_still_heartbeat() -> None:
+    with TestClient(app) as client:
+        headers = login_headers(client)
+        registration = register_collector(client, headers, "legacy-token-machine")
+        collector_id = int(registration["collector"]["id"])
+
+        with SessionLocal() as db:
+            collector = db.get(Collector, collector_id)
+            assert collector is not None
+            collector.status_payload = {}
+            db.commit()
+
+        heartbeat = client.post(
+            "/api/v1/collector-runtime/heartbeat",
+            headers={"X-Collector-Token": str(registration["collector_token"])},
+            json={"collector_id": "legacy-token-machine"},
+        )
+
+    assert heartbeat.status_code == 200
+
+
+def test_heartbeat_replaces_existing_generic_name_with_source_machine() -> None:
+    with TestClient(app) as client:
+        headers = login_headers(client)
+        registration = register_collector(client, headers, "legacy-generic-collector")
+        token = str(registration["collector_token"])
+        collector_db_id = int(registration["collector"]["id"])
         with SessionLocal() as db:
             collector = db.get(Collector, collector_db_id)
             assert collector is not None
