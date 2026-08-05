@@ -1,12 +1,13 @@
 ﻿<script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { Connection, Delete, Download, Key, Monitor, Refresh } from '@element-plus/icons-vue'
+import { Connection, Delete, Download, Monitor, Refresh } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 import {
   deleteRecord,
   downloadCollectorClientZip,
   getCollectorControlStatus,
+  repairCollectorConnection,
   registerCollector,
   type CollectorClientPackageStatus,
   type CollectorRecord,
@@ -27,10 +28,10 @@ const collectors = ref<CollectorRecord[]>([])
 const loading = ref(false)
 const downloadingClient = ref(false)
 const registeringCollector = ref(false)
+const repairingCollectorId = ref<number | null>(null)
 const deletingCollectorId = ref<number | null>(null)
-const tokenDialogVisible = ref(false)
-const generatedToken = ref('')
-const generatedCollector = ref<CollectorRecord | null>(null)
+const installDialogVisible = ref(false)
+const connectionCode = ref('')
 const error = ref('')
 const collectorClient = ref<CollectorClientPackageStatus | null>(null)
 
@@ -43,15 +44,6 @@ const readyAdapterCount = computed(() =>
     return total + adapterRows(collector).filter((adapter) => adapter.status === 'ready').length
   }, 0),
 )
-const collectorLaunchBaseUrl = computed(() => {
-  const origin = window.location.origin
-  if (!origin || origin.includes('localhost') || origin.includes('127.0.0.1')) return 'http://服务器IP:5173'
-  return origin
-})
-const collectorLaunchCommand = computed(() => {
-  if (!generatedToken.value) return ''
-  return `"Cargo Platform 采集器.exe" --base-url "${collectorLaunchBaseUrl.value}" --token "${generatedToken.value}" --collector-name "%COMPUTERNAME%" --loop`
-})
 const collectorClientReady = computed(() => collectorClient.value?.release_available === true)
 
 function textValue(value: unknown, fallback = '-'): string {
@@ -123,6 +115,13 @@ function runtimeStatusType(status: unknown) {
   return status === 'listening' ? 'success' : 'warning'
 }
 
+function collectorNeedsRepair(collector: CollectorRecord): boolean {
+  const status = collector.status_payload
+  return status?.last_reconnect_reason === 'auth'
+    || status?.runtime_status === 'cleaned'
+    || status?.stale_reason === 'heartbeat_cleanup'
+}
+
 async function load() {
   loading.value = true
   error.value = ''
@@ -140,7 +139,7 @@ async function load() {
 async function removeCollector(row: CollectorRecord) {
   try {
     await ElMessageBox.confirm(
-      `确定移除采集器“${row.collector_name}”吗？移除后需要在后台重新生成 token 才能连接。`,
+      `确定移除采集器“${row.collector_name}”吗？移除后需要重新添加业务机才能连接。`,
       '移除采集器',
       { type: 'warning', confirmButtonText: '移除', cancelButtonText: '取消' },
     )
@@ -178,30 +177,56 @@ async function downloadCollectorClient() {
   }
 }
 
-async function generateCollectorToken() {
+async function addCollector() {
   registeringCollector.value = true
   error.value = ''
   try {
     const result = await registerCollector({
       collector_name: '',
       client_version: 'single-exe-token-collector-20260614',
+      public_base_url: window.location.origin,
     })
-    generatedToken.value = result.collector_token
-    generatedCollector.value = result.collector
-    tokenDialogVisible.value = true
-    ElMessage.success('采集器 token 已生成')
+    connectionCode.value = result.connection_code
+    installDialogVisible.value = true
+    ElMessage.success('业务机连接码已生成')
     await load()
   } catch (err) {
-    error.value = err instanceof Error ? err.message : '采集器 token 生成失败'
+    error.value = err instanceof Error ? err.message : '业务机连接码生成失败'
   } finally {
     registeringCollector.value = false
   }
 }
 
-async function copyLaunchCommand() {
-  if (!collectorLaunchCommand.value) return
-  await navigator.clipboard.writeText(collectorLaunchCommand.value)
-  ElMessage.success('启动命令已复制')
+async function repairCollector(row: CollectorRecord) {
+  try {
+    await ElMessageBox.confirm(
+      `为“${row.collector_name}”生成新的连接码会使旧凭证失效。仅在凭证失效或采集器已被清理时修复，网络暂时离线不需要修复。`,
+      '修复连接',
+      { type: 'warning', confirmButtonText: '生成新连接码', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+
+  repairingCollectorId.value = row.id
+  error.value = ''
+  try {
+    const result = await repairCollectorConnection(row.id, { public_base_url: window.location.origin })
+    connectionCode.value = result.connection_code
+    installDialogVisible.value = true
+    ElMessage.success('新的连接码已生成')
+    await load()
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : '修复连接失败'
+  } finally {
+    repairingCollectorId.value = null
+  }
+}
+
+async function copyConnectionCode() {
+  if (!connectionCode.value) return
+  await navigator.clipboard.writeText(connectionCode.value)
+  ElMessage.success('连接码已复制')
 }
 
 watch(() => session.currentWorkspaceId, load)
@@ -212,11 +237,11 @@ onMounted(load)
   <section class="page-header">
     <div>
       <h1>采集连接</h1>
-      <p>业务机使用后台生成的采集器 token 连接，不在业务机保存系统账号密码。</p>
+      <p>下载并安装采集器后，只需粘贴一次连接码，不在业务机保存系统账号密码。</p>
     </div>
     <div class="header-actions">
-      <el-button :icon="Key" :loading="registeringCollector" type="primary" @click="generateCollectorToken">
-        生成 token
+      <el-button :loading="registeringCollector" type="primary" @click="addCollector">
+        添加业务机
       </el-button>
       <el-button
         :disabled="!collectorClientReady"
@@ -225,7 +250,7 @@ onMounted(load)
         type="success"
         @click="downloadCollectorClient"
       >
-        下载采集器
+        下载安装器
       </el-button>
       <el-button :icon="Refresh" :loading="loading" type="primary" plain @click="load">
         刷新状态
@@ -342,8 +367,17 @@ onMounted(load)
             {{ formatDateTime(row.last_heartbeat_at) }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="100" fixed="right">
+        <el-table-column label="操作" width="180" fixed="right">
           <template #default="{ row }">
+            <el-button
+              v-if="collectorNeedsRepair(row)"
+              :loading="repairingCollectorId === row.id"
+              link
+              type="warning"
+              @click="repairCollector(row)"
+            >
+              修复连接
+            </el-button>
             <el-button
               :icon="Delete"
               :loading="deletingCollectorId === row.id"
@@ -363,40 +397,37 @@ onMounted(load)
       <h2><el-icon><Monitor /></el-icon> 业务机配置方式</h2>
       <div class="tag-list">
         <el-tag type="info">单 exe</el-tag>
-        <el-tag type="info">token 参数</el-tag>
+        <el-tag type="info">连接码登记</el-tag>
         <el-tag type="info">无黑框后台运行</el-tag>
         <el-tag :type="collectorClientReady ? 'success' : 'warning'">
           {{ collectorClientReady ? '发布包就绪' : '发布包缺失' }}
         </el-tag>
       </div>
       <p class="muted-text">
-        先生成 token，再下载采集器；下载包只包含 Cargo Platform 采集器.exe 和 参数说明.txt。
+        添加业务机后下载并运行安装器，再粘贴连接码即可完成安装。
       </p>
       <p class="muted-text">
-        业务机按参数启动后会自动进入当前工作区，设备标识自动使用 Windows 机器名。
+        采集器会自动进入当前工作区，设备标识自动使用 Windows 机器名。
       </p>
       <p class="muted-text">
-        服务器临时断开时采集器会等待重连；token 被移除后需要重新生成。
+        服务器临时断开时采集器会等待重连；只有凭证失效或采集器被清理时才需要修复连接。
       </p>
     </div>
   </section>
 
-  <el-dialog v-model="tokenDialogVisible" title="采集器 token" width="720px">
+  <el-dialog v-model="installDialogVisible" title="添加业务机" width="560px">
     <div class="token-dialog-body">
-      <div class="detail-line">
-        <span>后台名称</span>
-        <strong>{{ generatedCollector?.collector_name || '启动后自动使用机器名' }}</strong>
-      </div>
-      <div class="detail-line">
-        <span>设备标识</span>
-        <strong>命令会把 %COMPUTERNAME% 作为业务机名称上传</strong>
-      </div>
-      <el-input :model-value="generatedToken" readonly type="textarea" :rows="3" />
-      <el-input :model-value="collectorLaunchCommand" readonly type="textarea" :rows="3" />
+      <p class="muted-text">1. 下载采集器安装器。</p>
+      <el-button :disabled="!collectorClientReady" :loading="downloadingClient" type="success" @click="downloadCollectorClient">
+        下载安装器
+      </el-button>
+      <p class="muted-text">2. 双击运行安装器。</p>
+      <p class="muted-text">3. 在安装器中粘贴连接码完成登记。</p>
+      <el-input :model-value="connectionCode" readonly />
     </div>
     <template #footer>
-      <el-button @click="tokenDialogVisible = false">关闭</el-button>
-      <el-button type="primary" @click="copyLaunchCommand">复制启动命令</el-button>
+      <el-button @click="installDialogVisible = false">关闭</el-button>
+      <el-button type="primary" @click="copyConnectionCode">复制连接码</el-button>
     </template>
   </el-dialog>
 </template>

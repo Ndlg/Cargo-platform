@@ -134,7 +134,7 @@ export interface CollectorClientPackageStatus {
 
 export interface CollectorRegistrationResponse {
   collector: CollectorRecord
-  collector_token: string
+  connection_code: string
 }
 
 export interface ProductSkuZipUploadResult extends ApiRecord {
@@ -1228,8 +1228,19 @@ export function registerCollector(payload: {
   collector_name: string
   source_machine?: string
   client_version?: string
+  public_base_url: string
 }): Promise<CollectorRegistrationResponse> {
   return request<CollectorRegistrationResponse>('/collector-control/register', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function repairCollectorConnection(
+  id: number,
+  payload: { public_base_url: string },
+): Promise<CollectorRegistrationResponse> {
+  return request<CollectorRegistrationResponse>(`/collector-control/${id}/repair-code`, {
     method: 'POST',
     body: JSON.stringify(payload),
   })
