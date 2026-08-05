@@ -148,6 +148,66 @@ def test_same_directory_migration_only_backs_up_existing_state(tmp_path) -> None
     assert (result.backup_path / "collector-state.json").exists()
 
 
+@pytest.mark.parametrize("legacy_state", [b"\0" * 243, b"[]"])
+def test_install_existing_replaces_invalid_legacy_state_after_backup(
+    monkeypatch,
+    tmp_path,
+    legacy_state,
+) -> None:
+    paths = paths_for(tmp_path)
+    source_exe = tmp_path / "release.exe"
+    source_exe.write_bytes(b"MZcollector")
+    write_json(paths.config_path, {"base_url": "http://server", "token": "device-token"})
+    paths.state_path.write_bytes(legacy_state)
+    monkeypatch.setattr(windows_host, "machine_paths", lambda: paths)
+    monkeypatch.setattr(windows_host, "protect_secret", lambda value: f"dpapi:{value}")
+
+    def runner(command, **_kwargs):
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    result = windows_host.install_collector(
+        source_exe,
+        migrate_existing=True,
+        runner=runner,
+    )
+
+    assert result.success is True
+    assert json.loads(paths.state_path.read_text(encoding="utf-8")) == {}
+    assert (result.backup_path / paths.state_path.name).read_bytes() == legacy_state
+
+
+def test_failed_install_existing_restores_invalid_legacy_state_bytes(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    paths = paths_for(tmp_path)
+    source_exe = tmp_path / "release.exe"
+    source_exe.write_bytes(b"MZnew collector")
+    paths.exe_path.parent.mkdir(parents=True)
+    paths.exe_path.write_bytes(b"MZold collector")
+    write_json(paths.config_path, {"base_url": "http://old", "token": "old-token"})
+    legacy_state = b"\0" * 243
+    paths.state_path.write_bytes(legacy_state)
+    monkeypatch.setattr(windows_host, "machine_paths", lambda: paths)
+    monkeypatch.setattr(windows_host, "protect_secret", lambda value: f"dpapi:{value}")
+
+    def failing_health_runner(command, **_kwargs):
+        if str(command[0]).lower().endswith(".exe") and "--check" in command:
+            raise subprocess.CalledProcessError(1, command)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    result = windows_host.install_collector(
+        source_exe,
+        migrate_existing=True,
+        runner=failing_health_runner,
+    )
+
+    assert result.success is False
+    assert result.rolled_back is True
+    assert paths.state_path.read_bytes() == legacy_state
+    assert (result.backup_path / paths.state_path.name).read_bytes() == legacy_state
+
+
 def test_install_existing_adopts_trusted_legacy_cursor_without_replaying_history(
     monkeypatch,
     tmp_path,

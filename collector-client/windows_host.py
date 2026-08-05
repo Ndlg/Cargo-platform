@@ -207,7 +207,14 @@ def migrate_legacy_home(paths: WindowsCollectorPaths) -> MigrationResult:
 def mark_trusted_legacy_state(path: Path) -> None:
     if not path.is_file():
         return
-    payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        _atomic_write_json(path, {})
+        return
+    if not isinstance(payload, dict):
+        _atomic_write_json(path, {})
+        return
     source_epochs = dict(payload.get("source_epochs") or {})
     components = set(dict(payload.get("idle_watermarks") or {}))
     components.update(
