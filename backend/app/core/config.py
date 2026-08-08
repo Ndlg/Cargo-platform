@@ -16,7 +16,7 @@ if load_dotenv is not None:
 
 class Settings(BaseModel):
     app_name: str = "Cargo Platform"
-    app_version: str = "1.0.0-rc.1"
+    app_version: str = "1.0.0"
     api_prefix: str = "/api/v1"
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
     database_url: str = "mysql+pymysql://cargo_user:cargo_pass@127.0.0.1:3306/cargo_platform"

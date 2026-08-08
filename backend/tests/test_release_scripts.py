@@ -25,7 +25,7 @@ def test_sqlite_volume_restore_refuses_running_volume() -> None:
 def test_development_compose_keeps_backend_and_parser_on_one_version() -> None:
     source = (ROOT / "docker-compose.yml").read_text(encoding="utf-8-sig")
 
-    assert source.count("APP_VERSION: ${CARGO_PLATFORM_VERSION:-1.0.0-rc.1}") == 2
+    assert source.count("APP_VERSION: ${CARGO_PLATFORM_VERSION:-1.0.0}") == 2
 
 
 def test_business_deploy_takes_verified_snapshot_before_recreate() -> None:

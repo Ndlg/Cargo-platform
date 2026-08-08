@@ -99,8 +99,12 @@ def test_managed_paths_keep_exe_config_and_state_in_local_app_data(monkeypatch, 
     assert paths.legacy_home == tmp_path / "local" / "CargoPlatformCollector"
 
 
-def test_legacy_state_migration_copies_missing_files_without_deleting_source(tmp_path) -> None:
+def test_legacy_state_migration_copies_missing_files_without_deleting_source(
+    monkeypatch,
+    tmp_path,
+) -> None:
     paths = paths_for(tmp_path)
+    monkeypatch.setattr(windows_host, "protect_secret", lambda value: f"dpapi:{value}")
     write_json(paths.legacy_home / "collector-config.json", {"token": "legacy-token"})
     write_json(paths.legacy_home / "collector-state.json", {"idle_watermarks": {"printer": 41}})
 
@@ -125,8 +129,9 @@ def test_legacy_state_migration_never_overwrites_machine_cursor(tmp_path) -> Non
     ]["printer"] == 41
 
 
-def test_same_directory_migration_only_backs_up_existing_state(tmp_path) -> None:
+def test_same_directory_migration_only_backs_up_existing_state(monkeypatch, tmp_path) -> None:
     paths = paths_for(tmp_path)
+    monkeypatch.setattr(windows_host, "protect_secret", lambda value: f"dpapi:{value}")
     paths = windows_host.WindowsCollectorPaths(
         install_dir=paths.install_dir,
         exe_path=paths.exe_path,

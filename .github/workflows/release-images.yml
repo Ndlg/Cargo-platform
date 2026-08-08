@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Immutable image version, for example 1.0.0-rc.1"
+        description: "Immutable image version, for example 1.0.0"
         required: true
 
 permissions:
@@ -50,19 +50,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v6
         with:
-          python-version: "3.12.13"
-          cache: pip
-          cache-dependency-path: collector-client/requirements-build.lock
+          enable-cache: true
+
+      - name: Install collector build Python
+        shell: pwsh
+        run: uv python install 3.12.13
 
       - name: Build and verify collector release
         shell: pwsh
-        run: >-
-          ./scripts/build_collector_release.ps1
-          -Version "${{ needs.version.outputs.value }}"
-          -GitSha "${{ github.sha }}"
-          -PythonExe (Get-Command python.exe).Source
+        run: |
+          $python = (uv python find 3.12.13).Trim()
+          ./scripts/build_collector_release.ps1 `
+            -Version "${{ needs.version.outputs.value }}" `
+            -GitSha "${{ github.sha }}" `
+            -PythonExe $python
 
       - uses: actions/upload-artifact@v4
         with:
@@ -83,6 +86,7 @@ jobs:
       COLLECTOR_TOKEN_HASH_KEY: collector-ci-hash-key-at-least-32-bytes
       INITIAL_SETUP_TOKEN: setup-ci-token-at-least-32-bytes
       BOOTSTRAP_ADMIN_PASSWORD: admin123
+      TZ: Asia/Shanghai
     steps:
       - uses: actions/checkout@v4
 
