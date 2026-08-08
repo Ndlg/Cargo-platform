@@ -9,6 +9,7 @@ venv/
 .env
 .env.*
 !.env.example
+.cargo-platform-install-pending
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/

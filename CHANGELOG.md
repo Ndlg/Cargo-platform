@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 1.0.1 - 2026-08-08
+
+- Adds a verified macOS/Linux Docker server bundle and one-command deployment entrypoint.
+- Publishes all four server images for both AMD64 and ARM64 under one immutable version.
+- Refuses upgrades during active collection, snapshots SQLite, and restores prior images on failed readiness checks.
+- Keeps the 1.0.0 collection, recognition, matching, and export behavior unchanged.
+
 ## 1.0.0 - 2026-08-08
 
 - Promotes the field-validated collection, recognition, matching, and Excel export workflow.

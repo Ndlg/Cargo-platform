@@ -1,5 +1,6 @@
 import json
 from contextlib import closing
+import os
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -44,6 +45,8 @@ def test_online_backup_and_verified_restore_keep_a_pre_restore_snapshot(tmp_path
     backup_result = json.loads(backed_up.stdout)
     assert backup_result["integrity_check"] == "ok"
     assert len(backup_result["sha256"]) == 64
+    if os.name != "nt":
+        assert backup.stat().st_mode & 0o777 == 0o600
 
     restored = _run(
         "restore",

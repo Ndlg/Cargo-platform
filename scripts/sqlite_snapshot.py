@@ -54,6 +54,7 @@ def create_snapshot(source: Path, destination: Path) -> dict[str, object]:
             source_db.backup(target_db)
         details = inspect_database(temporary)
         os.replace(temporary, destination)
+        destination.chmod(0o600)
     finally:
         temporary.unlink(missing_ok=True)
     return {**details, "path": str(destination.resolve())}

@@ -11,7 +11,7 @@ on:
         required: true
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 concurrency:
@@ -75,6 +75,26 @@ jobs:
             collector-client/dist/Cargo Platform 采集器.exe
             collector-client/dist/collector-manifest.json
 
+  server-check:
+    needs: [version, quality]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build server deployment bundle
+        run: |
+          python scripts/build_server_release.py \
+            --root . \
+            --version "${{ needs.version.outputs.value }}" \
+            --git-sha "${{ github.sha }}" \
+            --output-dir server-release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server-release-${{ needs.version.outputs.value }}
+          if-no-files-found: error
+          path: server-release/*
+
   quality:
     runs-on: ubuntu-latest
     env:
@@ -121,33 +141,8 @@ jobs:
           npm run build:tenant
           npm run build:server-admin
 
-  immutable-tags:
-    needs: version
-    runs-on: ubuntu-latest
-    steps:
-      - uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Refuse existing release tags
-        shell: bash
-        run: |
-          for image in cargo-platform-backend cargo-platform-tenant-ui cargo-platform-admin-ui cargo-platform-waybill-parser; do
-            tag="${REGISTRY}/${IMAGE_OWNER}/${image}:${{ needs.version.outputs.value }}"
-            if output="$(docker manifest inspect "$tag" 2>&1)"; then
-              echo "Refusing to overwrite existing release tag: $tag" >&2
-              exit 1
-            fi
-            if ! grep -Eqi 'manifest unknown|no such manifest' <<<"$output"; then
-              echo "Unable to verify release tag; refusing publish: $tag" >&2
-              exit 1
-            fi
-          done
-
   build:
-    needs: [version, collector, quality, immutable-tags]
+    needs: [version, collector, server-check, quality]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -181,6 +176,8 @@ jobs:
           name: collector-release-${{ needs.version.outputs.value }}
           path: collector-client/dist
 
+      - uses: docker/setup-qemu-action@v3
+
       - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v3
@@ -189,11 +186,138 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: docker/build-push-action@v6
+      - id: build
+        uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
-          push: true
+          platforms: linux/amd64,linux/arm64
           build-args: ${{ matrix.build_args }}
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/${{ matrix.image }}:${{ needs.version.outputs.value }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/${{ matrix.image }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Save image digest
+        shell: bash
+        run: |
+          digest='${{ steps.build.outputs.digest }}'
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "Invalid image digest: $digest" >&2; exit 1; }
+          mkdir -p /tmp/digests
+          printf '%s\n' "$digest" >"/tmp/digests/${{ matrix.image }}.digest"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.image }}
+          if-no-files-found: error
+          path: /tmp/digests/${{ matrix.image }}.digest
+
+  publish:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digest-*
+          path: /tmp/digests
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish complete immutable release
+        shell: bash
+        run: |
+          set -euo pipefail
+          images=(cargo-platform-backend cargo-platform-tenant-ui cargo-platform-admin-ui cargo-platform-waybill-parser)
+
+          for image in "${images[@]}"; do
+            file="/tmp/digests/$image.digest"
+            test -s "$file" || { echo "Missing digest for $image" >&2; exit 1; }
+            digest="$(tr -d '[:space:]' <"$file")"
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "Invalid digest for $image" >&2; exit 1; }
+            source_ref="${REGISTRY}/${IMAGE_OWNER}/${image}@${digest}"
+            platforms="$(docker buildx imagetools inspect "$source_ref")"
+            grep -q 'linux/amd64' <<<"$platforms" || { echo "$image is missing linux/amd64" >&2; exit 1; }
+            grep -q 'linux/arm64' <<<"$platforms" || { echo "$image is missing linux/arm64" >&2; exit 1; }
+          done
+
+          for image in "${images[@]}"; do
+            digest="$(tr -d '[:space:]' <"/tmp/digests/$image.digest")"
+            tag="${REGISTRY}/${IMAGE_OWNER}/${image}:${{ needs.version.outputs.value }}"
+            if output="$(docker buildx imagetools inspect "$tag" 2>&1)"; then
+              existing="$(awk '/^Digest:/ {print $2; exit}' <<<"$output")"
+              [ "$existing" = "$digest" ] || { echo "Refusing mismatched existing tag: $tag" >&2; exit 1; }
+            elif ! grep -Eqi 'manifest unknown|no such manifest|not found' <<<"$output"; then
+              echo "Unable to verify release tag; refusing publish: $tag" >&2
+              exit 1
+            fi
+          done
+
+          for image in "${images[@]}"; do
+            digest="$(tr -d '[:space:]' <"/tmp/digests/$image.digest")"
+            tag="${REGISTRY}/${IMAGE_OWNER}/${image}:${{ needs.version.outputs.value }}"
+            if output="$(docker buildx imagetools inspect "$tag" 2>&1)"; then
+              current="$(awk '/^Digest:/ {print $2; exit}' <<<"$output")"
+              [ "$current" = "$digest" ] || { echo "Refusing mismatched existing tag: $tag" >&2; exit 1; }
+            elif grep -Eqi 'manifest unknown|no such manifest|not found' <<<"$output"; then
+              docker buildx imagetools create -t "$tag" "${REGISTRY}/${IMAGE_OWNER}/${image}@${digest}"
+            else
+              echo "Unable to verify release tag; refusing publish: $tag" >&2
+              exit 1
+            fi
+            published="$(docker buildx imagetools inspect "$tag" | awk '/^Digest:/ {print $2; exit}')"
+            [ "$published" = "$digest" ] || { echo "Published digest mismatch: $tag" >&2; exit 1; }
+          done
+
+  release:
+    if: github.event_name == 'push'
+    needs: [version, collector, server-check, publish]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: collector-release-${{ needs.version.outputs.value }}
+          path: collector-release
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: server-release-${{ needs.version.outputs.value }}
+          path: server-release
+
+      - name: Publish verified release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Refusing to overwrite existing GitHub Release: $tag" >&2
+            exit 1
+          fi
+          created_by_this_run=0
+          cleanup_draft() {
+            status=$?
+            if [ "$status" -ne 0 ] && [ "$created_by_this_run" -eq 1 ] && [ "$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null || true)" = true ]; then
+              gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes || true
+            fi
+            exit "$status"
+          }
+          trap cleanup_draft EXIT
+          gh release create "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --draft \
+            --title "Cargo Platform ${{ needs.version.outputs.value }}" \
+            --generate-notes
+          created_by_this_run=1
+          gh release upload "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            server-release/* \
+            "collector-release/Cargo Platform 采集器.exe" \
+            collector-release/collector-manifest.json
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false
+          trap - EXIT

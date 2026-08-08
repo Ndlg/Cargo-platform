@@ -38,16 +38,19 @@ See:
 
 ## Release deployment
 
-Copy `deploy.env.example` to `.env`, then generate three independent random
-values for `SECRET_KEY`, `COLLECTOR_TOKEN_HASH_KEY`, and
-`INITIAL_SETUP_TOKEN` (at least 32 bytes each). Leave
-`COLLECTOR_TOKEN_PREVIOUS_HASH_KEY` empty on a first installation.
+### macOS / Linux（正式发行入口）
 
-PowerShell 7 can generate each value with:
+Docker Desktop 启动后，直接从正式标签部署：
 
-```powershell
-[Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
+```sh
+git clone --branch v1.0.1 --depth 1 https://github.com/Ndlg/Cargo-platform.git cargo-platform
+cd cargo-platform
+./scripts/deploy_server.sh
 ```
+
+脚本负责首次生成密钥和数据卷；升级时拒绝中断正在进行的采集，先创建 SQLite 快照，并在就绪失败时恢复原四个镜像。完整操作和回退说明见 [SERVER-DEPLOYMENT.md](SERVER-DEPLOYMENT.md)。
+
+### Windows（辅助兼容入口）
 
 Install or upgrade the core platform through the guarded deployment entrypoint:
 
@@ -55,15 +58,36 @@ Install or upgrade the core platform through the guarded deployment entrypoint:
 pwsh.exe -File scripts/deploy_business_containers.ps1
 ```
 
-The script creates the external data volume on a first installation. On an
-upgrade it records the current images, creates a verified SQLite snapshot, and
-restores the previous images automatically if the new release is not ready.
+Formal release upgrades should use the macOS/Linux entrypoint above. PowerShell
+cannot guarantee automatic rollback after Ctrl-C, terminal termination, or a
+host shutdown. Do not interrupt a Windows upgrade after its warning appears;
+if interrupted, restore the printed `.env` backup and rollback Compose file
+before running deployment again. A forced termination intentionally leaves
+`cargo-platform-deploy-mutex` (and possibly
+`cargo-platform-deploy-db-lock`) so retries fail closed. After inspecting and
+restoring the old release, remove those stale locks with `docker rm -f`.
+
+When `-Version` is omitted, the script reads `CARGO_PLATFORM_VERSION` from
+`deploy.env.example`. To select a version or backup location explicitly:
+
+```powershell
+pwsh.exe -File scripts/deploy_business_containers.ps1 `
+  -Version 1.0.1 -BackupDirectory C:\cargo-platform-backups
+```
+
+On a first installation the script creates `.env`, three independent random
+secrets, the install marker, and the external data volume. On an upgrade it
+preserves the old `.env`, checks for active collection through the old backend
+image and read-only data volume, creates a verified SQLite snapshot, and
+restores the old `.env` and four images if the new release is not ready.
 
 On the first visit, enter `INITIAL_SETUP_TOKEN` and choose the administrator
 password. The images contain no default administrator password.
 
 For an existing Docker volume, `scripts/deploy_business_containers.ps1`
-creates and verifies an online SQLite snapshot before recreating containers.
+holds an exclusive SQLite deployment fence after confirming collection is
+idle, stops the old services, then creates and verifies a snapshot before
+recreating containers.
 Manual backup and stopped-database restore use the same guarded command:
 
 ```powershell

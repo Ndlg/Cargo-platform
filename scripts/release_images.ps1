@@ -12,8 +12,8 @@ $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $Root
 
-if ($Push -and (git status --porcelain)) {
-  throw "Refusing to publish release images from a dirty worktree."
+if ($Push) {
+  throw "Direct image publishing is disabled. Push a v*.*.* Git tag so release-images.yml can publish one verified multi-architecture release."
 }
 if (-not $GitSha) {
   $GitSha = (git rev-parse HEAD).Trim()
@@ -48,20 +48,6 @@ $images = @(
   }
 )
 
-if ($Push) {
-  foreach ($image in $images) {
-    $versionTag = "$Registry/$($image.Name):$Version"
-    $manifestOutput = @(& docker manifest inspect $versionTag 2>&1)
-    $manifestExitCode = $LASTEXITCODE
-    if ($manifestExitCode -eq 0) {
-      throw "Refusing to overwrite existing release tag: $versionTag"
-    }
-    if (($manifestOutput -join "`n") -notmatch '(?i)manifest unknown|no such manifest') {
-      throw "Unable to verify release tag; refusing publish: $versionTag"
-    }
-  }
-}
-
 $collectorBuildArgs = @{
   Version = $Version
   GitSha = $GitSha
@@ -85,11 +71,4 @@ foreach ($image in $images) {
     throw "Image build failed: $versionTag"
   }
 
-  if ($Push) {
-    Write-Host "Pushing $versionTag"
-    & docker push $versionTag
-    if ($LASTEXITCODE -ne 0) {
-      throw "Image push failed: $versionTag"
-    }
-  }
 }
