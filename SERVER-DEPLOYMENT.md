@@ -1,6 +1,6 @@
 # 服务端 Docker 部署
 
-当前发行版：`1.0.1`
+当前发行版：`1.0.2`
 
 服务端支持 Intel/AMD（`linux/amd64`）和 Apple Silicon（`linux/arm64`）。Mac 只承载服务端；业务机采集器仍安装在 Windows 电脑上。
 
@@ -9,7 +9,7 @@
 准备 Docker Desktop、Git，并确认 `5173`、`5174`、`8000`、`8010` 端口没有被占用。
 
 ```sh
-git clone --branch v1.0.1 --depth 1 https://github.com/Ndlg/Cargo-platform.git cargo-platform
+git clone --branch v1.0.2 --depth 1 https://github.com/Ndlg/Cargo-platform.git cargo-platform
 cd cargo-platform
 ./scripts/deploy_server.sh
 ```
@@ -18,7 +18,7 @@ cd cargo-platform
 
 - 创建权限为 `0600` 的 `.env`，生成三项随机密钥；
 - 创建外部数据卷 `cargo-platform-data`；
-- 拉取同为 `1.0.1` 的四个服务镜像；
+- 拉取同为 `1.0.2` 的四个服务镜像；
 - 等待后端、识别服务和两个页面全部就绪。
 
 首次初始化所需 Token：
@@ -61,7 +61,7 @@ docker compose -f docker-compose.release.yml start
 
 ```sh
 git fetch --tags
-git checkout v1.0.1
+git checkout v1.0.2
 ./scripts/deploy_server.sh
 ```
 
@@ -97,6 +97,8 @@ docker compose \
 
 ```sh
 set -eu
+rollback_file=<备份目录>/docker-compose.rollback-<时间戳>.yml
+test -f "$rollback_file"
 backend_image="$(docker inspect --format '{{.Image}}' cargo-platform-backend)"
 deployment_lock_exists=0
 database_lock_exists=0
@@ -113,8 +115,8 @@ if [ "$deployment_lock_exists" -eq 0 ]; then
     "$backend_image" -c 'import threading; threading.Event().wait()' >/dev/null
 fi
 trap 'echo "恢复未完成，服务和部署锁保持当前状态；排查后继续恢复，不要启动或部署" >&2' EXIT
-docker compose -f docker-compose.release.yml stop tenant-ui platform-admin-ui
-docker compose -f docker-compose.release.yml stop backend waybill-parser
+docker compose -f docker-compose.release.yml -f "$rollback_file" stop tenant-ui platform-admin-ui
+docker compose -f docker-compose.release.yml -f "$rollback_file" stop backend waybill-parser
 running="$(docker ps -q --no-trunc --filter volume=cargo-platform-data)" || {
   echo "无法确认 cargo-platform-data 是否仍被使用，数据库锁保持不变" >&2
   exit 1
@@ -145,8 +147,24 @@ docker run --rm --entrypoint python \
   /backup/<快照文件.db> /data/cargo-platform.db \
   --expected-sha256 <快照记录中的sha256> \
   --confirm RESTORE_STOPPED_DATABASE
-docker compose -f docker-compose.release.yml up -d --wait --wait-timeout 180 \
+docker compose -f docker-compose.release.yml -f "$rollback_file" \
+  up -d --no-deps --wait --wait-timeout 180 \
   waybill-parser backend tenant-ui platform-admin-ui
+for service in waybill-parser backend tenant-ui platform-admin-ui; do
+  container="$(docker compose -f docker-compose.release.yml -f "$rollback_file" ps -q "$service")"
+  test -n "$container"
+  expected="$(awk -v target="$service" '
+    $1 == target ":" { matched=1; next }
+    matched && $1 == "image:" { print $2; exit }
+    matched && $1 ~ /^[A-Za-z0-9_-]+:$/ { exit }
+  ' "$rollback_file")"
+  actual="$(docker inspect --format '{{.Image}}' "$container")"
+  test -n "$expected" && test "$actual" = "$expected" || {
+    echo "$service 未恢复到记录的旧镜像，部署锁保持不变" >&2
+    exit 1
+  }
+done
+docker exec cargo-platform-backend python -c 'import sqlite3; db=sqlite3.connect("file:/data/cargo-platform.db?mode=ro", uri=True); assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)'
 curl -fsS http://127.0.0.1:8000/api/v1/ready >/dev/null
 curl -fsS http://127.0.0.1:8010/health >/dev/null
 curl -fsS -o /dev/null http://127.0.0.1:5173/
@@ -161,8 +179,8 @@ trap - EXIT
 
 GitHub Release 同时提供：
 
-- `cargo-platform-server-1.0.1.zip`
-- `cargo-platform-server-1.0.1.tar.gz`
+- `cargo-platform-server-1.0.2.zip`
+- `cargo-platform-server-1.0.2.tar.gz`
 - `server-manifest.json`
 - `SHA256SUMS-server.txt`
 

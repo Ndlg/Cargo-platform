@@ -141,8 +141,8 @@ def write_test_collector_release(
     manifest = {
         "schema_version": 1,
         "artifact": "Cargo Platform 采集器.exe",
-        "release_version": "1.0.1",
-        "client_version": "1.0.1+aaaaaaaaaaaa",
+        "release_version": "1.0.2",
+        "client_version": "1.0.2+aaaaaaaaaaaa",
         "git_sha": "a" * 40,
         "python_version": "3.12.13",
         "pyinstaller_version": "6.21.0",

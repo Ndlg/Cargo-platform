@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 1.0.2 - 2026-08-08
+
+- Runs Windows deployment behavior tests on `windows-latest` and gates image publication on that result.
+- Skips only platform-inapplicable PowerShell behavior tests on non-Windows runners.
+
 ## 1.0.1 - 2026-08-08
 
 - Adds a verified macOS/Linux Docker server bundle and one-command deployment entrypoint.

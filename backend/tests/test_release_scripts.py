@@ -4,6 +4,8 @@ from pathlib import Path
 import shutil
 import subprocess
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -39,7 +41,20 @@ def test_sqlite_volume_restore_refuses_running_volume() -> None:
 def test_development_compose_keeps_backend_and_parser_on_one_version() -> None:
     source = (ROOT / "docker-compose.yml").read_text(encoding="utf-8-sig")
 
-    assert source.count("APP_VERSION: ${CARGO_PLATFORM_VERSION:-1.0.1}") == 2
+    assert source.count("APP_VERSION: ${CARGO_PLATFORM_VERSION:-1.0.2}") == 2
+
+
+def test_manual_database_restore_keeps_exact_rollback_images_until_verified() -> None:
+    source = (ROOT / "SERVER-DEPLOYMENT.md").read_text(encoding="utf-8")
+    restore = source[source.index("rollback_file=<备份目录>") : source.index("恢复命令会再次校验")]
+
+    assert restore.count('-f "$rollback_file"') >= 5
+    assert "docker inspect --format '{{.Image}}'" in restore
+    assert 'test "$actual" = "$expected"' in restore
+    assert "PRAGMA integrity_check" in restore
+    assert restore.index('test "$actual" = "$expected"') < restore.index(
+        "docker rm -f cargo-platform-deploy-mutex"
+    )
 
 
 def test_business_deploy_takes_verified_snapshot_before_recreate() -> None:
@@ -153,7 +168,10 @@ def test_release_builds_four_immutable_images_after_quality_gate() -> None:
     assert "cargo-platform-waybill-parser" in script
     assert ":latest" not in script
     assert "Parameter(Mandatory = $true)" in script
-    assert "needs: [version, collector, server-check, quality]" in workflow
+    assert "needs: [version, collector, server-check, quality, windows-quality]" in workflow
+    assert "windows-quality:" in workflow
+    assert "runs-on: windows-latest" in workflow
+    assert 'python -m pytest backend/tests/test_release_scripts.py -q -k "windows"' in workflow
     assert "group: cargo-platform-release-images" in workflow
     assert 'VERSION="${{ github.event.inputs.version }}"' not in workflow
     assert "REQUESTED_VERSION:" in workflow
@@ -462,6 +480,11 @@ def _run_windows_deploy(
     container_count: int = 4,
     extra_env: dict[str, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path, Path, list[str]]:
+    if os.name != "nt":
+        pytest.skip("Windows deployment behavior test")
+    pwsh = shutil.which("pwsh.exe")
+    if pwsh is None:
+        pytest.fail("PowerShell 7 is required on the Windows quality runner")
     project = tmp_path / "windows release"
     scripts = project / "scripts"
     backup = tmp_path / "backups"
@@ -500,7 +523,7 @@ def _run_windows_deploy(
     if extra_env:
         env.update(extra_env)
     result = subprocess.run(
-        ["pwsh.exe", "-NoProfile", "-File", str(runner)],
+        [pwsh, "-NoProfile", "-File", str(runner)],
         cwd=project,
         env=env,
         capture_output=True,
@@ -511,6 +534,27 @@ def _run_windows_deploy(
     if call_log.exists():
         calls = [" ".join(json.loads(line)) for line in call_log.read_text(encoding="utf-8").splitlines()]
     return result, project, backup, calls
+
+
+def test_windows_deploy_behavior_skips_on_non_windows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(os, "name", "posix")
+
+    with pytest.raises(pytest.skip.Exception):
+        _run_windows_deploy(tmp_path)
+
+
+def test_windows_quality_fails_without_powershell(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+
+    with pytest.raises(pytest.fail.Exception):
+        _run_windows_deploy(tmp_path)
 
 
 def test_windows_pending_marker_with_four_containers_resumes_first_install(tmp_path: Path) -> None:

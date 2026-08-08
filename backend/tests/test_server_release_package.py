@@ -14,7 +14,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILDER = ROOT / "scripts" / "build_server_release.py"
-VERSION = "1.0.1"
+VERSION = "1.0.2"
 GIT_SHA = "cbdde2f9c672930724d28a4ddc9ab28eb45a18f1"
 PACKAGE_ROOT = f"cargo-platform-server-{VERSION}"
 

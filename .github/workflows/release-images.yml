@@ -141,8 +141,24 @@ jobs:
           npm run build:tenant
           npm run build:server-admin
 
+  windows-quality:
+    needs: version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Windows deployment behavior tests
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check -r backend/requirements-dev.txt
+          python -m pytest backend/tests/test_release_scripts.py -q -k "windows"
+
   build:
-    needs: [version, collector, server-check, quality]
+    needs: [version, collector, server-check, quality, windows-quality]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

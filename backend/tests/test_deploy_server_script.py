@@ -581,8 +581,8 @@ def test_version_defaults_from_deploy_env_template(deploy_sandbox: dict[str, obj
     template = project / "deploy.env.example"
     template.write_text(
         template.read_text(encoding="utf-8").replace(
-            "CARGO_PLATFORM_VERSION=1.0.0",
-            "CARGO_PLATFORM_VERSION=1.0.1",
+            "CARGO_PLATFORM_VERSION=1.0.2",
+            "CARGO_PLATFORM_VERSION=1.0.3",
         ),
         encoding="utf-8",
         newline="\n",
@@ -591,12 +591,13 @@ def test_version_defaults_from_deploy_env_template(deploy_sandbox: dict[str, obj
     result = _run_deploy(
         deploy_sandbox,
         version=None,
+        FAKE_TARGET_VERSION="1.0.3",
         FAKE_VOLUME_EXISTS="0",
         FAKE_EXISTING_INSTALL="0",
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert _env_values(project / ".env")["CARGO_PLATFORM_VERSION"] == "1.0.1"
+    assert _env_values(project / ".env")["CARGO_PLATFORM_VERSION"] == "1.0.3"
 
 
 def test_failed_first_install_stops_containers_without_deleting_volume(

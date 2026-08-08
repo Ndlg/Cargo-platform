@@ -43,7 +43,7 @@ See:
 Docker Desktop 启动后，直接从正式标签部署：
 
 ```sh
-git clone --branch v1.0.1 --depth 1 https://github.com/Ndlg/Cargo-platform.git cargo-platform
+git clone --branch v1.0.2 --depth 1 https://github.com/Ndlg/Cargo-platform.git cargo-platform
 cd cargo-platform
 ./scripts/deploy_server.sh
 ```
@@ -72,7 +72,7 @@ When `-Version` is omitted, the script reads `CARGO_PLATFORM_VERSION` from
 
 ```powershell
 pwsh.exe -File scripts/deploy_business_containers.ps1 `
-  -Version 1.0.1 -BackupDirectory C:\cargo-platform-backups
+  -Version 1.0.2 -BackupDirectory C:\cargo-platform-backups
 ```
 
 On a first installation the script creates `.env`, three independent random
